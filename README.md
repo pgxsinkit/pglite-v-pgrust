@@ -46,6 +46,11 @@ bun run preview
 Both Suites are started from the page — nothing runs until you press **Start**. Each Run opens a fresh
 Engine in a fresh worker, so no state carries over between Configurations.
 
+The RTT Suite is 100 iterations by definition, and the page offers no control that changes it. For
+automation only, the URL query `?rttIterations=N` — an integer from 1 to 1000, anything else ignored —
+shortens it, and says so everywhere: the environment header, the Suite itself and every Markdown
+export carry `RTT iterations: N (non-standard)`, so a shortened Run cannot be mistaken for a real one.
+
 ## pgrust assets
 
 PGlite installs from npm; pgrust does not. Its host JavaScript is vendored into this repo and its
@@ -94,23 +99,74 @@ that reason and the PGlite columns run as normal — no Run is aborted for it.
 
 Scripts are check-default: a bare verb never mutates files.
 
-| Script                 | What it does                                     |
-| ---------------------- | ------------------------------------------------ |
-| `bun run dev`          | Vite dev server on port 5580                     |
-| `bun run build`        | Production build into `dist/`                    |
-| `bun run preview`      | Serve the production build                       |
-| `bun run format`       | oxfmt, check only                                |
-| `bun run format:write` | oxfmt, rewrite files                             |
-| `bun run lint`         | oxlint (type-aware), check only                  |
-| `bun run lint:fix`     | oxlint with autofixes applied                    |
-| `bun run typecheck`    | `tsc --noEmit`                                   |
-| `bun run test`         | `bun test src` — unit tests only                 |
-| `bun run check`        | typecheck + lint + test                          |
-| `bun run validate`     | format + check; installed as the pre-commit hook |
-| `bun run sync:pgrust`  | Vendor pgrust's host JS and copy its wasm assets |
+| Script                  | What it does                                     |
+| ----------------------- | ------------------------------------------------ |
+| `bun run dev`           | Vite dev server on port 5580                     |
+| `bun run build`         | Production build into `dist/`                    |
+| `bun run preview`       | Serve the production build                       |
+| `bun run format`        | oxfmt, check only                                |
+| `bun run format:write`  | oxfmt, rewrite files                             |
+| `bun run lint`          | oxlint (type-aware), check only                  |
+| `bun run lint:fix`      | oxlint with autofixes applied                    |
+| `bun run typecheck`     | `tsc --noEmit`                                   |
+| `bun run test`          | `bun test src` — unit tests only                 |
+| `bun run check`         | typecheck + lint + test                          |
+| `bun run validate`      | format + check; installed as the pre-commit hook |
+| `bun run bench`         | Drive the page headlessly and capture the tables |
+| `bun run test:e2e`      | `bun test tests/e2e` — the bench lane, asserted  |
+| `bun run validate:full` | validate + test:e2e                              |
+| `bun run sync:pgrust`   | Vendor pgrust's host JS and copy its wasm assets |
 
 `bun install` runs `prepare`, which points `core.hooksPath` at `.githooks/`, so `bun run validate`
 gates every commit.
+
+### Headless lane
+
+`bun run bench` runs the page for you: it builds, serves `dist/` over loopback on a free port, opens
+it in a real browser, presses each Suite's **Start**, waits for the Suite section to report
+`data-state="complete"`, and captures exactly the Markdown the "Copy as Markdown" button produces.
+
+The lane times nothing. Every Measurement is still taken inside the Engine's worker by the app
+itself, so a headless result and a hand-run result are the same result.
+
+```sh
+bun run bench                                # both Suites, Chromium, fresh build
+bun run bench --suite rtt --iterations 5     # one Suite, deliberately short RTT Run
+bun run bench --browser firefox --no-build   # reuse the existing dist/
+bun run bench --help                         # every flag
+```
+
+| Flag               | Meaning                                                                       |
+| ------------------ | ----------------------------------------------------------------------------- |
+| `--browser <name>` | `chromium` (default), `firefox` or `webkit`                                   |
+| `--suite <id>`     | `speedtest` or `rtt`; repeatable, defaults to both                            |
+| `--iterations <N>` | Passes `?rttIterations=N` to the page; 1-1000                                 |
+| `--no-build`       | Reuse the existing `dist/` instead of rebuilding                              |
+| `--port <N>`       | Port for the local static server; the default asks for a free one, never 5580 |
+| `--headed`         | Show the browser window                                                       |
+| `--timeout <ms>`   | Overall in-browser deadline (default 600000)                                  |
+| `--out <dir>`      | Results directory (default `tmp/results`)                                     |
+
+Each run writes `tmp/results/<ISO-timestamp>-<browser>.md` (gitignored) and prints the same content:
+the environment line, one table per Suite, and any Run failure the page reported — which is what
+turns a bare `failed` cell into a diagnosis.
+
+The browsers are Playwright's own builds, driven through its library API; there is no Playwright
+config and no second test runner. Install them once with `bunx playwright install chromium firefox`.
+`@playwright/test` is pinned to an exact version because a Playwright release pins the browser
+revisions it will look for — floating it would silently ask for builds that are not in the cache.
+
+| Browser in the lane           | Behaviour                                                                                                                                                                                                                                                   |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Chromium (default)            | JSPI on by default, so all three Configurations run                                                                                                                                                                                                         |
+| Firefox (`--browser firefox`) | The lane sets `javascript.options.wasm_js_promise_integration`; where JSPI is still missing the pgrust column reports `skipped` and the Run continues. Firefox's reduced timer precision quantises Measurements, so its numbers are coarser than Chromium's |
+| WebKit (`--browser webkit`)   | Exits 0 with `WebKit skipped: Playwright's WebKit build has no JSPI yet`, without launching                                                                                                                                                                 |
+
+`bun run test:e2e` drives the same lane from `bun test` (Chromium, both Suites, RTT at three
+iterations) and asserts the shape of the result rather than any timing: an environment line, a
+millisecond figure and a ratio in every PGlite cell, and `skipped`, `failed` or a millisecond figure
+in every pgrust cell. It is deliberately outside `test`, `check` and `validate` — `bun run
+validate:full` is `validate` plus this lane.
 
 Everything in `src/` is TypeScript with one sanctioned exception: `src/vendor/pgrust/*.js` is copied
 **byte-verbatim** from a pgrust checkout by `bun run sync:pgrust` (provenance in

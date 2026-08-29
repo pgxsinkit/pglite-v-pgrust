@@ -9,6 +9,7 @@ import { formatEnvironmentLine } from "../environment";
 import type { GridCells, GridColumn, ResultsGrid } from "../results/grid";
 import { cellKey } from "../results/grid";
 import { toMarkdown } from "../results/markdown";
+import { applyRttIterations, describeRttIterations } from "../rtt-iterations";
 import { runSuite } from "../runner/run-suite";
 import type { Suite } from "../suites/types";
 import { ResultsTable } from "./ResultsTable";
@@ -17,6 +18,12 @@ export interface SuiteSectionProps {
   readonly suite: Suite;
   readonly environment: EnvironmentInfo;
 }
+
+/**
+ * Where a Suite's Run has got to. Published as `data-state` so an automated lane can wait on the
+ * DOM rather than on a timeout.
+ */
+type RunState = "idle" | "running" | "complete";
 
 /**
  * A column is unavailable either because this browser cannot run the Engine, or because its Run has
@@ -55,12 +62,17 @@ function describeError(error: unknown): string {
 export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Element {
   const [setupSql, setSetupSql] = useState(suite.defaultSetupSql);
   const [cells, setCells] = useState<GridCells>({});
-  const [running, setRunning] = useState(false);
+  const [runState, setRunState] = useState<RunState>("idle");
   const [activeColumnId, setActiveColumnId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
   /** Per-Configuration Run failures, keyed by Configuration id. */
   const [failures, setFailures] = useState<Readonly<Record<string, string>>>({});
+
+  const running = runState === "running";
+  /** The Suite as run: identical to `suite` unless `?rttIterations=N` reduced the RTT Suite. */
+  const runnableSuite = applyRttIterations(suite, environment.rttIterationsOverride);
+  const nonStandard = runnableSuite.iterations !== suite.iterations;
 
   const grid: ResultsGrid = {
     rows: suite.benchmarks.map((benchmark) => ({ id: benchmark.id, label: benchmark.label })),
@@ -69,6 +81,13 @@ export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Ele
     cells,
   };
 
+  /** Recomputed every render, so the exported element and the clipboard can never disagree. */
+  const markdown = toMarkdown(grid, {
+    title: suite.title,
+    environmentLine: formatEnvironmentLine(environment),
+    baselineLabel: BASELINE_CONFIGURATION_LABEL,
+  });
+
   function recordFailure(configuration: Configuration, message: string): void {
     setFailures((previous) => ({ ...previous, [configuration.id]: message }));
     const line = `${configuration.label}: ${message}`;
@@ -76,7 +95,7 @@ export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Ele
   }
 
   async function start(): Promise<void> {
-    setRunning(true);
+    setRunState("running");
     setError(null);
     setCopyStatus(null);
     setCells({});
@@ -90,7 +109,7 @@ export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Ele
         try {
           // One Run per Configuration: a fresh worker, a fresh Engine, then the timed Benchmarks.
           await runSuite({
-            suite,
+            suite: runnableSuite,
             configuration,
             setupSql,
             onResult: (result) => {
@@ -110,16 +129,11 @@ export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Ele
       setError(describeError(thrown));
     } finally {
       setActiveColumnId(null);
-      setRunning(false);
+      setRunState("complete");
     }
   }
 
   async function copyMarkdown(): Promise<void> {
-    const markdown = toMarkdown(grid, {
-      title: suite.title,
-      environmentLine: formatEnvironmentLine(environment),
-      baselineLabel: BASELINE_CONFIGURATION_LABEL,
-    });
     try {
       await navigator.clipboard.writeText(markdown);
       setCopyStatus("Copied.");
@@ -129,9 +143,10 @@ export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Ele
   }
 
   return (
-    <section className="suite">
+    <section className="suite" data-testid={`suite-${suite.id}`} data-suite-id={suite.id} data-state={runState}>
       <h2>{suite.title}</h2>
       <p className="description">{suite.description}</p>
+      {nonStandard ? <p className="non-standard-note">{describeRttIterations(runnableSuite.iterations)}</p> : null}
 
       <div className="controls">
         {suite.editableSetup ? (
@@ -148,6 +163,7 @@ export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Ele
         ) : null}
         <button
           type="button"
+          data-testid={`start-${suite.id}`}
           disabled={running}
           onClick={() => {
             void start();
@@ -157,6 +173,7 @@ export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Ele
         </button>
         <button
           type="button"
+          data-testid={`copy-markdown-${suite.id}`}
           disabled={running}
           onClick={() => {
             void copyMarkdown();
@@ -167,9 +184,16 @@ export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Ele
         {copyStatus === null ? null : <span className="copy-status">{copyStatus}</span>}
       </div>
 
-      <pre className="error">{error ?? ""}</pre>
+      <pre className="error" data-testid={`error-${suite.id}`}>
+        {error ?? ""}
+      </pre>
 
       <ResultsTable grid={grid} baselineLabel={BASELINE_CONFIGURATION_LABEL} activeColumnId={activeColumnId} />
+
+      {/* Exactly what "Copy as Markdown" writes to the clipboard, exposed for the headless lane. */}
+      <pre hidden data-testid={`markdown-${suite.id}`}>
+        {markdown}
+      </pre>
     </section>
   );
 }

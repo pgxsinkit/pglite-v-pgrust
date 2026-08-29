@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="pglite versus pgrust">
+  <title>pglite-v-pgrust</title>
+  <rect width="64" height="64" rx="12" fill="#14181d" />
+  <circle cx="25" cy="32" r="15" fill="#336791" fill-opacity="0.95" />
+  <circle cx="39" cy="32" r="15" fill="#dea584" fill-opacity="0.75" />
+</svg>

@@ -139,3 +139,17 @@ th .reason {
   font-size: 0.85em;
   color: #999;
 }
+
+.non-standard-note {
+  margin: 0.25rem 0;
+  padding: 0.25rem 0.5rem;
+  border-left: 3px solid #b58900;
+  background-color: #fff8e5;
+  color: #7a5c00;
+  font-size: 0.9em;
+}
+
+.environment .non-standard dd {
+  color: #7a5c00;
+  font-weight: 600;
+}

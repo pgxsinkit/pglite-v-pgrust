@@ -3,6 +3,8 @@
  * export, because a benchmark number without its environment is not a result.
  */
 
+import { describeRttIterations, readRttIterationsOverride } from "./rtt-iterations";
+
 declare const __PGLITE_VERSION__: string;
 declare const __PGRUST_VERSION__: string;
 
@@ -17,6 +19,11 @@ export interface EnvironmentInfo {
   readonly pgrustVersion: string;
   /** Whether the JavaScript Promise Integration proposal is available (pgrust's wasm build wants it). */
   readonly jspiAvailable: boolean;
+  /**
+   * A non-standard RTT iteration count requested through `?rttIterations=N`, or null for the
+   * defined 100. Reported everywhere the environment is, because it changes what the numbers mean.
+   */
+  readonly rttIterationsOverride: number | null;
 }
 
 /**
@@ -34,15 +41,20 @@ export function readEnvironment(): EnvironmentInfo {
     pgliteVersion: PGLITE_VERSION,
     pgrustVersion: PGRUST_VERSION,
     jspiAvailable: detectJspi(),
+    rttIterationsOverride: readRttIterationsOverride(),
   };
 }
 
 /** The one-line environment description embedded in Markdown exports. */
 export function formatEnvironmentLine(environment: EnvironmentInfo): string {
-  return [
+  const parts = [
     `@pgxsinkit/pglite ${environment.pgliteVersion}`,
     `pgrust ${environment.pgrustVersion}`,
     `JSPI ${environment.jspiAvailable ? "available" : "unavailable"}`,
     environment.userAgent,
-  ].join(" | ");
+  ];
+  if (environment.rttIterationsOverride !== null) {
+    parts.push(describeRttIterations(environment.rttIterationsOverride));
+  }
+  return parts.join(" | ");
 }
