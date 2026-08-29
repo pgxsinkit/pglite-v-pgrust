@@ -74,7 +74,7 @@ journal mode.
 
 Committed runs live in [`docs/results/`](docs/results/) — the page's own Markdown export, one file per
 browser and date, produced by `bun run bench`. The first run
-([2026-08-29, Chromium 152, Linux](docs/results/2026-08-29-chromium-152-linux.md)) is the phase-1
+([2026-08-29, Chromium 152, Linux, six columns](docs/results/2026-08-29-chromium-152-linux-six-columns.md)) is the phase-1
 baseline for all six Configurations.
 
 Things the harness turned up along the way are written up in [`docs/findings/`](docs/findings/).

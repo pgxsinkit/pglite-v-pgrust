@@ -15,5 +15,9 @@
     "sortScripts": true,
   },
   // Byte-verbatim pgrust sources (see src/vendor/pgrust/SOURCE.md) must stay identical to upstream.
-  "ignorePatterns": ["src/vendor/**"],
+  "ignorePatterns": [
+    // Benchmark result files are the page's own Markdown export, kept byte-verbatim.
+    "docs/results/**",
+    "src/vendor/**",
+  ],
 }

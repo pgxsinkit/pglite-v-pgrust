@@ -1,3 +1,7 @@
+> **Superseded** by [2026-08-29-chromium-152-linux-six-columns.md](2026-08-29-chromium-152-linux-six-columns.md).
+> In this run the RTT Suite's `PGlite Memory (unlogged)` column was measured against *logged* tables
+> (the unlogged rewrite did not yet reach the setup SQL), so that column duplicates `PGlite Memory` there.
+
 # pglite-v-pgrust benchmark run
 
 - Browser: chromium
