@@ -1,7 +1,7 @@
 # pglite-v-pgrust
 
 A browser benchmark that runs the same SQL workloads against [PGlite](https://pglite.dev) and
-[pgrust](https://github.com/pgxsinkit/pgrust) — two WebAssembly Postgres builds — and reports the
+[pgrust](https://github.com/malisper/pgrust) — two WebAssembly Postgres builds — and reports the
 timings side by side, with [wa-sqlite](https://github.com/rhashimoto/wa-sqlite) alongside them as a
 calibration reference.
 
@@ -256,7 +256,7 @@ Run — is defined in [CONTEXT.md](CONTEXT.md).
 - They were adapted for Postgres by the [PGlite](https://github.com/electric-sql/pglite) authors
   (ElectricSQL), Apache-2.0 licensed; the SQL and statement lists here are byte-identical ports of
   PGlite's copies.
-- [pgrust](https://github.com/pgxsinkit/pgrust) is AGPL-3.0 licensed. Its browser host JavaScript is
+- [pgrust](https://github.com/malisper/pgrust) is AGPL-3.0 licensed. Its browser host JavaScript is
   vendored byte-verbatim under `src/vendor/pgrust/`, together with its `LICENSE` and `NOTICE`; the
   synced commit is recorded in `src/vendor/pgrust/SOURCE.md`.
 
