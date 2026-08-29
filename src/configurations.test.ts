@@ -10,12 +10,14 @@ import {
 import { applyModSql } from "./engines/contract";
 
 describe("phase-1 Configurations", () => {
-  test("are the four memory Configurations, in column order", () => {
+  test("are the six memory Configurations, in column order", () => {
     expect(CONFIGURATIONS.map((config) => config.id)).toEqual([
       "pglite-memory",
       "pglite-memory-unlogged",
       "pgrust-memory",
+      "pgrust-memory-unlogged",
       "wasqlite-memory",
+      "wasqlite-memory-journal-off",
     ]);
     expect(CONFIGURATIONS.every((config) => config.dataDir === "")).toBe(true);
   });
@@ -25,7 +27,9 @@ describe("phase-1 Configurations", () => {
       "PGlite Memory",
       "PGlite Memory (unlogged)",
       "pgrust Memory",
+      "pgrust Memory (unlogged)",
       "wa-sqlite Memory",
+      "wa-sqlite Memory (journal off)",
     ]);
   });
 
@@ -36,32 +40,54 @@ describe("phase-1 Configurations", () => {
     expect(findConfiguration(BASELINE_CONFIGURATION_ID)?.engine).toBe("pglite");
   });
 
-  test("give the pgrust column its own Engine", () => {
+  test("give both pgrust columns their own Engine", () => {
     expect(findConfiguration("pgrust-memory")?.engine).toBe("pgrust");
+    expect(findConfiguration("pgrust-memory-unlogged")?.engine).toBe("pgrust");
   });
 
-  test("give the Reference Engine one column, and never the Baseline", () => {
+  test("give the Reference Engine its own two columns, and never the Baseline", () => {
     const reference = findConfiguration("wasqlite-memory");
     expect(reference?.engine).toBe("wasqlite");
     expect(reference?.id).not.toBe(BASELINE_CONFIGURATION_ID);
-    expect(CONFIGURATIONS.filter((config) => config.engine === "wasqlite")).toHaveLength(1);
+    expect(CONFIGURATIONS.filter((config) => config.engine === "wasqlite").map((config) => config.id)).toEqual([
+      "wasqlite-memory",
+      "wasqlite-memory-journal-off",
+    ]);
   });
 
-  test("leave the unlogged rewrite to PGlite: SQLite has no unlogged tables", () => {
+  test("leave the unlogged rewrite to the Postgres builds: SQLite has no unlogged tables", () => {
     expect(findConfiguration("wasqlite-memory")?.modSql).toBeUndefined();
+    expect(findConfiguration("wasqlite-memory-journal-off")?.modSql).toBeUndefined();
+    expect(findConfiguration("pglite-memory")?.modSql).toBeUndefined();
     expect(findConfiguration("pgrust-memory")?.modSql).toBeUndefined();
   });
 
-  test("rewrite CREATE TABLE for the unlogged Configuration exactly as PGlite does", () => {
-    const unlogged = findConfiguration("pglite-memory-unlogged");
-    expect(unlogged).toBeDefined();
-    if (unlogged === undefined) {
-      return;
+  test("give SQLite its no-durability twin as a journal mode rather than a SQL rewrite", () => {
+    const journalOff = findConfiguration("wasqlite-memory-journal-off");
+    expect(journalOff?.engine).toBe("wasqlite");
+    expect(journalOff?.options).toEqual({ wasqlite: { journalMode: "off" } });
+    // The default wa-sqlite column keeps SQLite's own default journal mode: no options at all.
+    expect(findConfiguration("wasqlite-memory")?.options).toBeUndefined();
+  });
+
+  test("leave the open options to the Engines that have them", () => {
+    for (const id of ["pglite-memory", "pglite-memory-unlogged", "pgrust-memory", "pgrust-memory-unlogged"]) {
+      expect(findConfiguration(id)?.options).toBeUndefined();
     }
-    expect(applyModSql(unlogged, "CREATE TABLE a (x int); CREATE TABLE b (y int);")).toBe(
-      "CREATE UNLOGGED TABLE a (x int); CREATE UNLOGGED TABLE b (y int);",
-    );
-    expect(applyModSql(unlogged, "SELECT 1;")).toBe("SELECT 1;");
+  });
+
+  test("rewrite CREATE TABLE for both unlogged Configurations exactly as PGlite does", () => {
+    for (const id of ["pglite-memory-unlogged", "pgrust-memory-unlogged"]) {
+      const unlogged = findConfiguration(id);
+      expect(unlogged).toBeDefined();
+      if (unlogged === undefined) {
+        continue;
+      }
+      expect(applyModSql(unlogged, "CREATE TABLE a (x int); CREATE TABLE b (y int);")).toBe(
+        "CREATE UNLOGGED TABLE a (x int); CREATE UNLOGGED TABLE b (y int);",
+      );
+      expect(applyModSql(unlogged, "SELECT 1;")).toBe("SELECT 1;");
+    }
   });
 
   test("leave SQL untouched for Configurations without a rewrite", () => {

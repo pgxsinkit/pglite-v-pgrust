@@ -3,8 +3,10 @@
  *
  * A Configuration is an Engine plus the storage and durability settings it is opened with. Phase 1 is
  * memory-only: the data directory lives in the worker's heap and is discarded when the worker ends.
- * The last column is the Reference Engine, wa-sqlite: it is there so the harness can be calibrated
- * against published numbers, and it is never the Baseline of a ratio.
+ * Each Engine gets two columns: its default settings, and the least durable settings it offers —
+ * unlogged tables for the two Postgres builds, journal mode `off` for SQLite. The last two columns
+ * are the Reference Engine, wa-sqlite: it is there so the harness can be calibrated against
+ * published numbers, and it is never the Baseline of a ratio.
  *
  * Every Configuration here is wired up; whether one can run in this browser is decided at runtime by
  * `configurationAvailability` (see `./engines/availability`).
@@ -12,6 +14,14 @@
 
 import type { Configuration, SqlDialect } from "./engines/contract";
 import { configurationDialect } from "./engines/contract";
+
+/**
+ * PGlite's own benchmark-page rewrite, shared by both Postgres builds' unlogged Configurations.
+ *
+ * It reaches every SQL string a Run executes, the untimed setup included — which is the only reason
+ * an unlogged column differs from its logged twin at all, since that is where the tables are made.
+ */
+const UNLOGGED_TABLES = (sql: string): string => sql.replace(/CREATE TABLE/g, "CREATE UNLOGGED TABLE");
 
 /** The column every ratio is taken against. */
 export const BASELINE_CONFIGURATION_ID = "pglite-memory";
@@ -28,7 +38,7 @@ export const CONFIGURATIONS: readonly Configuration[] = [
     label: "PGlite Memory (unlogged)",
     engine: "pglite",
     dataDir: "",
-    modSql: (sql) => sql.replace(/CREATE TABLE/g, "CREATE UNLOGGED TABLE"),
+    modSql: UNLOGGED_TABLES,
   },
   {
     id: "pgrust-memory",
@@ -37,12 +47,30 @@ export const CONFIGURATIONS: readonly Configuration[] = [
     dataDir: "",
   },
   {
-    // SQLite has no unlogged tables, so the `modSql` rewrite that gives PGlite a second column has
-    // no counterpart here: one Configuration is the whole Reference Engine.
+    // The same rewrite as PGlite's unlogged column, on the other Postgres build: pgrust accepts
+    // `CREATE UNLOGGED TABLE` and records the tables as unlogged (`relpersistence = 'u'`).
+    id: "pgrust-memory-unlogged",
+    label: "pgrust Memory (unlogged)",
+    engine: "pgrust",
+    dataDir: "",
+    modSql: UNLOGGED_TABLES,
+  },
+  {
     id: "wasqlite-memory",
     label: "wa-sqlite Memory",
     engine: "wasqlite",
     dataDir: "",
+  },
+  {
+    // SQLite has no unlogged tables, so the `modSql` rewrite that gives each Postgres build a
+    // second column has no counterpart here. Its no-durability twin is a journal mode instead: the
+    // rollback journal is switched off entirely, which is why this is an open option rather than a
+    // SQL rewrite. The default wa-sqlite column above keeps SQLite's own default journal mode.
+    id: "wasqlite-memory-journal-off",
+    label: "wa-sqlite Memory (journal off)",
+    engine: "wasqlite",
+    dataDir: "",
+    options: { wasqlite: { journalMode: "off" } },
   },
 ];
 

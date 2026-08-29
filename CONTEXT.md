@@ -29,12 +29,16 @@ The Configuration every ratio is computed against: PGlite Memory.
 _Avoid_: reference, control column
 
 **Configuration**:
-An Engine plus the storage and durability settings it is opened with; one Configuration is one column of results. Phase 1 has exactly four: PGlite Memory, PGlite Memory (unlogged), pgrust Memory, wa-sqlite Memory.
+An Engine plus the storage and durability settings it is opened with; one Configuration is one column of results. Phase 1 has exactly six: PGlite Memory, PGlite Memory (unlogged), pgrust Memory, pgrust Memory (unlogged), wa-sqlite Memory, wa-sqlite Memory (journal off).
 _Avoid_: setup, mode, variant, column
 
 **Memory Configuration**:
 A Configuration whose data directory lives entirely in the worker's heap and is discarded when the worker ends.
 _Avoid_: in-memory mode, ephemeral, transient
+
+**Unlogged Configuration**:
+A Postgres Memory Configuration whose tables are created UNLOGGED, so the Engine writes no WAL for them; it pays for no durability the Memory Configuration could not deliver anyway. wa-sqlite's twin is the journal-off Configuration (`PRAGMA journal_mode = OFF`).
+_Avoid_: no-WAL mode, fast mode, unsafe mode
 
 **Benchmark**:
 One timed unit within a Suite: a Speedtest script, or one RTT statement. It is the row of the results table.

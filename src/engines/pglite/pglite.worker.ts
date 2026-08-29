@@ -7,6 +7,7 @@
 
 import { PGlite } from "@pgxsinkit/pglite";
 
+import { pgliteOpenOptions } from "../contract";
 import { toErrorPayload } from "../protocol";
 import type { EngineOkResponse, EngineReadyMessage, EngineRequest, EngineResponse } from "../protocol";
 
@@ -32,7 +33,9 @@ function requireEngine(): PGlite {
 async function handle(request: EngineRequest): Promise<void> {
   switch (request.kind) {
     case "open": {
-      const instance = new PGlite(request.dataDir, request.options);
+      // Only the PGlite-shaped settings are handed over: the open options also carry other
+      // Engines' keys, and PGlite has no business seeing them.
+      const instance = new PGlite(request.dataDir, pgliteOpenOptions(request.options));
       await instance.waitReady;
       pg = instance;
       ok(request.id, null);

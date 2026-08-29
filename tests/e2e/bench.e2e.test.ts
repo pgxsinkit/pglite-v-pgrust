@@ -20,7 +20,7 @@ import { RTT_STATEMENTS } from "../../src/suites/rtt/statements";
 import { SPEEDTEST_BENCHMARK_IDS } from "../../src/suites/speedtest/benchmarks";
 import type { SuiteId } from "../../src/suites/types";
 
-/** Build plus two Suites against four Configurations; generous, because it is a real browser. */
+/** Build plus two Suites against six Configurations; generous, because it is a real browser. */
 const LANE_TIMEOUT_MS = 900_000;
 
 const RTT_ITERATIONS = 3;
@@ -39,16 +39,42 @@ const NON_NUMERIC_CELLS: readonly string[] = ["skipped", "failed"];
  */
 const COLUMNS = {
   baseline: 1,
-  unlogged: 2,
-  unloggedRatio: 3,
+  pgliteUnlogged: 2,
+  pgliteUnloggedRatio: 3,
   pgrust: 4,
   pgrustRatio: 5,
-  wasqlite: 6,
-  wasqliteRatio: 7,
+  pgrustUnlogged: 6,
+  pgrustUnloggedRatio: 7,
+  wasqlite: 8,
+  wasqliteRatio: 9,
+  wasqliteJournalOff: 10,
+  wasqliteJournalOffRatio: 11,
 } as const;
 
-/** Benchmark label, four Configurations, and a ratio for each of the three non-Baseline ones. */
-const EXPECTED_CELLS_PER_ROW = 8;
+/** Benchmark label, six Configurations, and a ratio for each of the five non-Baseline ones. */
+const EXPECTED_CELLS_PER_ROW = 12;
+
+interface ColumnPair {
+  readonly label: string;
+  readonly value: number;
+  readonly ratio: number;
+}
+
+/** The two pgrust columns, held to the same rule: a number with a ratio, or an honest non-number. */
+const PGRUST_COLUMNS: readonly ColumnPair[] = [
+  { label: "pgrust Memory", value: COLUMNS.pgrust, ratio: COLUMNS.pgrustRatio },
+  { label: "pgrust Memory (unlogged)", value: COLUMNS.pgrustUnlogged, ratio: COLUMNS.pgrustUnloggedRatio },
+];
+
+/** The two wa-sqlite columns, held to the stricter rule below. */
+const WASQLITE_COLUMNS: readonly ColumnPair[] = [
+  { label: "wa-sqlite Memory", value: COLUMNS.wasqlite, ratio: COLUMNS.wasqliteRatio },
+  {
+    label: "wa-sqlite Memory (journal off)",
+    value: COLUMNS.wasqliteJournalOff,
+    ratio: COLUMNS.wasqliteJournalOffRatio,
+  },
+];
 
 /** Taken from the Suite definitions rather than written down, so a new Benchmark cannot slip past. */
 const EXPECTED_ROW_COUNTS: Readonly<Record<SuiteId, number>> = {
@@ -132,37 +158,42 @@ describe("bench lane", () => {
         .filter(
           (row) =>
             !MS_PATTERN.test(row[COLUMNS.baseline] ?? "") ||
-            !MS_PATTERN.test(row[COLUMNS.unlogged] ?? "") ||
-            !RATIO_PATTERN.test(row[COLUMNS.unloggedRatio] ?? ""),
+            !MS_PATTERN.test(row[COLUMNS.pgliteUnlogged] ?? "") ||
+            !RATIO_PATTERN.test(row[COLUMNS.pgliteUnloggedRatio] ?? ""),
         )
         .map(describeRow);
       expect(offenders).toEqual([]);
     });
 
-    test(`${suiteId}: the pgrust column is milliseconds, skipped or failed in every row`, () => {
-      const rows = rowsFor(suiteId);
-      const offenders = rows
-        .filter((row) => {
-          const value = row[COLUMNS.pgrust] ?? "";
-          const ratio = row[COLUMNS.pgrustRatio] ?? "";
-          if (MS_PATTERN.test(value)) {
-            return !RATIO_PATTERN.test(ratio);
-          }
-          return !NON_NUMERIC_CELLS.includes(value) || ratio !== EMPTY_CELL;
-        })
-        .map(describeRow);
-      expect(offenders).toEqual([]);
-    });
+    // Both pgrust columns need JSPI and the synced wasm assets, so either can legitimately be
+    // `skipped` or `failed` here; what the lane checks is that the cell says so honestly.
+    for (const column of PGRUST_COLUMNS) {
+      test(`${suiteId}: the ${column.label} column is milliseconds, skipped or failed in every row`, () => {
+        const rows = rowsFor(suiteId);
+        const offenders = rows
+          .filter((row) => {
+            const value = row[column.value] ?? "";
+            const ratio = row[column.ratio] ?? "";
+            if (MS_PATTERN.test(value)) {
+              return !RATIO_PATTERN.test(ratio);
+            }
+            return !NON_NUMERIC_CELLS.includes(value) || ratio !== EMPTY_CELL;
+          })
+          .map(describeRow);
+        expect(offenders).toEqual([]);
+      });
+    }
 
     // The Reference Engine is held to a stricter rule than the subjects: it needs no JSPI and no
     // asset that can be missing, so a `skipped` or `failed` cell here is a harness bug, not a
     // browser or a build state. Its whole purpose is to be the column that always has a number.
-    test(`${suiteId}: the wa-sqlite Reference Engine reports milliseconds and a ratio in every row`, () => {
+    test(`${suiteId}: both wa-sqlite Reference columns report milliseconds and a ratio in every row`, () => {
       const rows = rowsFor(suiteId);
       const offenders = rows
-        .filter(
-          (row) =>
-            !MS_PATTERN.test(row[COLUMNS.wasqlite] ?? "") || !RATIO_PATTERN.test(row[COLUMNS.wasqliteRatio] ?? ""),
+        .filter((row) =>
+          WASQLITE_COLUMNS.some(
+            (column) => !MS_PATTERN.test(row[column.value] ?? "") || !RATIO_PATTERN.test(row[column.ratio] ?? ""),
+          ),
         )
         .map(describeRow);
       expect(offenders).toEqual([]);

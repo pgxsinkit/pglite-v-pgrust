@@ -42,21 +42,40 @@ because a tagged tree's manifest can lag its tag, and `v1.1.2` still says `1.1.1
 that would be reporting a version that was never released. The rule is in `src/dependency-version.ts`
 and is unit-tested; a plain semver dependency still reports its manifest version as before.
 
-Two consequences of it being SQLite rather than Postgres:
+One consequence of it being SQLite rather than Postgres: **the RTT Suite's untimed setup is
+dialect-specific.** Its two `CREATE TABLE` statements are run as `INTEGER PRIMARY KEY AUTOINCREMENT`
+rather than `SERIAL`, byte-identical to PGlite's own SQLite variant. That is the only SQL that differs
+anywhere: every timed Benchmark in both Suites is run byte-identically against every Engine.
 
-- **"Unlogged" does not apply.** `CREATE UNLOGGED TABLE` is Postgres-only, so the rewrite that gives
-  PGlite a second column has no wa-sqlite counterpart; the Reference Engine has exactly one column.
-- **The RTT Suite's untimed setup is dialect-specific.** Its two `CREATE TABLE` statements are run
-  as `INTEGER PRIMARY KEY AUTOINCREMENT` rather than `SERIAL`, byte-identical to PGlite's own SQLite
-  variant. That is the only SQL that differs anywhere: every timed Benchmark in both Suites is run
-  byte-identically against every Engine.
+## The columns
+
+Six Configurations, two per Engine: its default settings, and the least durable settings it offers —
+`PGlite Memory`, `PGlite Memory (unlogged)`, `pgrust Memory`, `pgrust Memory (unlogged)`,
+`wa-sqlite Memory`, `wa-sqlite Memory (journal off)`. Every ratio is against `PGlite Memory`, which is
+the only column without one.
+
+The two unlogged columns rewrite `CREATE TABLE` to `CREATE UNLOGGED TABLE` — PGlite's own benchmark
+page does this, and pgrust accepts the same syntax — so the Engine writes no WAL for the Suite's
+tables. In a Memory Configuration the data directory dies with the worker anyway, so the WAL buys no
+durability there; unlogged only stops paying for it. The rewrite is applied on the main thread to
+**every** SQL string a Run executes, the untimed setup included: the RTT Suite creates its two tables
+in its setup and nowhere else, so an unlogged column whose setup was left alone would silently be a
+second copy of the logged column.
+
+`CREATE UNLOGGED TABLE` is Postgres-only, so SQLite's no-durability twin is a journal mode instead: the
+`wa-sqlite Memory (journal off)` column issues `PRAGMA journal_mode = OFF` immediately after `open_v2`,
+before any setup and outside every Measurement, which removes the rollback journal entirely — SQLite
+then cannot roll a statement or a transaction back. The pragma is verified rather than assumed (SQLite
+answers a refused journal change with the mode still in force, not with an error), and the Run fails
+loudly if the read-back is not `off`. The default `wa-sqlite Memory` column keeps SQLite's own default
+journal mode.
 
 ## Results
 
 Committed runs live in [`docs/results/`](docs/results/) — the page's own Markdown export, one file per
 browser and date, produced by `bun run bench`. The first run
 ([2026-08-29, Chromium 152, Linux](docs/results/2026-08-29-chromium-152-linux.md)) is the phase-1
-baseline for all four Configurations.
+baseline for all six Configurations.
 
 Things the harness turned up along the way are written up in [`docs/findings/`](docs/findings/).
 The first — [pgrust needs (statements × message size) memory for multi-statement
@@ -264,7 +283,7 @@ revisions it will look for — floating it would silently ask for builds that ar
 
 | Browser in the lane           | Behaviour                                                                                                                                                                                                                                                   |
 | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Chromium (default)            | JSPI on by default, so all four Configurations run                                                                                                                                                                                                          |
+| Chromium (default)            | JSPI on by default, so all six Configurations run                                                                                                                                                                                                           |
 | Firefox (`--browser firefox`) | The lane sets `javascript.options.wasm_js_promise_integration`; where JSPI is still missing the pgrust column reports `skipped` and the Run continues. Firefox's reduced timer precision quantises Measurements, so its numbers are coarser than Chromium's |
 | WebKit (`--browser webkit`)   | Exits 0 with `WebKit skipped: Playwright's WebKit build has no JSPI yet`, without launching                                                                                                                                                                 |
 

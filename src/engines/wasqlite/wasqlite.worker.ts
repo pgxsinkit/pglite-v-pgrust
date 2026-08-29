@@ -6,6 +6,11 @@
  * has to be opened and driven the way those pages do it: the synchronous wasm build plus
  * `MemoryVFS`, exactly as PGlite's `rtt-worker.js` does.
  *
+ * A Configuration may ask for a non-default journal mode (`options.wasqlite.journalMode`), which is
+ * applied immediately after `open_v2` and before any setup, and is verified rather than assumed:
+ * SQLite answers a rejected `PRAGMA journal_mode` with the mode still in force instead of an error,
+ * so an unverified pragma would silently give the journal-off column the default column's numbers.
+ *
  * The one deliberate difference is what is timed. PGlite's page goes through wa-sqlite's `tag.js`
  * template helper; this worker calls `sqlite3.exec(db, sql, rowCallback)` and collects the decoded
  * rows, because that — SQL in, decoded rows out — is what the PGlite worker's `pg.exec(sql)` does,
@@ -17,6 +22,7 @@ import SQLiteModuleFactory from "wa-sqlite/dist/wa-sqlite.mjs";
 import wasqliteWasmUrl from "wa-sqlite/dist/wa-sqlite.wasm?url";
 import { MemoryVFS } from "wa-sqlite/src/examples/MemoryVFS.js";
 
+import type { WasqliteOpenOptions } from "../contract";
 import { toErrorPayload } from "../protocol";
 import type { EngineOkResponse, EngineReadyMessage, EngineRequest, EngineResponse } from "../protocol";
 
@@ -57,7 +63,35 @@ function requireEngine(): OpenEngine {
   return engine;
 }
 
-async function openEngine(dataDir: string): Promise<OpenEngine> {
+/** Run one SQL string and return the first column of its first row as text, if it produced one. */
+async function firstValue(open: OpenEngine, sql: string): Promise<string | null> {
+  const values: string[] = [];
+  await open.sqlite3.exec(open.db, sql, (row) => {
+    const value = row[0];
+    if (value !== null && value !== undefined) {
+      values.push(String(value));
+    }
+  });
+  return values[0] ?? null;
+}
+
+/**
+ * Force the journal mode this Configuration asked for, and prove SQLite took it.
+ *
+ * `PRAGMA journal_mode = X` returns the mode that is actually in force afterwards, which is not
+ * always the one requested; the follow-up read is what turns "asked" into "is".
+ */
+async function applyJournalMode(open: OpenEngine, journalMode: WasqliteOpenOptions["journalMode"]): Promise<void> {
+  await firstValue(open, `PRAGMA journal_mode = ${journalMode.toUpperCase()};`);
+  const active = await firstValue(open, "PRAGMA journal_mode;");
+  if (active?.toLowerCase() !== journalMode) {
+    throw new Error(
+      `wa-sqlite did not accept PRAGMA journal_mode = ${journalMode.toUpperCase()}; it reports "${active ?? "(no row)"}"`,
+    );
+  }
+}
+
+async function openEngine(dataDir: string, wasqlite: WasqliteOpenOptions | undefined): Promise<OpenEngine> {
   // `SQLiteModuleFactory` is typed as returning `Promise<any>` upstream; keep it opaque here and let
   // `Factory` be the only thing that ever looks inside the Emscripten module.
   const module: object = await SQLiteModuleFactory(MODULE_CONFIG);
@@ -67,7 +101,12 @@ async function openEngine(dataDir: string): Promise<OpenEngine> {
   const vfs = await MemoryVFS.create(MEMORY_VFS_NAME, module);
   sqlite3.vfs_register(vfs, true);
   const db = await sqlite3.open_v2(dataDir === "" ? MEMORY_DATABASE_NAME : dataDir);
-  return { sqlite3, db };
+  const open: OpenEngine = { sqlite3, db };
+  // Before any setup and outside every Measurement: the pragma is part of opening the Engine.
+  if (wasqlite !== undefined) {
+    await applyJournalMode(open, wasqlite.journalMode);
+  }
+  return open;
 }
 
 /**
@@ -86,7 +125,7 @@ async function execute(open: OpenEngine, sql: string): Promise<void> {
 async function handle(request: EngineRequest): Promise<void> {
   switch (request.kind) {
     case "open": {
-      engine = await openEngine(request.dataDir);
+      engine = await openEngine(request.dataDir, request.options?.wasqlite);
       ok(request.id, null);
       return;
     }

@@ -35,9 +35,36 @@ export interface Measurement {
   readonly elapsedMs: number;
 }
 
-/** Engine-open settings that are structured-cloneable and therefore safe to send to the worker. */
+/** The open settings the PGlite constructor understands, and the only ones handed to it. */
+export interface PgliteOpenOptions {
+  readonly relaxedDurability?: boolean;
+}
+
+/**
+ * wa-sqlite's own open settings, applied by its worker between `open_v2` and the untimed setup.
+ *
+ * `journalMode` is a literal rather than a string because the harness offers exactly one
+ * non-default journal mode: `off`, SQLite's no-durability twin of an unlogged Postgres table.
+ */
+export interface WasqliteOpenOptions {
+  readonly journalMode: "off";
+}
+
+/**
+ * Engine-open settings that are structured-cloneable and therefore safe to send to the worker.
+ *
+ * Engine-specific settings live under their Engine's key rather than in one flat bag, so a
+ * Configuration cannot quietly hand wa-sqlite a PGlite knob (or the other way round) and each
+ * worker reads a shape it can type. `relaxedDurability` is PGlite's and predates the split.
+ */
 export interface EngineOpenOptions {
   readonly relaxedDurability?: boolean;
+  readonly wasqlite?: WasqliteOpenOptions;
+}
+
+/** The PGlite-shaped subset of the open settings; `undefined` when there is nothing to pass. */
+export function pgliteOpenOptions(options: EngineOpenOptions | undefined): PgliteOpenOptions | undefined {
+  return options?.relaxedDurability === undefined ? undefined : { relaxedDurability: options.relaxedDurability };
 }
 
 /** An Engine plus the storage and durability settings it is opened with. One column of results. */
@@ -49,8 +76,10 @@ export interface Configuration {
   readonly dataDir: string;
   readonly options?: EngineOpenOptions;
   /**
-   * Applied on the main thread to every Benchmark's SQL before it is handed to the worker, so the
-   * rewrite never lands inside the Measurement window.
+   * Applied on the main thread to every SQL string a Run executes — the untimed setup as well as
+   * every Benchmark — before it is handed to the worker, so the rewrite never lands inside the
+   * Measurement window. The setup matters most: an unlogged Configuration whose `CREATE TABLE`s
+   * were left alone would be the logged Configuration under a different name.
    */
   readonly modSql?: (sql: string) => string;
 }

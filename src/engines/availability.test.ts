@@ -35,16 +35,20 @@ describe("configurationAvailability", () => {
     expect(configurationAvailability(configuration("pglite-memory-unlogged"), WITHOUT_JSPI).available).toBe(true);
   });
 
-  test("keeps the wa-sqlite Reference Engine available everywhere: it needs nothing optional", () => {
-    expect(configurationAvailability(configuration("wasqlite-memory"), WITHOUT_JSPI)).toEqual({ available: true });
-    expect(configurationAvailability(configuration("wasqlite-memory"), WITH_JSPI)).toEqual({ available: true });
+  test("keeps both wa-sqlite Configurations available everywhere: they need nothing optional", () => {
+    for (const id of ["wasqlite-memory", "wasqlite-memory-journal-off"]) {
+      expect(configurationAvailability(configuration(id), WITHOUT_JSPI)).toEqual({ available: true });
+      expect(configurationAvailability(configuration(id), WITH_JSPI)).toEqual({ available: true });
+    }
   });
 
-  test("reports pgrust unavailable without JSPI, naming the browsers that have it", () => {
-    const availability = configurationAvailability(configuration("pgrust-memory"), WITHOUT_JSPI);
-    expect(availability.available).toBe(false);
-    expect(availability.reason).toBe(JSPI_REQUIREMENT_MESSAGE);
-    expect(availability.reason).toContain("Chrome ≥137");
-    expect(availability.reason).toContain("Firefox ≥153");
+  test("reports both pgrust Configurations unavailable without JSPI, naming the browsers that have it", () => {
+    for (const id of ["pgrust-memory", "pgrust-memory-unlogged"]) {
+      const availability = configurationAvailability(configuration(id), WITHOUT_JSPI);
+      expect(availability.available).toBe(false);
+      expect(availability.reason).toBe(JSPI_REQUIREMENT_MESSAGE);
+      expect(availability.reason).toContain("Chrome ≥137");
+      expect(availability.reason).toContain("Firefox ≥153");
+    }
   });
 });

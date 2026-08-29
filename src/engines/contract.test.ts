@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { CONFIGURATIONS, findConfiguration } from "../configurations";
 import type { Configuration, EngineId } from "./contract";
-import { configurationDialect, engineDialect } from "./contract";
+import { configurationDialect, engineDialect, pgliteOpenOptions } from "./contract";
 
 function configuration(id: string): Configuration {
   const found = findConfiguration(id);
@@ -32,6 +32,17 @@ describe("configurationDialect", () => {
     expect(configurationDialect(configuration("pglite-memory"))).toBe("postgres");
     expect(configurationDialect(configuration("pglite-memory-unlogged"))).toBe("postgres");
     expect(configurationDialect(configuration("pgrust-memory"))).toBe("postgres");
+    expect(configurationDialect(configuration("pgrust-memory-unlogged"))).toBe("postgres");
     expect(configurationDialect(configuration("wasqlite-memory"))).toBe("sqlite");
+    expect(configurationDialect(configuration("wasqlite-memory-journal-off"))).toBe("sqlite");
+  });
+});
+
+describe("pgliteOpenOptions", () => {
+  test("hands PGlite its own settings and nothing else", () => {
+    expect(pgliteOpenOptions({ relaxedDurability: true })).toEqual({ relaxedDurability: true });
+    // Another Engine's key must not reach the PGlite constructor, nor turn into an empty object.
+    expect(pgliteOpenOptions({ wasqlite: { journalMode: "off" } })).toBeUndefined();
+    expect(pgliteOpenOptions(undefined)).toBeUndefined();
   });
 });
