@@ -1,0 +1,15 @@
+[tools]
+bun = "1.4"
+node = "lts"
+
+[tasks.bootstrap]
+description = "Install dependencies"
+run = "bun install"
+
+[tasks.dev]
+description = "Run the benchmark app in dev mode"
+run = "bun run dev"
+
+[tasks.validate]
+description = "Run the full check gate"
+run = "bun run validate"

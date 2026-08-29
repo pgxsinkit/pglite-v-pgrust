@@ -1,0 +1,39 @@
+{
+  "name": "pglite-v-pgrust",
+  "version": "0.0.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "check": "bun run typecheck && bun run lint && bun run test",
+    "dev": "vite",
+    "format": "oxfmt --ignore-path .gitignore . --check",
+    "format:write": "oxfmt --ignore-path .gitignore . --write",
+    "hooks:install": "git config core.hooksPath .githooks",
+    "lint": "oxlint --ignore-path .gitignore .",
+    "lint:fix": "oxlint --ignore-path .gitignore --fix .",
+    "prepare": "bun run hooks:install",
+    "preview": "vite preview",
+    "sync:pgrust": "bun scripts/sync-pgrust.ts",
+    "test": "bun test src",
+    "typecheck": "tsc --noEmit",
+    "validate": "bun run format && bun run check"
+  },
+  "dependencies": {
+    "@pgxsinkit/pglite": "0.5.5-pgx.2",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "@vitejs/plugin-react": "^6.1.1",
+    "oxfmt": "^0.65.0",
+    "oxlint": "^1.80.0",
+    "oxlint-tsgolint": "^7.0.2001",
+    "typescript": "^7",
+    "vite": "^8.2.2"
+  }
+}

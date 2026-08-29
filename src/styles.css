@@ -1,0 +1,141 @@
+/* Adapted from PGlite's benchmark page styles. */
+
+:root {
+  color-scheme: light;
+}
+
+body,
+html {
+  font-family:
+    Inter,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #333;
+  background-color: #fff;
+  margin: 1rem 2rem;
+  padding: 0;
+}
+
+h1 {
+  font-size: 1.5rem;
+  margin: 0 0 1rem;
+}
+
+h2 {
+  font-size: 1.2rem;
+  margin: 0 0 0.25rem;
+}
+
+.description {
+  margin: 0 0 1rem;
+  max-width: 60em;
+  color: #555;
+}
+
+.environment {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0 1rem;
+  margin: 0 0 2rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background-color: #fafafa;
+  font-size: 0.9rem;
+}
+
+.environment > div {
+  display: contents;
+}
+
+.environment dt {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.environment dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, Menlo, Monaco, "Cascadia Mono", "Roboto Mono", monospace;
+}
+
+.suite {
+  margin-bottom: 3rem;
+}
+
+.controls {
+  margin-top: 1em;
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+}
+
+.controls textarea {
+  font-family: ui-monospace, Menlo, Monaco, "Cascadia Mono", "Roboto Mono", monospace;
+  font-size: 0.9em;
+}
+
+.copy-status {
+  color: #555;
+}
+
+.error {
+  display: block;
+  min-height: 1.5em;
+  margin: 0.5rem 0;
+  white-space: pre-wrap;
+  color: red;
+}
+
+table {
+  border-collapse: collapse;
+}
+
+td:first-child {
+  min-width: 15em;
+}
+
+td,
+th {
+  border: 1px solid #999;
+  padding: 0.5rem;
+  text-align: left;
+  max-width: 3in;
+  vertical-align: top;
+}
+
+tbody td:not(:first-child) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+th .unit {
+  font-weight: 400;
+  color: #666;
+}
+
+th.ratio,
+td.ratio {
+  color: #555;
+  background-color: #fafafa;
+}
+
+th.active {
+  background-color: #eef6ff;
+}
+
+th.unavailable,
+td.unavailable {
+  color: #999;
+  background-color: #f2f2f2;
+}
+
+th .reason {
+  font-weight: 400;
+  font-size: 0.85em;
+  color: #999;
+}

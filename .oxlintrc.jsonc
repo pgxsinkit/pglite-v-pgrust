@@ -1,0 +1,37 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["eslint", "typescript", "react", "import", "oxc"],
+  "env": {
+    "browser": true,
+    "node": true,
+    "es2026": true,
+  },
+  "rules": {
+    "no-unused-vars": "error",
+    "typescript/ban-ts-comment": "error",
+    "typescript/no-explicit-any": "error",
+    "typescript/no-unused-vars": "error",
+    "typescript/no-deprecated": "error",
+    "typescript/consistent-type-imports": "error",
+    "typescript/no-floating-promises": "error",
+    "typescript/no-misused-promises": [
+      "error",
+      {
+        "checksVoidReturn": {
+          "attributes": false,
+        },
+      },
+    ],
+  },
+  "options": {
+    "denyWarnings": true,
+    "reportUnusedDisableDirectives": "error",
+    "typeAware": true,
+  },
+  "settings": {
+    "react": {
+      "version": "19.2.8",
+    },
+  },
+  "ignorePatterns": ["dist/", "node_modules/", "tmp/", "public/pgrust/"],
+}
