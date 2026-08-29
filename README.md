@@ -51,6 +51,18 @@ Two consequences of it being SQLite rather than Postgres:
   variant. That is the only SQL that differs anywhere: every timed Benchmark in both Suites is run
   byte-identically against every Engine.
 
+## Results
+
+Committed runs live in [`docs/results/`](docs/results/) — the page's own Markdown export, one file per
+browser and date, produced by `bun run bench`. The first run
+([2026-08-29, Chromium 152, Linux](docs/results/2026-08-29-chromium-152-linux.md)) is the phase-1
+baseline for all four Configurations.
+
+Things the harness turned up along the way are written up in [`docs/findings/`](docs/findings/).
+The first — [pgrust needs (statements × message size) memory for multi-statement
+queries](docs/findings/0001-pgrust-multi-statement-memory.md) — is why the pgrust column is currently
+built from a patched branch (see [pgrust assets](#pgrust-assets)).
+
 ## Prerequisites
 
 - [mise](https://mise.jdx.dev) for tool versions, which pins Bun and Node for this repo:
@@ -88,6 +100,12 @@ export carry `RTT iterations: N (non-standard)`, so a shortened Run cannot be mi
 PGlite installs from npm; pgrust does not. Its host JavaScript is vendored into this repo and its
 ~90 MB wasm build assets are copied in from a local pgrust checkout, so the `pgrust Memory` column
 needs one setup step.
+
+> **Which pgrust?** The committed results are built from the pgrust branch
+> `bench/parse-source-text-borrow` (commit `dab0f929`, on top of upstream `438c8c42`), which carries the
+> fix from [finding 0001](docs/findings/0001-pgrust-multi-statement-memory.md); stock pgrust cannot
+> finish the Speedtest Suite on wasm32. `src/vendor/pgrust/VERSION` and the environment header always
+> name the exact commit a run used.
 
 Build the assets in the pgrust checkout:
 
