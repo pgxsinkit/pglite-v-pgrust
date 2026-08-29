@@ -4,11 +4,11 @@ Copied byte-verbatim by `bun run sync:pgrust`. **Do not edit these files by hand
 script against an updated pgrust checkout instead. They are excluded from oxlint and oxfmt so
 they stay identical to their source.
 
-- Commit: `438c8c420b96b23ca61927ba57e608839f86e935`
-- Version: `438c8c420b`
+- Commit: `dab0f92940dcf893d981f766f34baf776b59ed33`
+- Version: `dab0f92940`
 - Source: `/home/anton/dev/tmp/pgrust`
 - Working tree: clean
-- Synced: 2026-08-29T02:28:43.892Z
+- Synced: 2026-08-29T03:19:29.774Z
 
 ## Files
 
