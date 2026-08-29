@@ -13,8 +13,8 @@ export function App(): JSX.Element {
     <main>
       <h1>pglite-v-pgrust</h1>
       <p>
-        The same SQL workloads run against two WebAssembly Postgres builds, timed inside each Engine&apos;s worker.
-        Lower is better; times are milliseconds.
+        The same SQL workloads run against two WebAssembly Postgres builds, with wa-sqlite alongside them as a
+        calibration reference, timed inside each Engine&apos;s worker. Lower is better; times are milliseconds.
       </p>
       <EnvironmentHeader environment={ENVIRONMENT} />
       {SUITES.map((suite) => (

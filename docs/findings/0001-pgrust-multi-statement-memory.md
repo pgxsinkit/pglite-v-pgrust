@@ -79,16 +79,16 @@ the touched crates green.
 
 Result on the same wasm build, same host, one session, scripts 1 → 16 in order:
 
-| script | ms | command tags | errors |
-|---|---:|---:|---:|
-| 1 | 321 | 1 001 | 0 |
-| 2 | 5 150 | 25 003 | 0 |
-| 3 | 4 944 | 25 004 | 0 |
-| 7 | 1 169 | 5 002 | 0 |
-| 9 | 5 405 | 25 002 | 0 |
-| 10 | 6 544 | 25 002 | 0 |
-| 15 | 1 370 | 12 003 | 0 |
-| all others | | | 0 |
+| script     |    ms | command tags | errors |
+| ---------- | ----: | -----------: | -----: |
+| 1          |   321 |        1 001 |      0 |
+| 2          | 5 150 |       25 003 |      0 |
+| 3          | 4 944 |       25 004 |      0 |
+| 7          | 1 169 |        5 002 |      0 |
+| 9          | 5 405 |       25 002 |      0 |
+| 10         | 6 544 |       25 002 |      0 |
+| 15         | 1 370 |       12 003 |      0 |
+| all others |       |              |      0 |
 
 The benchmark's pgrust column is built from this branch; `src/vendor/pgrust/VERSION` records the
 commit, and the stock-`438c8c420b` result above stays on record.

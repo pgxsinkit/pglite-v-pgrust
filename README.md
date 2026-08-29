@@ -34,6 +34,14 @@ It is opened the way PGlite's own benchmark page opens it — the synchronous wa
 `MemoryVFS` — and its timed call is `sqlite3.exec(db, sql, rowCallback)` with the rows collected,
 which is the wa-sqlite equivalent of PGlite's `pg.exec(sql)`: SQL in, decoded rows out.
 
+wa-sqlite is installed **from its GitHub tag**, not from npm: npm only ever received `1.0.0`, while
+upstream has gone on releasing by tag with `dist/` committed. The dependency is pinned to an exact
+tag, `github:rhashimoto/wa-sqlite#v1.1.2`, and `bun.lock` records the commit that resolved to. The
+environment header reports the tag rather than the installed manifest — `wa-sqlite v1.1.2 (github)` —
+because a tagged tree's manifest can lag its tag, and `v1.1.2` still says `1.1.1` inside. Reporting
+that would be reporting a version that was never released. The rule is in `src/dependency-version.ts`
+and is unit-tested; a plain semver dependency still reports its manifest version as before.
+
 Two consequences of it being SQLite rather than Postgres:
 
 - **"Unlogged" does not apply.** `CREATE UNLOGGED TABLE` is Postgres-only, so the rewrite that gives
@@ -222,7 +230,11 @@ Run — is defined in [CONTEXT.md](CONTEXT.md).
   [wa-sqlite benchmarks](https://rhashimoto.github.io/wa-sqlite/demo/benchmarks.html), Copyright 2021
   Roy T. Hashimoto, MIT licensed.
 - [wa-sqlite](https://github.com/rhashimoto/wa-sqlite) itself, Copyright 2021 Roy T. Hashimoto, MIT
-  licensed, is installed from npm at an exact version and used unmodified as the Reference Engine.
+  licensed, is used unmodified as the Reference Engine. It is installed from the exact upstream tag
+  `v1.1.2` rather than from npm, whose latest publication is `1.0.0`; only its committed
+  `dist/wa-sqlite.mjs` + `dist/wa-sqlite.wasm` (the synchronous build) and `src/` are used. The
+  `.d.ts` in `src/engines/wasqlite/` is ours: upstream declares its API and `src/VFS.js` but no
+  longer declares the example VFS modules.
 - They were adapted for Postgres by the [PGlite](https://github.com/electric-sql/pglite) authors
   (ElectricSQL), Apache-2.0 licensed; the SQL and statement lists here are byte-identical ports of
   PGlite's copies.

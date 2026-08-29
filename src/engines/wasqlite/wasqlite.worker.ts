@@ -32,6 +32,9 @@ const MODULE_CONFIG = { locateFile: (): string => wasqliteWasmUrl };
 /** The database name for a Memory Configuration; `MemoryVFS` keys its heap by it. */
 const MEMORY_DATABASE_NAME = "benchmark";
 
+/** The VFS registration name. Nothing else registers one, and it is registered as the default. */
+const MEMORY_VFS_NAME = "memory";
+
 interface OpenEngine {
   readonly sqlite3: SQLiteAPI;
   readonly db: number;
@@ -57,14 +60,12 @@ function requireEngine(): OpenEngine {
 async function openEngine(dataDir: string): Promise<OpenEngine> {
   // `SQLiteModuleFactory` is typed as returning `Promise<any>` upstream; keep it opaque here and let
   // `Factory` be the only thing that ever looks inside the Emscripten module.
-  const module: unknown = await SQLiteModuleFactory(MODULE_CONFIG);
+  const module: object = await SQLiteModuleFactory(MODULE_CONFIG);
   const sqlite3 = SQLite.Factory(module);
-  const vfs = new MemoryVFS();
-  // wa-sqlite's own declarations contradict each other: `VFS.Base.xRead` takes the buffer wrapped in
-  // `{ size, value }`, while `SQLiteVFS.xRead` takes a bare `Uint8Array`. The implementation is the
-  // `VFS.Base` one — it is upstream's own example VFS — so the assertion re-states a fact rather than
-  // hiding one, and this is the only place it is needed.
-  sqlite3.vfs_register(vfs as unknown as SQLiteVFS, true);
+  // 1.1.x builds a VFS through the static `create`, which names it and awaits its readiness; the
+  // 1.0.0 `new MemoryVFS()` form no longer exists.
+  const vfs = await MemoryVFS.create(MEMORY_VFS_NAME, module);
+  sqlite3.vfs_register(vfs, true);
   const db = await sqlite3.open_v2(dataDir === "" ? MEMORY_DATABASE_NAME : dataDir);
   return { sqlite3, db };
 }
