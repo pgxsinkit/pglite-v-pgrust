@@ -70,7 +70,8 @@ inspect the `E` message fields and the guest stderr memory dump.
 
 ## Fix
 
-Branch `bench/parse-source-text-borrow` in the pgrust checkout (commit `dab0f929`, 15 files, +64/−35):
+Branch [`bench/parse-source-text-borrow`](https://github.com/pgxsinkit/pgrust/tree/bench/parse-source-text-borrow)
+(commit `dab0f929`, 15 files, +64/−35):
 `parse_analyze_*` and the `analyze_seams` seams take `source_text: &'mcx str` and store the borrow;
 the six callers whose text genuinely outlives the message (extended-query plansource, `PREPARE`,
 `PerformCursorOpen`, SPI plans, SQL-function inlining ×2) make their one arena copy themselves via a
@@ -91,7 +92,9 @@ Result on the same wasm build, same host, one session, scripts 1 → 16 in order
 | all others |       |              |      0 |
 
 The benchmark's pgrust column is built from this branch; `src/vendor/pgrust/VERSION` records the
-commit, and the stock-`438c8c420b` result above stays on record.
+commit, and the stock-`438c8c420b` result above stays on record. The compiled assets are published as
+this repo's `pgrust-assets/dab0f929` release, whose notes name that branch and commit as the complete
+corresponding source (`bun run sync:pgrust --release latest`).
 
 ## Status
 

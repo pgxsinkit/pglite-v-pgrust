@@ -97,17 +97,47 @@ export carry `RTT iterations: N (non-standard)`, so a shortened Run cannot be mi
 
 ## pgrust assets
 
-PGlite installs from npm; pgrust does not. Its host JavaScript is vendored into this repo and its
-~90 MB wasm build assets are copied in from a local pgrust checkout, so the `pgrust Memory` column
-needs one setup step.
+PGlite installs from npm; pgrust does not. Its host JavaScript is vendored into this repo and
+committed; its ~87 MB of wasm build assets are not, so the `pgrust Memory` column needs one setup
+step.
 
 > **Which pgrust?** The committed results are built from the pgrust branch
-> `bench/parse-source-text-borrow` (commit `dab0f929`, on top of upstream `438c8c42`), which carries the
-> fix from [finding 0001](docs/findings/0001-pgrust-multi-statement-memory.md); stock pgrust cannot
-> finish the Speedtest Suite on wasm32. `src/vendor/pgrust/VERSION` and the environment header always
-> name the exact commit a run used.
+> [`bench/parse-source-text-borrow`](https://github.com/pgxsinkit/pgrust/tree/bench/parse-source-text-borrow)
+> (commit `dab0f929`, on top of upstream `438c8c42`), which carries the fix from
+> [finding 0001](docs/findings/0001-pgrust-multi-statement-memory.md); stock pgrust cannot finish the
+> Speedtest Suite on wasm32. `src/vendor/pgrust/VERSION` and the environment header always name the
+> exact commit a run used.
 
-Build the assets in the pgrust checkout:
+### Download a published build
+
+```sh
+bun run sync:pgrust --release latest                     # newest published build
+bun run sync:pgrust --release pgrust-assets/dab0f929     # a specific one
+```
+
+That needs no pgrust checkout and no Rust toolchain. The assets are published as **GitHub Release
+assets of this repo**, one release per pgrust commit, tagged `pgrust-assets/<short-commit>` — the tag
+names the exact pgrust the binaries were built from. The download is ~18 MB gzipped and unpacks to
+~87 MB in `public/pgrust/`; every file is verified against the release's `SHA256SUMS` **and** against
+the unpacked sizes and digests in its `manifest.json` before anything is written, and a release that
+fails to verify leaves `public/pgrust/` untouched.
+
+The release also updates `src/vendor/pgrust/VERSION` and the assets section of
+`src/vendor/pgrust/SOURCE.md`, but deliberately **not** the vendored host JavaScript — releases carry
+binaries, and the JS is committed here. If the two end up on different pgrust commits the sync says
+so loudly rather than letting the column measure one commit's JS against another's wasm.
+
+pgrust is AGPL-3.0. Each release names the complete corresponding source — repository, branch,
+commit, upstream base and the exact build recipe — in its notes and in `manifest.json`, and
+`SOURCE.md` keeps that record in the tree.
+
+`PGLITE_V_PGRUST_RELEASE_REPO` reads the releases of a different repo;
+`PGLITE_V_PGRUST_RELEASE_BASE_URL` fetches the assets from a directory URL instead of GitHub (the
+release list has no meaning there, so `latest` needs a real tag).
+
+### Building your own
+
+Build the assets in a pgrust checkout:
 
 ```sh
 cd ../pgrust
@@ -126,8 +156,11 @@ PGRUST_DIR=/path/to/pgrust bun run sync:pgrust   # non-sibling checkout
 The script copies `pgrust-wasi.js`, `wiresession.js`, `wire.js`, `LICENSE` and `NOTICE` into
 `src/vendor/pgrust/` (committed), writes the synced commit to `src/vendor/pgrust/VERSION` — which the
 environment header reports — and copies `postgres.wasm`, `vfs.img` and `vfs.json` into `public/pgrust/`
-(gitignored, ~90 MB). Run it again after every pgrust rebuild. Without the assets the app still builds
-and the PGlite columns still run; the pgrust column reports the fetch failure in its header.
+(gitignored, ~87 MB). Run it again after every pgrust rebuild. This is also the only way to update the
+vendored host JS: `--release` never touches it.
+
+Without the assets the app still builds and the PGlite columns still run; the pgrust column reports
+the fetch failure in its header.
 
 ### Browser requirements
 
@@ -159,16 +192,39 @@ Scripts are check-default: a bare verb never mutates files.
 | `bun run lint`          | oxlint (type-aware), check only                  |
 | `bun run lint:fix`      | oxlint with autofixes applied                    |
 | `bun run typecheck`     | `tsc --noEmit`                                   |
-| `bun run test`          | `bun test src` — unit tests only                 |
+| `bun run test`          | `bun test src scripts` — unit tests only         |
 | `bun run check`         | typecheck + lint + test                          |
 | `bun run validate`      | format + check; installed as the pre-commit hook |
 | `bun run bench`         | Drive the page headlessly and capture the tables |
 | `bun run test:e2e`      | `bun test tests/e2e` — the bench lane, asserted  |
 | `bun run validate:full` | validate + test:e2e                              |
-| `bun run sync:pgrust`   | Vendor pgrust's host JS and copy its wasm assets |
+| `bun run sync:pgrust`   | Vendor pgrust's host JS; fetch or copy assets    |
+| `bun run pgrust:bundle` | Package `public/pgrust/` for a release           |
 
 `bun install` runs `prepare`, which points `core.hooksPath` at `.githooks/`, so `bun run validate`
 gates every commit.
+
+### Publishing pgrust assets
+
+`bun run pgrust:bundle` turns whatever is in `public/pgrust/` into a publishable release:
+
+```sh
+bun run pgrust:bundle          # --help lists every field of the source statement
+```
+
+It reads the pgrust commit from `src/vendor/pgrust/VERSION` and `SOURCE.md` (and refuses a `-dirty`
+one — a build from a working tree no one can check out has no publishable source), gzips
+`postgres.wasm` and `vfs.img` at level 9, and writes `tmp/pgrust-assets/<tag with the slash
+flattened>/`: the three assets, `SHA256SUMS`, `manifest.json` and `NOTES.md`. The tag is
+`pgrust-assets/<first 8 of the commit>`.
+
+The rest of the source statement — branch, upstream base, cargo profile, target, toolchain, the
+`initdb` that minted `vfs.img` — cannot be read off the built files, so it comes from flags whose
+defaults describe the assets currently in tree. Anything rebuilt differently must say so on the
+command line; a guess in an AGPL source statement is worse than no statement.
+
+Nothing is uploaded. The script prints the `gh release create` line — tag, title, `--notes-file
+NOTES.md`, the five files — for a human to read `NOTES.md` and then run.
 
 ### Headless lane
 
@@ -258,7 +314,11 @@ Run — is defined in [CONTEXT.md](CONTEXT.md).
   PGlite's copies.
 - [pgrust](https://github.com/malisper/pgrust) is AGPL-3.0 licensed. Its browser host JavaScript is
   vendored byte-verbatim under `src/vendor/pgrust/`, together with its `LICENSE` and `NOTICE`; the
-  synced commit is recorded in `src/vendor/pgrust/SOURCE.md`.
+  synced commit is recorded in `src/vendor/pgrust/SOURCE.md`. The wasm binaries published from this
+  repo's `pgrust-assets/*` releases are built from
+  [`pgxsinkit/pgrust@bench/parse-source-text-borrow`](https://github.com/pgxsinkit/pgrust/tree/bench/parse-source-text-borrow),
+  and each release names its exact commit, upstream base and build recipe as the complete
+  corresponding source.
 
 ## License
 
