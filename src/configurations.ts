@@ -3,6 +3,9 @@
  *
  * A Configuration is an Engine plus the storage and durability settings it is opened with. Phase 1 is
  * memory-only: the data directory lives in the worker's heap and is discarded when the worker ends.
+ *
+ * Every Configuration here is wired up; whether one can run in this browser is decided at runtime by
+ * `configurationAvailability` (see `./engines/availability`).
  */
 
 import type { Configuration } from "./engines/contract";
@@ -16,7 +19,6 @@ export const CONFIGURATIONS: readonly Configuration[] = [
     label: "PGlite Memory",
     engine: "pglite",
     dataDir: "",
-    available: true,
   },
   {
     id: "pglite-memory-unlogged",
@@ -24,15 +26,12 @@ export const CONFIGURATIONS: readonly Configuration[] = [
     engine: "pglite",
     dataDir: "",
     modSql: (sql) => sql.replace(/CREATE TABLE/g, "CREATE UNLOGGED TABLE"),
-    available: true,
   },
   {
     id: "pgrust-memory",
     label: "pgrust Memory",
     engine: "pgrust",
     dataDir: "",
-    available: false,
-    unavailableReason: "pgrust engine not wired yet",
   },
 ];
 

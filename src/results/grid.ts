@@ -13,6 +13,8 @@ export interface GridColumn {
   readonly label: string;
   readonly available: boolean;
   readonly unavailableReason?: string;
+  /** True when this column's Run failed, as opposed to never having been attempted. */
+  readonly failed?: boolean;
 }
 
 /** Cell values keyed by `cellKey(columnId, rowId)`; a missing key means "not measured yet". */
@@ -31,6 +33,11 @@ export function cellKey(columnId: string, rowId: string): string {
 
 export function readCell(cells: GridCells, columnId: string, rowId: string): number | undefined {
   return cells[cellKey(columnId, rowId)];
+}
+
+/** What an unmeasured cell of an unavailable column says: a failed Run is not a skipped one. */
+export function unmeasuredCellText(column: GridColumn): string {
+  return column.failed === true ? "failed" : "skipped";
 }
 
 /** Whether a column gets a ratio column after it (every column except the baseline). */

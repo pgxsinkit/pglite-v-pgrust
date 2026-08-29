@@ -3,3 +3,4 @@ dist
 tmp
 public/pgrust/
 .buildcache
+.playwright-mcp/

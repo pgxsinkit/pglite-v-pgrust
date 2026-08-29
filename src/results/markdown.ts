@@ -5,7 +5,7 @@
 
 import { EMPTY_CELL, formatMs, formatRatio } from "./format";
 import type { ResultsGrid } from "./grid";
-import { hasRatioColumn, readCell } from "./grid";
+import { hasRatioColumn, readCell, unmeasuredCellText } from "./grid";
 
 export interface MarkdownExportOptions {
   readonly title: string;
@@ -38,7 +38,7 @@ function bodyRowCells(grid: ResultsGrid, rowId: string, rowLabel: string): reado
   for (const column of grid.columns) {
     const value = readCell(grid.cells, column.id, rowId);
     if (!column.available && value === undefined) {
-      cells.push("skipped");
+      cells.push(unmeasuredCellText(column));
       if (hasRatioColumn(grid, column.id)) {
         cells.push(EMPTY_CELL);
       }

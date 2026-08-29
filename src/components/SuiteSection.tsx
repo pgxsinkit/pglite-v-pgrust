@@ -2,8 +2,8 @@ import type { JSX } from "react";
 import { useState } from "react";
 
 import { BASELINE_CONFIGURATION_ID, BASELINE_CONFIGURATION_LABEL, CONFIGURATIONS } from "../configurations";
+import { configurationAvailability } from "../engines/availability";
 import type { Configuration } from "../engines/contract";
-import { isEngineWired } from "../engines/registry";
 import type { EnvironmentInfo } from "../environment";
 import { formatEnvironmentLine } from "../environment";
 import type { GridCells, GridColumn, ResultsGrid } from "../results/grid";
@@ -18,21 +18,32 @@ export interface SuiteSectionProps {
   readonly environment: EnvironmentInfo;
 }
 
-/** A Configuration is runnable only if it is marked available and its Engine has a worker wired up. */
-function toColumn(configuration: Configuration): GridColumn {
-  const available = configuration.available && isEngineWired(configuration.engine);
-  if (available) {
+/**
+ * A column is unavailable either because this browser cannot run the Engine, or because its Run has
+ * already failed. Either way the reason is shown in the header and the Run moves on to the next
+ * Configuration rather than abandoning the whole table.
+ */
+function toColumn(configuration: Configuration, environment: EnvironmentInfo, failure: string | undefined): GridColumn {
+  if (failure !== undefined) {
+    return {
+      id: configuration.id,
+      label: configuration.label,
+      available: false,
+      unavailableReason: failure,
+      failed: true,
+    };
+  }
+  const availability = configurationAvailability(configuration, environment);
+  if (availability.available) {
     return { id: configuration.id, label: configuration.label, available: true };
   }
   return {
     id: configuration.id,
     label: configuration.label,
     available: false,
-    unavailableReason: configuration.unavailableReason ?? `Engine "${configuration.engine}" is not wired up yet`,
+    unavailableReason: availability.reason ?? "unavailable",
   };
 }
-
-const COLUMNS: readonly GridColumn[] = CONFIGURATIONS.map(toColumn);
 
 function describeError(error: unknown): string {
   if (error instanceof Error) {
@@ -48,37 +59,52 @@ export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Ele
   const [activeColumnId, setActiveColumnId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  /** Per-Configuration Run failures, keyed by Configuration id. */
+  const [failures, setFailures] = useState<Readonly<Record<string, string>>>({});
 
   const grid: ResultsGrid = {
     rows: suite.benchmarks.map((benchmark) => ({ id: benchmark.id, label: benchmark.label })),
-    columns: COLUMNS,
+    columns: CONFIGURATIONS.map((configuration) => toColumn(configuration, environment, failures[configuration.id])),
     baselineColumnId: BASELINE_CONFIGURATION_ID,
     cells,
   };
+
+  function recordFailure(configuration: Configuration, message: string): void {
+    setFailures((previous) => ({ ...previous, [configuration.id]: message }));
+    const line = `${configuration.label}: ${message}`;
+    setError((previous) => (previous === null ? line : `${previous}\n\n${line}`));
+  }
 
   async function start(): Promise<void> {
     setRunning(true);
     setError(null);
     setCopyStatus(null);
     setCells({});
+    setFailures({});
     try {
       for (const configuration of CONFIGURATIONS) {
-        if (!configuration.available || !isEngineWired(configuration.engine)) {
+        if (!configurationAvailability(configuration, environment).available) {
           continue;
         }
         setActiveColumnId(configuration.id);
-        // One Run per Configuration: a fresh worker, a fresh Engine, then the timed Benchmarks.
-        await runSuite({
-          suite,
-          configuration,
-          setupSql,
-          onResult: (result) => {
-            setCells((previous) => ({
-              ...previous,
-              [cellKey(result.configurationId, result.benchmarkId)]: result.elapsedMs,
-            }));
-          },
-        });
+        try {
+          // One Run per Configuration: a fresh worker, a fresh Engine, then the timed Benchmarks.
+          await runSuite({
+            suite,
+            configuration,
+            setupSql,
+            onResult: (result) => {
+              setCells((previous) => ({
+                ...previous,
+                [cellKey(result.configurationId, result.benchmarkId)]: result.elapsedMs,
+              }));
+            },
+          });
+        } catch (thrown) {
+          // One Engine failing to open or to run must not cost the other Configurations their Run;
+          // record it against this column and carry on.
+          recordFailure(configuration, describeError(thrown));
+        }
       }
     } catch (thrown) {
       setError(describeError(thrown));

@@ -2,8 +2,9 @@
  * The Engine seam.
  *
  * An Engine is one of the WebAssembly Postgres builds under comparison. Everything the benchmark
- * app knows about an Engine is expressed here, so adding a second Engine (pgrust) is purely
- * additive: a new worker module plus a new entry in `engineWorkerFactories`.
+ * app knows about an Engine is expressed here, so adding another Engine stays additive: a new
+ * worker module plus a new entry in `engineWorkerFactories`. Whether a Configuration can run in
+ * this browser is not stored here — it is computed at runtime in `./availability`.
  */
 
 /** The WebAssembly Postgres builds under comparison. */
@@ -32,10 +33,6 @@ export interface Configuration {
    * rewrite never lands inside the Measurement window.
    */
   readonly modSql?: (sql: string) => string;
-  /** False when the Engine is not wired up yet; the column is rendered skipped rather than run. */
-  readonly available: boolean;
-  /** Present only when `available` is false. */
-  readonly unavailableReason?: string;
 }
 
 /**

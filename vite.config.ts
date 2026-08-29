@@ -28,7 +28,7 @@ function readPgliteVersion(): string {
   return "unknown";
 }
 
-/** Written by `bun run sync:pgrust`; absent until the pgrust Engine is wired up. */
+/** Written by `bun run sync:pgrust`; absent until pgrust has been vendored. */
 function readPgrustVersion(): string {
   const versionFile = resolve(rootDir, "src/vendor/pgrust/VERSION");
   if (!existsSync(versionFile)) {
@@ -54,6 +54,9 @@ export default defineConfig({
   build: {
     // The Speedtest Suite inlines ~11 MB of byte-identical SQL; the size is the point, not a warning.
     chunkSizeWarningLimit: 20_000,
+    // Both Engines need current engines anyway (pgrust needs JSPI); downlevelling the vendored
+    // pgrust host JS would only risk changing what is being benchmarked.
+    target: "esnext",
   },
   server: {
     port: 5580,

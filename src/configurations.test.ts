@@ -21,14 +21,11 @@ describe("phase-1 Configurations", () => {
   test("take their ratios against PGlite Memory", () => {
     expect(BASELINE_CONFIGURATION_ID).toBe("pglite-memory");
     expect(BASELINE_CONFIGURATION_LABEL).toBe("PGlite Memory");
-    expect(findConfiguration(BASELINE_CONFIGURATION_ID)?.available).toBe(true);
+    expect(findConfiguration(BASELINE_CONFIGURATION_ID)?.engine).toBe("pglite");
   });
 
-  test("mark pgrust unavailable with a reason until its Engine is wired up", () => {
-    const pgrust = findConfiguration("pgrust-memory");
-    expect(pgrust?.engine).toBe("pgrust");
-    expect(pgrust?.available).toBe(false);
-    expect(pgrust?.unavailableReason).toBe("pgrust engine not wired yet");
+  test("give the pgrust column its own Engine", () => {
+    expect(findConfiguration("pgrust-memory")?.engine).toBe("pgrust");
   });
 
   test("rewrite CREATE TABLE for the unlogged Configuration exactly as PGlite does", () => {

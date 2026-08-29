@@ -2,7 +2,7 @@ import type { JSX } from "react";
 
 import { formatMs, formatRatio } from "../results/format";
 import type { ResultsGrid } from "../results/grid";
-import { hasRatioColumn, readCell } from "../results/grid";
+import { hasRatioColumn, readCell, unmeasuredCellText } from "../results/grid";
 
 export interface ResultsTableProps {
   readonly grid: ResultsGrid;
@@ -43,7 +43,7 @@ export function ResultsTable({ grid, baselineLabel, activeColumnId }: ResultsTab
                 <ValueCells
                   key={column.id}
                   className={className}
-                  text={column.available || value !== undefined ? formatMs(value) : "skipped"}
+                  text={column.available || value !== undefined ? formatMs(value) : unmeasuredCellText(column)}
                   ratio={hasRatioColumn(grid, column.id) ? formatRatio(value, baseline) : null}
                 />
               );

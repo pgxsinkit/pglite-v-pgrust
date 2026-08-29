@@ -33,5 +33,7 @@
       "version": "19.2.8",
     },
   },
-  "ignorePatterns": ["dist/", "node_modules/", "tmp/", "public/pgrust/"],
+  // `src/vendor/` holds byte-verbatim pgrust sources (see src/vendor/pgrust/SOURCE.md); they
+  // must never be rewritten or held to this repo's rules.
+  "ignorePatterns": ["dist/", "node_modules/", "tmp/", "public/pgrust/", "src/vendor/"],
 }

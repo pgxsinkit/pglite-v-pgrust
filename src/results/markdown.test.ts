@@ -12,7 +12,7 @@ const GRID: ResultsGrid = {
   columns: [
     { id: "pglite-memory", label: "PGlite Memory", available: true },
     { id: "pglite-memory-unlogged", label: "PGlite Memory (unlogged)", available: true },
-    { id: "pgrust-memory", label: "pgrust Memory", available: false, unavailableReason: "pgrust engine not wired yet" },
+    { id: "pgrust-memory", label: "pgrust Memory", available: false, unavailableReason: "pgrust requires JSPI" },
   ],
   baselineColumnId: "pglite-memory",
   cells: {
@@ -70,6 +70,21 @@ describe("toMarkdown", () => {
   test("renders unmeasured cells of an available Configuration as the placeholder", () => {
     const partial = toMarkdown({ ...GRID, cells: {} }, OPTIONS);
     expect(partial.split("\n")[6]).toBe("| Test 1: 1000 INSERTs | – | – | – | skipped | – |");
+  });
+
+  test("distinguishes a failed Run from a skipped Configuration", () => {
+    const failed = toMarkdown(
+      {
+        ...GRID,
+        columns: GRID.columns.map((column) =>
+          column.id === "pgrust-memory"
+            ? { ...column, available: false, unavailableReason: "boom", failed: true }
+            : column,
+        ),
+      },
+      OPTIONS,
+    );
+    expect(failed.split("\n")[6]).toBe("| Test 1: 1000 INSERTs | 16.000 | 8.000 | 0.50× | failed | – |");
   });
 
   test("escapes pipes in row labels", () => {
