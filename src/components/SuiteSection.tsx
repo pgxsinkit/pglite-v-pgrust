@@ -1,9 +1,15 @@
 import type { JSX } from "react";
 import { useState } from "react";
 
-import { BASELINE_CONFIGURATION_ID, BASELINE_CONFIGURATION_LABEL, CONFIGURATIONS } from "../configurations";
+import {
+  BASELINE_CONFIGURATION_DIALECT,
+  BASELINE_CONFIGURATION_ID,
+  BASELINE_CONFIGURATION_LABEL,
+  CONFIGURATIONS,
+} from "../configurations";
 import { configurationAvailability } from "../engines/availability";
 import type { Configuration } from "../engines/contract";
+import { configurationDialect } from "../engines/contract";
 import type { EnvironmentInfo } from "../environment";
 import { formatEnvironmentLine } from "../environment";
 import type { GridCells, GridColumn, ResultsGrid } from "../results/grid";
@@ -60,7 +66,7 @@ function describeError(error: unknown): string {
 }
 
 export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Element {
-  const [setupSql, setSetupSql] = useState(suite.defaultSetupSql);
+  const [setupSql, setSetupSql] = useState(() => suite.initialSetupFor(BASELINE_CONFIGURATION_DIALECT));
   const [cells, setCells] = useState<GridCells>({});
   const [runState, setRunState] = useState<RunState>("idle");
   const [activeColumnId, setActiveColumnId] = useState<string | null>(null);
@@ -68,6 +74,15 @@ export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Ele
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
   /** Per-Configuration Run failures, keyed by Configuration id. */
   const [failures, setFailures] = useState<Readonly<Record<string, string>>>({});
+
+  /**
+   * The untimed setup a Configuration's Run is opened with: whatever is in the textarea when the
+   * Suite offers one, and otherwise the Suite's own setup in that Engine's dialect — which is the
+   * only place a SQLite Engine needs different SQL from a Postgres one.
+   */
+  function setupFor(configuration: Configuration): string {
+    return suite.editableSetup ? setupSql : suite.initialSetupFor(configurationDialect(configuration));
+  }
 
   const running = runState === "running";
   /** The Suite as run: identical to `suite` unless `?rttIterations=N` reduced the RTT Suite. */
@@ -111,7 +126,7 @@ export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Ele
           await runSuite({
             suite: runnableSuite,
             configuration,
-            setupSql,
+            setupSql: setupFor(configuration),
             onResult: (result) => {
               setCells((previous) => ({
                 ...previous,

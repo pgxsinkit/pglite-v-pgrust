@@ -1,5 +1,7 @@
 /** Suite, Benchmark and aggregation vocabulary (see CONTEXT.md). */
 
+import type { SqlDialect } from "../engines/contract";
+
 /** How the per-iteration Measurements of one Benchmark collapse to the number in the cell. */
 export type AggregationStrategy = "mean" | "trimmed-mean";
 
@@ -18,8 +20,14 @@ export interface Suite {
   readonly title: string;
   readonly description: string;
   readonly benchmarks: readonly Benchmark[];
-  /** SQL run untimed on a freshly opened Engine, before the first Benchmark. */
-  readonly defaultSetupSql: string;
+  /**
+   * SQL run untimed on a freshly opened Engine, before the first Benchmark.
+   *
+   * The Benchmarks themselves are dialect-neutral and are run byte-identically against every
+   * Engine; only this setup has to be spelled differently for a SQLite Engine, so it is the one
+   * place a dialect is asked for.
+   */
+  initialSetupFor(dialect: SqlDialect): string;
   /** Whether the UI offers the setup SQL as an editable preamble. */
   readonly editableSetup: boolean;
   /** How many times each Benchmark is executed per Run. */

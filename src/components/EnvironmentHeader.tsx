@@ -25,6 +25,10 @@ export function EnvironmentHeader({ environment }: EnvironmentHeaderProps): JSX.
           <dd>{environment.pgrustVersion}</dd>
         </div>
         <div>
+          <dt>wa-sqlite</dt>
+          <dd>{environment.wasqliteVersion}</dd>
+        </div>
+        <div>
           <dt>JSPI</dt>
           <dd>{environment.jspiAvailable ? "available" : "unavailable"}</dd>
         </div>

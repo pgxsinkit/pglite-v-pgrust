@@ -1,10 +1,11 @@
 /**
  * Whether a Configuration can run here, decided at runtime rather than pinned in a flag.
  *
- * Both Engines are wired up, so "available" is no longer a property of the Configuration — it is a
+ * Every Engine is wired up, so "available" is no longer a property of the Configuration — it is a
  * property of the browser the page is open in. pgrust's `--stdio-wire` session suspends the guest
  * on its blocking stdin read, which needs JS Promise Integration; without JSPI the Engine cannot
- * run at all and its column is reported unavailable instead of failing mid-Run.
+ * run at all and its column is reported unavailable instead of failing mid-Run. PGlite and the
+ * wa-sqlite Reference Engine have no such requirement and are available everywhere.
  */
 
 import type { Configuration, EngineId } from "./contract";

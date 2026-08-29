@@ -18,7 +18,8 @@ export const SPEEDTEST_SUITE: Suite = {
     label: SPEEDTEST_BENCHMARK_LABELS[id],
     sql: SPEEDTEST_SQL[id],
   })),
-  defaultSetupSql: SPEEDTEST_DEFAULT_PREAMBLE,
+  // The preamble is a comment, not DDL: the same string for every dialect.
+  initialSetupFor: () => SPEEDTEST_DEFAULT_PREAMBLE,
   editableSetup: true,
   iterations: 1,
   aggregation: "mean",

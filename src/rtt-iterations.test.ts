@@ -19,7 +19,7 @@ const SPEEDTEST_SHAPED_SUITE: Suite = {
   title: "Speedtest Suite",
   description: "",
   benchmarks: [{ id: "1", label: "Test 1", sql: "SELECT 1;" }],
-  defaultSetupSql: "",
+  initialSetupFor: () => "",
   editableSetup: true,
   iterations: 1,
   aggregation: "mean",
@@ -64,7 +64,8 @@ describe("applyRttIterations", () => {
     const overridden = applyRttIterations(RTT_SUITE, 3);
     expect(overridden.iterations).toBe(3);
     expect(overridden.benchmarks).toBe(RTT_SUITE.benchmarks);
-    expect(overridden.defaultSetupSql).toBe(RTT_SUITE.defaultSetupSql);
+    expect(overridden.initialSetupFor("postgres")).toBe(RTT_SUITE.initialSetupFor("postgres"));
+    expect(overridden.initialSetupFor("sqlite")).toBe(RTT_SUITE.initialSetupFor("sqlite"));
     expect(overridden.aggregation).toBe(RTT_SUITE.aggregation);
   });
 

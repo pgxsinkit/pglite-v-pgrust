@@ -7,16 +7,20 @@ import { describeRttIterations, readRttIterationsOverride } from "./rtt-iteratio
 
 declare const __PGLITE_VERSION__: string;
 declare const __PGRUST_VERSION__: string;
+declare const __WASQLITE_VERSION__: string;
 
 /** Substituted by Vite `define`; absent under `bun test`, hence the `typeof` guards. */
 const PGLITE_VERSION = typeof __PGLITE_VERSION__ === "string" ? __PGLITE_VERSION__ : "unknown";
 const PGRUST_VERSION = typeof __PGRUST_VERSION__ === "string" ? __PGRUST_VERSION__ : "not synced";
+const WASQLITE_VERSION = typeof __WASQLITE_VERSION__ === "string" ? __WASQLITE_VERSION__ : "unknown";
 
 export interface EnvironmentInfo {
   readonly userAgent: string;
   readonly pgliteVersion: string;
   /** The pgrust commit written by `bun run sync:pgrust`, or "not synced". */
   readonly pgrustVersion: string;
+  /** The Reference Engine's npm version, read from `wa-sqlite`'s own manifest at build time. */
+  readonly wasqliteVersion: string;
   /** Whether the JavaScript Promise Integration proposal is available (pgrust's wasm build wants it). */
   readonly jspiAvailable: boolean;
   /**
@@ -40,6 +44,7 @@ export function readEnvironment(): EnvironmentInfo {
     userAgent: typeof navigator === "undefined" ? "unknown" : navigator.userAgent,
     pgliteVersion: PGLITE_VERSION,
     pgrustVersion: PGRUST_VERSION,
+    wasqliteVersion: WASQLITE_VERSION,
     jspiAvailable: detectJspi(),
     rttIterationsOverride: readRttIterationsOverride(),
   };
@@ -50,6 +55,7 @@ export function formatEnvironmentLine(environment: EnvironmentInfo): string {
   const parts = [
     `@pgxsinkit/pglite ${environment.pgliteVersion}`,
     `pgrust ${environment.pgrustVersion}`,
+    `wa-sqlite ${environment.wasqliteVersion}`,
     `JSPI ${environment.jspiAvailable ? "available" : "unavailable"}`,
     environment.userAgent,
   ];

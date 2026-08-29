@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
 import { buildRttBenchmarks, RTT_SUITE } from "./index";
-import { RTT_BENCHMARK_LABELS, RTT_INITIAL_SETUP, RTT_ITERATIONS, RTT_STATEMENTS } from "./statements";
+import {
+  RTT_BENCHMARK_LABELS,
+  RTT_INITIAL_SETUP_POSTGRES,
+  RTT_INITIAL_SETUP_SQLITE,
+  RTT_ITERATIONS,
+  RTT_STATEMENTS,
+  rttInitialSetupFor,
+} from "./statements";
 
 describe("RTT Suite definition", () => {
   test("has twelve statements", () => {
@@ -25,10 +32,24 @@ describe("RTT Suite definition", () => {
     expect(RTT_STATEMENTS[10]).toBe(`UPDATE t2 SET a = '${"a".repeat(10000)}' WHERE id = 1;`);
   });
 
-  test("reproduces PGlite's initial setup byte for byte", () => {
-    expect(RTT_INITIAL_SETUP).toBe(
+  test("reproduces PGlite's initial setup byte for byte, in both dialects", () => {
+    expect(RTT_INITIAL_SETUP_POSTGRES).toBe(
       "\n  CREATE TABLE t1 (id SERIAL PRIMARY KEY NOT NULL, a INTEGER);\n  CREATE TABLE t2 (id SERIAL PRIMARY KEY NOT NULL, a TEXT);\n",
     );
+    expect(RTT_INITIAL_SETUP_SQLITE).toBe(
+      "\n  CREATE TABLE t1 (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, a INTEGER);\n  CREATE TABLE t2 (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, a TEXT);\n",
+    );
+  });
+
+  test("hands each dialect its own setup, and nothing else", () => {
+    expect(rttInitialSetupFor("postgres")).toBe(RTT_INITIAL_SETUP_POSTGRES);
+    expect(rttInitialSetupFor("sqlite")).toBe(RTT_INITIAL_SETUP_SQLITE);
+    expect(RTT_INITIAL_SETUP_SQLITE).not.toBe(RTT_INITIAL_SETUP_POSTGRES);
+  });
+
+  test("keeps the twelve timed statements shared between the dialects", () => {
+    // The dialect knob is the setup and nothing more: no Benchmark is rewritten for SQLite.
+    expect(RTT_SUITE.benchmarks.map((benchmark) => benchmark.sql)).toEqual([...RTT_STATEMENTS]);
   });
 
   test("runs 100 iterations per Benchmark and reports a trimmed mean", () => {
@@ -61,6 +82,7 @@ describe("RTT Suite definition", () => {
 
   test("runs its setup untimed rather than offering an editable preamble", () => {
     expect(RTT_SUITE.editableSetup).toBe(false);
-    expect(RTT_SUITE.defaultSetupSql).toBe(RTT_INITIAL_SETUP);
+    expect(RTT_SUITE.initialSetupFor("postgres")).toBe(RTT_INITIAL_SETUP_POSTGRES);
+    expect(RTT_SUITE.initialSetupFor("sqlite")).toBe(RTT_INITIAL_SETUP_SQLITE);
   });
 });

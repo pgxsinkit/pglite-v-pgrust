@@ -1,14 +1,34 @@
 /**
  * The Engine seam.
  *
- * An Engine is one of the WebAssembly Postgres builds under comparison. Everything the benchmark
- * app knows about an Engine is expressed here, so adding another Engine stays additive: a new
- * worker module plus a new entry in `engineWorkerFactories`. Whether a Configuration can run in
- * this browser is not stored here — it is computed at runtime in `./availability`.
+ * An Engine is one of the WebAssembly databases under comparison. Everything the benchmark app
+ * knows about an Engine is expressed here, so adding another Engine stays additive: a new worker
+ * module plus a new entry in `engineWorkerFactories`. Whether a Configuration can run in this
+ * browser is not stored here — it is computed at runtime in `./availability`.
  */
 
-/** The WebAssembly Postgres builds under comparison. */
-export type EngineId = "pglite" | "pgrust";
+/**
+ * The WebAssembly databases under comparison. `pglite` and `pgrust` are the subjects; `wasqlite` is
+ * the Reference Engine, present only so the numbers can be calibrated against published ones.
+ */
+export type EngineId = "pglite" | "pgrust" | "wasqlite";
+
+/**
+ * The SQL dialect an Engine speaks. The Benchmarks themselves are dialect-neutral; only a Suite's
+ * untimed initial setup differs, which is why the knob lives on the Engine and is read by the Suite
+ * (`Suite.initialSetupFor`) rather than by anything inside the Measurement window.
+ */
+export type SqlDialect = "postgres" | "sqlite";
+
+const ENGINE_DIALECTS: Readonly<Record<EngineId, SqlDialect>> = {
+  pglite: "postgres",
+  pgrust: "postgres",
+  wasqlite: "sqlite",
+};
+
+export function engineDialect(engine: EngineId): SqlDialect {
+  return ENGINE_DIALECTS[engine];
+}
 
 /** The wall time, taken inside the Engine's worker, of handing one SQL string to the Engine. */
 export interface Measurement {
@@ -60,4 +80,9 @@ export function toOpenSettings(config: Configuration): { dataDir: string; option
 /** Apply a Configuration's SQL rewrite, if it has one. */
 export function applyModSql(config: Configuration, sql: string): string {
   return config.modSql ? config.modSql(sql) : sql;
+}
+
+/** The dialect this Configuration's Engine speaks. */
+export function configurationDialect(config: Configuration): SqlDialect {
+  return engineDialect(config.engine);
 }

@@ -2,7 +2,8 @@
 
 A browser benchmark that runs the same SQL workloads against [PGlite](https://pglite.dev) and
 [pgrust](https://github.com/pgxsinkit/pgrust) — two WebAssembly Postgres builds — and reports the
-timings side by side.
+timings side by side, with [wa-sqlite](https://github.com/rhashimoto/wa-sqlite) alongside them as a
+calibration reference.
 
 Two Suites are ported unchanged from PGlite's own benchmark pages:
 
@@ -18,6 +19,29 @@ Results are shown per Configuration (an Engine plus its storage and durability s
 column against the `PGlite Memory` baseline and a "Copy as Markdown" button per Suite.
 
 Times are milliseconds; lower is better.
+
+## The Reference Engine
+
+PGlite and pgrust are the subjects of the comparison. wa-sqlite is not: it is the **Reference
+Engine**, and its `wa-sqlite Memory` column exists so the harness itself can be checked. Both Suites
+originate in wa-sqlite's benchmarks and both wa-sqlite and PGlite publish their own numbers for
+them, so a wa-sqlite column that lands where those pages say it should is evidence that this
+harness measures what they measure — and a column that lands somewhere else is evidence that it
+does not. It is never the baseline of a ratio; like every other Configuration it is reported
+against `PGlite Memory`.
+
+It is opened the way PGlite's own benchmark page opens it — the synchronous wasm build with
+`MemoryVFS` — and its timed call is `sqlite3.exec(db, sql, rowCallback)` with the rows collected,
+which is the wa-sqlite equivalent of PGlite's `pg.exec(sql)`: SQL in, decoded rows out.
+
+Two consequences of it being SQLite rather than Postgres:
+
+- **"Unlogged" does not apply.** `CREATE UNLOGGED TABLE` is Postgres-only, so the rewrite that gives
+  PGlite a second column has no wa-sqlite counterpart; the Reference Engine has exactly one column.
+- **The RTT Suite's untimed setup is dialect-specific.** Its two `CREATE TABLE` statements are run
+  as `INTEGER PRIMARY KEY AUTOINCREMENT` rather than `SERIAL`, byte-identical to PGlite's own SQLite
+  variant. That is the only SQL that differs anywhere: every timed Benchmark in both Suites is run
+  byte-identically against every Engine.
 
 ## Prerequisites
 
@@ -158,14 +182,16 @@ revisions it will look for — floating it would silently ask for builds that ar
 
 | Browser in the lane           | Behaviour                                                                                                                                                                                                                                                   |
 | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Chromium (default)            | JSPI on by default, so all three Configurations run                                                                                                                                                                                                         |
+| Chromium (default)            | JSPI on by default, so all four Configurations run                                                                                                                                                                                                          |
 | Firefox (`--browser firefox`) | The lane sets `javascript.options.wasm_js_promise_integration`; where JSPI is still missing the pgrust column reports `skipped` and the Run continues. Firefox's reduced timer precision quantises Measurements, so its numbers are coarser than Chromium's |
 | WebKit (`--browser webkit`)   | Exits 0 with `WebKit skipped: Playwright's WebKit build has no JSPI yet`, without launching                                                                                                                                                                 |
 
 `bun run test:e2e` drives the same lane from `bun test` (Chromium, both Suites, RTT at three
 iterations) and asserts the shape of the result rather than any timing: an environment line, a
-millisecond figure and a ratio in every PGlite cell, and `skipped`, `failed` or a millisecond figure
-in every pgrust cell. It is deliberately outside `test`, `check` and `validate` — `bun run
+millisecond figure and a ratio in every PGlite and wa-sqlite cell, and `skipped`, `failed` or a
+millisecond figure in every pgrust cell. The Reference Engine is held to the stricter rule on
+purpose — it needs no JSPI and no asset that can be missing, so a cell without a number in it is a
+harness bug rather than a browser or a build state. It is deliberately outside `test`, `check` and `validate` — `bun run
 validate:full` is `validate` plus this lane.
 
 Everything in `src/` is TypeScript with one sanctioned exception: `src/vendor/pgrust/*.js` is copied
@@ -176,8 +202,10 @@ the `ignorePatterns` of both `.oxlintrc.jsonc` and `.oxfmtrc.jsonc`. The `.d.ts`
 ours, hand-written, and are what makes the vendored JavaScript type-check under `allowJs: false`.
 
 Adding an Engine is additive: write `src/engines/<engine>/<engine>.worker.ts` against the message
-protocol in `src/engines/protocol.ts`, register its worker factory in `src/engines/registry.ts`, and
-add its Configuration to `src/configurations.ts`. Whether a Configuration can run is decided at
+protocol in `src/engines/protocol.ts`, register its worker factory in `src/engines/registry.ts`, give
+it a SQL dialect in `src/engines/contract.ts`, and add its Configuration to `src/configurations.ts`.
+The dialect is read only by `Suite.initialSetupFor(dialect)`, which is what a Suite's untimed setup
+comes from; no Benchmark is ever rewritten for an Engine. Whether a Configuration can run is decided at
 runtime in `src/engines/availability.ts` rather than stored on the Configuration; a Configuration that
 cannot run, or whose Run fails, greys out its own column and leaves the others alone.
 
@@ -193,6 +221,8 @@ Run — is defined in [CONTEXT.md](CONTEXT.md).
 - The benchmark workloads originate in the
   [wa-sqlite benchmarks](https://rhashimoto.github.io/wa-sqlite/demo/benchmarks.html), Copyright 2021
   Roy T. Hashimoto, MIT licensed.
+- [wa-sqlite](https://github.com/rhashimoto/wa-sqlite) itself, Copyright 2021 Roy T. Hashimoto, MIT
+  licensed, is installed from npm at an exact version and used unmodified as the Reference Engine.
 - They were adapted for Postgres by the [PGlite](https://github.com/electric-sql/pglite) authors
   (ElectricSQL), Apache-2.0 licensed; the SQL and statement lists here are byte-identical ports of
   PGlite's copies.

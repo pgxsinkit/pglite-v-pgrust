@@ -8,11 +8,27 @@
  * constructions, which are reproduced rather than inlined so the sizes stay legible.
  */
 
-/** Run untimed on a freshly opened Engine before the first Benchmark. */
-export const RTT_INITIAL_SETUP = `
+import type { SqlDialect } from "../../engines/contract";
+
+/** Run untimed on a freshly opened Postgres Engine before the first Benchmark. */
+export const RTT_INITIAL_SETUP_POSTGRES = `
   CREATE TABLE t1 (id SERIAL PRIMARY KEY NOT NULL, a INTEGER);
   CREATE TABLE t2 (id SERIAL PRIMARY KEY NOT NULL, a TEXT);
 `;
+
+/**
+ * The same setup for a SQLite Engine, byte-identical to PGlite's `initalSetupSQLite`. Only the two
+ * `CREATE TABLE` statements differ; every timed statement below is shared with Postgres unchanged.
+ */
+export const RTT_INITIAL_SETUP_SQLITE = `
+  CREATE TABLE t1 (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, a INTEGER);
+  CREATE TABLE t2 (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, a TEXT);
+`;
+
+/** The initial setup in the dialect the Engine under Run speaks. */
+export function rttInitialSetupFor(dialect: SqlDialect): string {
+  return dialect === "sqlite" ? RTT_INITIAL_SETUP_SQLITE : RTT_INITIAL_SETUP_POSTGRES;
+}
 
 /** The twelve single-statement CRUD queries, in PGlite's order. */
 export const RTT_STATEMENTS: readonly string[] = [

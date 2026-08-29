@@ -16,9 +16,10 @@ function configuration(id: string): Configuration {
 }
 
 describe("engineRequiresJspi", () => {
-  test("is true for pgrust and false for PGlite", () => {
+  test("is true for pgrust and false for PGlite and wa-sqlite", () => {
     expect(engineRequiresJspi("pgrust")).toBe(true);
     expect(engineRequiresJspi("pglite")).toBe(false);
+    expect(engineRequiresJspi("wasqlite")).toBe(false);
   });
 });
 
@@ -32,6 +33,11 @@ describe("configurationAvailability", () => {
   test("keeps the PGlite Configurations available without JSPI", () => {
     expect(configurationAvailability(configuration("pglite-memory"), WITHOUT_JSPI).available).toBe(true);
     expect(configurationAvailability(configuration("pglite-memory-unlogged"), WITHOUT_JSPI).available).toBe(true);
+  });
+
+  test("keeps the wa-sqlite Reference Engine available everywhere: it needs nothing optional", () => {
+    expect(configurationAvailability(configuration("wasqlite-memory"), WITHOUT_JSPI)).toEqual({ available: true });
+    expect(configurationAvailability(configuration("wasqlite-memory"), WITH_JSPI)).toEqual({ available: true });
   });
 
   test("reports pgrust unavailable without JSPI, naming the browsers that have it", () => {

@@ -13,6 +13,7 @@ import { WorkerEngineRunner } from "./worker-runner";
 const engineWorkerFactories: Readonly<Record<EngineId, WorkerFactory>> = {
   pglite: () => new Worker(new URL("./pglite/pglite.worker.ts", import.meta.url), { type: "module" }),
   pgrust: () => new Worker(new URL("./pgrust/pgrust.worker.ts", import.meta.url), { type: "module" }),
+  wasqlite: () => new Worker(new URL("./wasqlite/wasqlite.worker.ts", import.meta.url), { type: "module" }),
 };
 
 export function createEngineRunner(engine: EngineId): EngineRunner {

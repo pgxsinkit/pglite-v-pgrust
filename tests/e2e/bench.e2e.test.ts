@@ -20,7 +20,7 @@ import { RTT_STATEMENTS } from "../../src/suites/rtt/statements";
 import { SPEEDTEST_BENCHMARK_IDS } from "../../src/suites/speedtest/benchmarks";
 import type { SuiteId } from "../../src/suites/types";
 
-/** Build plus two Suites against three Configurations; generous, because it is a real browser. */
+/** Build plus two Suites against four Configurations; generous, because it is a real browser. */
 const LANE_TIMEOUT_MS = 900_000;
 
 const RTT_ITERATIONS = 3;
@@ -32,6 +32,23 @@ const RATIO_PATTERN = /^\d+\.\d{2}×$/;
 
 /** How a column that never produced a Measurement reports itself. */
 const NON_NUMERIC_CELLS: readonly string[] = ["skipped", "failed"];
+
+/**
+ * Cell positions in a body row: the Baseline has no ratio column, every other Configuration does.
+ * Written out because an off-by-one here would silently assert about the wrong column.
+ */
+const COLUMNS = {
+  baseline: 1,
+  unlogged: 2,
+  unloggedRatio: 3,
+  pgrust: 4,
+  pgrustRatio: 5,
+  wasqlite: 6,
+  wasqliteRatio: 7,
+} as const;
+
+/** Benchmark label, four Configurations, and a ratio for each of the three non-Baseline ones. */
+const EXPECTED_CELLS_PER_ROW = 8;
 
 /** Taken from the Suite definitions rather than written down, so a new Benchmark cannot slip past. */
 const EXPECTED_ROW_COUNTS: Readonly<Record<SuiteId, number>> = {
@@ -84,6 +101,7 @@ describe("bench lane", () => {
     expect(report.skipped).toBe(false);
     expect(report.environmentLine).toContain("@pgxsinkit/pglite");
     expect(report.environmentLine).toContain("pgrust");
+    expect(report.environmentLine).toContain("wa-sqlite");
     expect(report.environmentLine).toContain("JSPI");
     expect(report.environmentLine).toContain(describeRttIterations(RTT_ITERATIONS));
   });
@@ -101,14 +119,21 @@ describe("bench lane", () => {
   });
 
   for (const suiteId of SUITE_IDS) {
-    test(`${suiteId}: both PGlite Configurations report milliseconds and a ratio in every row`, () => {
+    test(`${suiteId}: has one row per Benchmark and one cell per Configuration and ratio`, () => {
       const rows = rowsFor(suiteId);
       expect(rows).toHaveLength(EXPECTED_ROW_COUNTS[suiteId]);
+      const offenders = rows.filter((row) => row.length !== EXPECTED_CELLS_PER_ROW).map(describeRow);
+      expect(offenders).toEqual([]);
+    });
 
+    test(`${suiteId}: both PGlite Configurations report milliseconds and a ratio in every row`, () => {
+      const rows = rowsFor(suiteId);
       const offenders = rows
         .filter(
           (row) =>
-            !MS_PATTERN.test(row[1] ?? "") || !MS_PATTERN.test(row[2] ?? "") || !RATIO_PATTERN.test(row[3] ?? ""),
+            !MS_PATTERN.test(row[COLUMNS.baseline] ?? "") ||
+            !MS_PATTERN.test(row[COLUMNS.unlogged] ?? "") ||
+            !RATIO_PATTERN.test(row[COLUMNS.unloggedRatio] ?? ""),
         )
         .map(describeRow);
       expect(offenders).toEqual([]);
@@ -118,13 +143,27 @@ describe("bench lane", () => {
       const rows = rowsFor(suiteId);
       const offenders = rows
         .filter((row) => {
-          const value = row[4] ?? "";
-          const ratio = row[5] ?? "";
+          const value = row[COLUMNS.pgrust] ?? "";
+          const ratio = row[COLUMNS.pgrustRatio] ?? "";
           if (MS_PATTERN.test(value)) {
             return !RATIO_PATTERN.test(ratio);
           }
           return !NON_NUMERIC_CELLS.includes(value) || ratio !== EMPTY_CELL;
         })
+        .map(describeRow);
+      expect(offenders).toEqual([]);
+    });
+
+    // The Reference Engine is held to a stricter rule than the subjects: it needs no JSPI and no
+    // asset that can be missing, so a `skipped` or `failed` cell here is a harness bug, not a
+    // browser or a build state. Its whole purpose is to be the column that always has a number.
+    test(`${suiteId}: the wa-sqlite Reference Engine reports milliseconds and a ratio in every row`, () => {
+      const rows = rowsFor(suiteId);
+      const offenders = rows
+        .filter(
+          (row) =>
+            !MS_PATTERN.test(row[COLUMNS.wasqlite] ?? "") || !RATIO_PATTERN.test(row[COLUMNS.wasqliteRatio] ?? ""),
+        )
         .map(describeRow);
       expect(offenders).toEqual([]);
     });

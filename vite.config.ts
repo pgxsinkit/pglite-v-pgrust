@@ -9,13 +9,14 @@ import { defineConfig } from "vite";
 const rootDir = dirname(fileURLToPath(import.meta.url));
 
 /**
- * The Engine version stamped into the environment header. `@pgxsinkit/pglite` does not export
- * `./package.json`, so resolve its entry point and read the manifest beside it.
+ * An Engine version stamped into the environment header, read from the package's own manifest.
+ * Neither `@pgxsinkit/pglite` nor `wa-sqlite` exports `./package.json`, so resolve the entry point
+ * and walk up to the manifest beside it.
  */
-function readPgliteVersion(): string {
+function readDependencyVersion(specifier: string, manifestFromEntry: string): string {
   try {
-    const entry = createRequire(import.meta.url).resolve("@pgxsinkit/pglite");
-    const manifest: unknown = JSON.parse(readFileSync(resolve(dirname(entry), "../package.json"), "utf8"));
+    const entry = createRequire(import.meta.url).resolve(specifier);
+    const manifest: unknown = JSON.parse(readFileSync(resolve(dirname(entry), manifestFromEntry), "utf8"));
     if (typeof manifest === "object" && manifest !== null && "version" in manifest) {
       const version = (manifest as { version: unknown }).version;
       if (typeof version === "string") {
@@ -41,8 +42,10 @@ function readPgrustVersion(): string {
 export default defineConfig({
   plugins: [react()],
   define: {
-    __PGLITE_VERSION__: JSON.stringify(readPgliteVersion()),
+    __PGLITE_VERSION__: JSON.stringify(readDependencyVersion("@pgxsinkit/pglite", "../package.json")),
     __PGRUST_VERSION__: JSON.stringify(readPgrustVersion()),
+    // `wa-sqlite`'s entry point is `src/sqlite-api.js`; its manifest is the directory above.
+    __WASQLITE_VERSION__: JSON.stringify(readDependencyVersion("wa-sqlite", "../package.json")),
   },
   // PGlite ships its own wasm/data assets and must not be pre-bundled.
   optimizeDeps: {
@@ -54,7 +57,7 @@ export default defineConfig({
   build: {
     // The Speedtest Suite inlines ~11 MB of byte-identical SQL; the size is the point, not a warning.
     chunkSizeWarningLimit: 20_000,
-    // Both Engines need current engines anyway (pgrust needs JSPI); downlevelling the vendored
+    // Every Engine needs a current browser anyway (pgrust needs JSPI); downlevelling the vendored
     // pgrust host JS would only risk changing what is being benchmarked.
     target: "esnext",
   },

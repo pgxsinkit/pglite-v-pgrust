@@ -1,6 +1,6 @@
 # pglite-v-pgrust
 
-A browser benchmark that runs the same SQL workloads against PGlite and pgrust (both WebAssembly Postgres builds) and reports the timings side by side.
+A browser benchmark that runs the same SQL workloads against PGlite and pgrust (both WebAssembly Postgres builds), with wa-sqlite as a calibration reference, and reports the timings side by side.
 
 ## Language
 
@@ -17,11 +17,19 @@ Twelve single-statement CRUD queries each executed 100 times; reports the per-st
 _Avoid_: latency suite, CRUD suite
 
 **Engine**:
-One of the two WebAssembly Postgres builds under comparison: PGlite or pgrust.
+One of the WebAssembly databases under comparison: PGlite, pgrust, or wa-sqlite. PGlite and pgrust are the subjects; wa-sqlite is the Reference Engine.
 _Avoid_: database, backend, target, implementation
 
+**Reference Engine**:
+An Engine included only so results can be calibrated against numbers published elsewhere (wa-sqlite's and PGlite's own benchmark pages); never the Baseline of a ratio.
+_Avoid_: control, sanity engine
+
+**Baseline**:
+The Configuration every ratio is computed against: PGlite Memory.
+_Avoid_: reference, control column
+
 **Configuration**:
-An Engine plus the storage and durability settings it is opened with; one Configuration is one column of results. Phase 1 has exactly three: PGlite Memory, PGlite Memory (unlogged), pgrust Memory.
+An Engine plus the storage and durability settings it is opened with; one Configuration is one column of results. Phase 1 has exactly four: PGlite Memory, PGlite Memory (unlogged), pgrust Memory, wa-sqlite Memory.
 _Avoid_: setup, mode, variant, column
 
 **Memory Configuration**:
