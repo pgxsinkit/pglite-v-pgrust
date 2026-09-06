@@ -33,7 +33,7 @@ The Configuration every ratio is computed against: PGlite Memory.
 _Avoid_: reference, control column
 
 **Configuration**:
-An Engine plus the storage and durability settings it is opened with; one Configuration is one column of results. Phase 1 has exactly ten: PGlite Memory, PGlite Memory (unlogged), PGlite OPFS repacked (relaxed), PGlite OPFS repacked (strict), pgrust Memory, pgrust Memory (unlogged), pgrust Threads Memory, pgrust Threads Memory (broker, pre-release store), wa-sqlite Memory, wa-sqlite Memory (journal off).
+An Engine plus the storage and durability settings it is opened with; one Configuration is one column of results. Phase 1 has exactly twelve: PGlite Memory, PGlite Memory (unlogged), PGlite OPFS repacked (relaxed), PGlite OPFS repacked (strict), pgrust Memory, pgrust Memory (unlogged), pgrust Threads Memory, pgrust Threads Memory (broker, pre-release store), pgrust Threads OPFS repacked (relaxed, pre-release store), pgrust Threads OPFS repacked (strict, pre-release store), wa-sqlite Memory, wa-sqlite Memory (journal off).
 _Avoid_: setup, mode, variant, column
 
 **Memory Configuration**:
@@ -45,15 +45,19 @@ A Configuration whose data directory lives in a Store rather than the worker's h
 _Avoid_: persistent mode, OPFS mode, disk configuration
 
 **Store**:
-The package a Storage Configuration opens its data directory through, and the durability it is opened with. Phase 1 has one: `@pgxsinkit/pglite-opfs-repacked`, which packs a whole Postgres data directory into four exclusively owned OPFS files, in either its relaxed or its strict durability. The pgrust Threads broker column runs the same package's Broker on its memory port, which is a filesystem seam rather than a Store: nothing leaves the worker's heap, so that column is a Memory Configuration.
+The package a Storage Configuration opens its data directory through, and the durability it is opened with. Phase 1 has one: `@pgxsinkit/pglite-opfs-repacked`, which packs a whole Postgres data directory into four exclusively owned OPFS files, in either its relaxed or its strict durability. Four columns open it: two through PGlite's own filesystem and two through the pgrust Threads Broker on its OPFS port. The same Broker on its **memory** port is a filesystem seam rather than a Store — nothing leaves the worker's heap — so that column is a Memory Configuration.
 _Avoid_: VFS, filesystem, backend, persistence layer
 
+**Port**:
+Where the Broker's one store physically lives: `memory`, the coordinator worker's heap, which dies with it; or `opfs`, one dedicated OPFS directory the coordinator owns in full. The port is what decides whether a broker column is a Memory or a Storage Configuration, and it is chosen once when the store is opened. A property of a Configuration, never of the Broker.
+_Avoid_: storage mode, backend, medium
+
 **Broker**:
-The pgrust Threads filesystem seam in which one repacked store lives alone in a dedicated coordinator worker and every guest instance reaches it over a SharedArrayBuffer channel, blocking in `Atomics.wait`. Its alternative is the copy seam, where every worker builds its own filesystem from its own copy of the packed image. A property of two columns' Configurations, never of the Engine.
+The pgrust Threads filesystem seam in which one repacked store lives alone in a dedicated coordinator worker and every guest instance reaches it over a SharedArrayBuffer channel, blocking in `Atomics.wait`. Its alternative is the copy seam, where every worker builds its own filesystem from its own copy of the packed image. A property of a Configuration, never of the Engine: three of the four pgrust Threads columns are on the Broker, one is on the copy seam.
 _Avoid_: shared FS, coordinator mode, broker store
 
 **Pre-release store**:
-A build of the Store package taken from a pgxsinkit checkout rather than from npm, because the code a column needs exists in no published version. Phase 1 has one, loaded by the broker column alone; it is named in that column's own label and its commit is recorded in `src/vendor/pgrust/SOURCE.md`. The two OPFS repacked columns never use one.
+A build of the Store package taken from a pgxsinkit checkout rather than from npm, because the code a column needs exists in no published version. Phase 1 has one, loaded by the three Broker columns alone; it is named in each of their labels and its commit is recorded in `src/vendor/pgrust/SOURCE.md`. The two PGlite OPFS repacked columns never use one: they run the published dependency.
 _Avoid_: dev build, unreleased store, local store
 
 **Unlogged Configuration**:

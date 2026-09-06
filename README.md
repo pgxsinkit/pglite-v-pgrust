@@ -67,14 +67,18 @@ rule lives beside wa-sqlite's git-tag rule in `src/dependency-version.ts` and is
 
 ## The columns
 
-Ten Configurations. Eight are **Memory Configurations**, two per Engine. For PGlite, pgrust and
+Twelve Configurations. Eight are **Memory Configurations**, two per Engine. For PGlite, pgrust and
 wa-sqlite the pair is the Engine's default settings and the least durable settings it offers:
 `PGlite Memory`, `PGlite Memory (unlogged)`, `pgrust Memory`, `pgrust Memory (unlogged)`,
 `wa-sqlite Memory`, `wa-sqlite Memory (journal off)`. For the pgrust threads build the pair is its
 two filesystem seams instead: `pgrust Threads Memory` and
-`pgrust Threads Memory (broker, pre-release store)`. Two are **Storage Configurations** on the OPFS
-repacked store: `PGlite OPFS repacked (relaxed)` and `PGlite OPFS repacked (strict)`. Every ratio is
-against `PGlite Memory`, which is the only column without one.
+`pgrust Threads Memory (broker, pre-release store)`. Four are **Storage Configurations**, and they
+are one store measured through two Engines: `PGlite OPFS repacked (relaxed)` and
+`PGlite OPFS repacked (strict)` reach it through PGlite, and
+`pgrust Threads OPFS repacked (relaxed, pre-release store)` and
+`pgrust Threads OPFS repacked (strict, pre-release store)` reach the same store through the threads
+build's broker coordinator. Every ratio is against `PGlite Memory`, which is the only column without
+one.
 
 The two unlogged columns rewrite `CREATE TABLE` to `CREATE UNLOGGED TABLE` — PGlite's own benchmark
 page does this, and pgrust accepts the same syntax — so the Engine writes no WAL for the Suite's
@@ -94,7 +98,7 @@ journal mode.
 
 ### The pgrust Threads columns
 
-The two `pgrust Threads` columns are the **same pgrust commit as the two `pgrust` columns**, built
+The four `pgrust Threads` columns are the **same pgrust commit as the two `pgrust` columns**, built
 for `wasm32-wasip1-threads` instead of `wasm32-wasip1`. That is one source tree, two targets, one
 packed data directory image — the environment header names a single pgrust commit because there is
 only one.
@@ -106,31 +110,35 @@ own `wasi` `thread-spawn` import out of a prewarmed pool of workers, over one sh
 `WebAssembly.Memory` — so the same blocking `read(0)` simply blocks that worker in `Atomics.wait`,
 the way it blocks under a native host's pipe. **No JSPI anywhere.** What it needs instead is
 `SharedArrayBuffer` and a shared memory, and therefore [cross-origin
-isolation](#cross-origin-isolation); where a browser withholds those the two columns are greyed out
+isolation](#cross-origin-isolation); where a browser withholds those all four columns are greyed out
 with that reason, exactly as the pgrust columns are without JSPI, and every other column runs.
 
-The two differ in one thing: where the guest's files live.
+What the four differ in is where the guest's files live.
 
-| Column                                              | `--fs`   | The data directory                                                                                                    |
-| --------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------- |
-| `pgrust Threads Memory`                             | `copy`   | Every worker builds its own VFS from its own copy of the packed image — the host's own default                        |
-| `pgrust Threads Memory (broker, pre-release store)` | `broker` | One repacked store in a dedicated coordinator worker, which every instance reaches over a `SharedArrayBuffer` channel |
+| Column                                                      | `--fs`   | Store port | The data directory                                                                                                    |
+| ----------------------------------------------------------- | -------- | ---------- | --------------------------------------------------------------------------------------------------------------------- |
+| `pgrust Threads Memory`                                     | `copy`   | —          | Every worker builds its own VFS from its own copy of the packed image — the host's own default                        |
+| `pgrust Threads Memory (broker, pre-release store)`         | `broker` | `memory`   | One repacked store in a dedicated coordinator worker, which every instance reaches over a `SharedArrayBuffer` channel |
+| `pgrust Threads OPFS repacked (relaxed, pre-release store)` | `broker` | `opfs`     | That same coordinator's store, in one dedicated OPFS directory instead of its heap; `relaxed` durability              |
+| `pgrust Threads OPFS repacked (strict, pre-release store)`  | `broker` | `opfs`     | The same again, `strict`: every mutating broker request is followed by a store-wide arena-before-metadata sync        |
 
-Both keep the data directory in memory and both die with their workers, so both are Memory
+The first two keep the data directory in memory and die with their workers, so they are Memory
 Configurations: nothing survives a Run, and the broker column's store is on the memory port
-precisely so that stays true.
+precisely so that stays true. The last two are [Storage
+Configurations](#the-opfs-repacked-columns) on the same store the `PGlite OPFS repacked` columns
+run on.
 
-**`pre-release store` is not decoration.** The broker column loads a build of
+**`pre-release store` is not decoration.** The three broker columns load a build of
 `@pgxsinkit/pglite-opfs-repacked` whose sync broker and WASI filesystem adapter are in **no
 published version** of that package: `bun run sync:pgrust` copies it out of a pgxsinkit checkout and
 records the exact commit in `src/vendor/pgrust/SOURCE.md`. The two `PGlite OPFS repacked` columns
 are a different thing entirely — they run the published package this repo depends on. Without that
-bundle the broker column reports it missing and everything else runs.
+bundle the three broker columns report it missing and everything else runs.
 
 ### The OPFS repacked columns
 
-The two `PGlite OPFS repacked` columns are the first whose data directory is real storage rather than
-the worker's heap. They run PGlite on
+The four OPFS repacked columns are the ones whose data directory is real storage rather than the
+worker's heap. Two of them run PGlite on
 [`@pgxsinkit/pglite-opfs-repacked`](https://www.npmjs.com/package/@pgxsinkit/pglite-opfs-repacked), a
 PGlite filesystem that packs a whole Postgres data directory into exactly four exclusively owned OPFS
 files — an arena, two metadata logs and an activation record — instead of giving every virtual file
@@ -140,16 +148,29 @@ its own synchronous access handle the way PGlite's native OPFS filesystem does. 
 before metadata on every awaited host sync, so a successful query has a stable boundary behind it.
 Same Engine, same SQL, same store, one option.
 
-**Neither column persists anything between Runs.** Each Run empties its store's OPFS directory before
-opening it and removes the directory again when it closes, so what these columns measure is what OPFS
-costs a cold data directory per statement — not what a warm one reads back. That is the same rule the
-Memory Configurations get for free by dying with their worker, and it is the reason a repeated Run
-gives repeatable numbers. All that outlives a Run is an empty `pglite-v-pgrust/` directory: no page
-this app has ever loaded can read a byte of an earlier Run's database back.
+The other two — `pgrust Threads OPFS repacked (relaxed, pre-release store)` and
+`(strict, pre-release store)` — are **the same store, reached the other way**: not through PGlite's
+filesystem but through the threads build's broker, where the store lives alone in a coordinator
+worker and every guest instance asks it for files over a `SharedArrayBuffer` channel. Same four OPFS
+files, same two durability modes, a whole Postgres and a whole filesystem seam in between. They are
+the OPFS-port half of [the pgrust Threads columns](#the-pgrust-threads-columns), and their store is
+the pre-release bundle those columns describe, which is why their labels say so. One difference is
+worth knowing: the coordinator can only own a **root-level** OPFS directory
+(`pglite-v-pgrust-threads-opfs-repacked-relaxed` and `-strict`, one each), because it is vendored
+byte-verbatim and resolves the one directory name it is given against the OPFS root, which refuses a
+name with a `/` in it.
 
-The store needs a `createSyncAccessHandle()` that really opens, in the dedicated worker the Engine
-already runs in. That is probed at page load — a real handle on a real file, because the method's
-presence proves nothing — and reported in the header:
+**No column here persists anything between Runs.** Each Run starts from an emptied directory —
+PGlite's worker empties it, the coordinator is asked to `reset` its own — and the directory is
+removed again when the Run closes, so what these columns measure is what OPFS costs a cold data
+directory per statement, not what a warm one reads back. That is the same rule the Memory
+Configurations get for free by dying with their worker, and it is the reason a repeated Run gives
+repeatable numbers. All that outlives a Run is an empty `pglite-v-pgrust/` directory: no page this
+app has ever loaded can read a byte of an earlier Run's database back.
+
+The store needs a `createSyncAccessHandle()` that really opens, in a dedicated worker — PGlite's own,
+or the coordinator the threads columns run their store in. That is probed at page load — a real
+handle on a real file, because the method's presence proves nothing — and reported in the header:
 
 | Browser                    | Synchronous access handle in a dedicated worker | OPFS columns     |
 | -------------------------- | ----------------------------------------------- | ---------------- |
@@ -158,8 +179,10 @@ presence proves nothing — and reported in the header:
 | Playwright's WebKit        | refused                                         | reported skipped |
 | Safari (SharedWorker only) | refused in a dedicated worker                   | reported skipped |
 
-Where it is refused the two columns are greyed out with that reason, the probe's own words are in the
-header, and every other column runs as normal — exactly as the pgrust column behaves without JSPI.
+Where it is refused the four columns are greyed out with that reason, the probe's own words are in
+the header, and every other column runs as normal — exactly as the pgrust column behaves without
+JSPI. The two threads columns need cross-origin isolation as well, and are told about that first: it
+is what decides whether that Engine can exist at all.
 
 ## Results
 
@@ -328,10 +351,11 @@ blocking stdin read, which needs **JS Promise Integration** (`WebAssembly.Suspen
 The header shows whether JSPI was detected. Where it is missing the pgrust column is greyed out with
 that reason and the PGlite columns run as normal — no Run is aborted for it.
 
-The two `pgrust Threads` columns need the opposite thing. Their build spawns real threads and blocks
+The four `pgrust Threads` columns need the opposite thing. Their build spawns real threads and blocks
 on `Atomics.wait`, so they need **no JSPI at all** — what they need is `SharedArrayBuffer` and a
 shared `WebAssembly.Memory`, which every browser gates on
-[cross-origin isolation](#cross-origin-isolation):
+[cross-origin isolation](#cross-origin-isolation) (and, for the two whose store is on OPFS, a
+synchronous access handle as well):
 
 | Browser                        | `crossOriginIsolated` under COOP+COEP | pgrust Threads columns |
 | ------------------------------ | ------------------------------------- | ---------------------- |
@@ -451,7 +475,7 @@ revisions it will look for — floating it would silently ask for builds that ar
 
 | Browser in the lane           | Behaviour                                                                                                                                                                                                                                                   |
 | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Chromium (default)            | JSPI on by default, cross-origin isolation from the lane's own server and synchronous access handles granted in dedicated workers, so all ten Configurations run                                                                                            |
+| Chromium (default)            | JSPI on by default, cross-origin isolation from the lane's own server and synchronous access handles granted in dedicated workers, so all twelve Configurations run                                                                                         |
 | Firefox (`--browser firefox`) | The lane sets `javascript.options.wasm_js_promise_integration`; where JSPI is still missing the pgrust column reports `skipped` and the Run continues. Firefox's reduced timer precision quantises Measurements, so its numbers are coarser than Chromium's |
 | WebKit (`--browser webkit`)   | Exits 0 with `WebKit skipped: Playwright's WebKit build has no JSPI yet`, without launching. That build also refuses synchronous access handles in both worker kinds, so it could contribute neither the pgrust nor the OPFS columns                        |
 
@@ -496,9 +520,12 @@ Adding an Engine is additive: write `src/engines/<engine>/<engine>.worker.ts` ag
 protocol in `src/engines/protocol.ts`, register its worker factory in `src/engines/registry.ts`, give
 it a SQL dialect in `src/engines/contract.ts`, and add its Configuration to `src/configurations.ts`.
 Engine-specific open settings go under that Engine's own key in `EngineOpenOptions` — `wasqlite` for
-the journal mode, `pglite` for the store and its durability — so one Engine's knob can never reach
-another's constructor. Everything this app puts in OPFS goes through `src/opfs.ts`, which keeps it
-under one owned prefix and takes it away again.
+the journal mode, `pglite` for the store and its durability, `pgrustThreads` for the filesystem seam,
+the store's port and its durability — so one Engine's knob can never reach another's constructor.
+Everything this app puts in OPFS goes through `src/opfs.ts`, which keeps it under one owned prefix
+and takes it away again; the one thing that cannot sit inside that prefix directory is a store the
+vendored pgrust coordinator opens, which gets a root-level directory carrying the prefix in its name
+(`opfsOwnedRootDirectory`) instead.
 The dialect is read only by `Suite.initialSetupFor(dialect)`, which is what a Suite's untimed setup
 comes from; no Benchmark is ever rewritten for an Engine. Whether a Configuration can run is decided at
 runtime in `src/engines/availability.ts` rather than stored on the Configuration; a Configuration that

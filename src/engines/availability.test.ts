@@ -28,9 +28,30 @@ const NOTHING: AvailabilityEnvironment = {
   opfsSyncAccessAvailable: false,
 };
 
-const OPFS_CONFIGURATION_IDS: readonly string[] = ["pglite-opfs-repacked-relaxed", "pglite-opfs-repacked-strict"];
+/** Every Configuration that opens a store on OPFS, whichever Engine reaches it. */
+const OPFS_CONFIGURATION_IDS: readonly string[] = [
+  "pglite-opfs-repacked-relaxed",
+  "pglite-opfs-repacked-strict",
+  "pgrust-threads-opfs-repacked-relaxed",
+  "pgrust-threads-opfs-repacked-strict",
+];
 
-const PGRUST_THREADS_CONFIGURATION_IDS: readonly string[] = ["pgrust-threads-memory", "pgrust-threads-memory-broker"];
+/** The two threads columns that need isolation and nothing else. */
+const PGRUST_THREADS_MEMORY_CONFIGURATION_IDS: readonly string[] = [
+  "pgrust-threads-memory",
+  "pgrust-threads-memory-broker",
+];
+
+/** The two that need isolation AND a synchronous access handle. */
+const PGRUST_THREADS_OPFS_CONFIGURATION_IDS: readonly string[] = [
+  "pgrust-threads-opfs-repacked-relaxed",
+  "pgrust-threads-opfs-repacked-strict",
+];
+
+const PGRUST_THREADS_CONFIGURATION_IDS: readonly string[] = [
+  ...PGRUST_THREADS_MEMORY_CONFIGURATION_IDS,
+  ...PGRUST_THREADS_OPFS_CONFIGURATION_IDS,
+];
 
 function configuration(id: string): Configuration {
   const found = findConfiguration(id);
@@ -71,7 +92,7 @@ describe("engineRequiresSharedMemory", () => {
 });
 
 describe("configurationRequiresOpfsSyncAccess", () => {
-  test("is true for exactly the two Configurations that open a store", () => {
+  test("is true for exactly the four Configurations that open a store on OPFS", () => {
     const requiring = CONFIGURATIONS.filter(configurationRequiresOpfsSyncAccess).map((config) => config.id);
     expect(requiring).toEqual([...OPFS_CONFIGURATION_IDS]);
   });
@@ -80,6 +101,15 @@ describe("configurationRequiresOpfsSyncAccess", () => {
     expect(configurationRequiresOpfsSyncAccess(configuration("pglite-memory"))).toBe(false);
     expect(configurationRequiresOpfsSyncAccess(configuration("pglite-memory-unlogged"))).toBe(false);
     expect(configurationRequiresOpfsSyncAccess(configuration("pglite-opfs-repacked-relaxed"))).toBe(true);
+  });
+
+  // The same question of the same store on the other Engine: the broker on its memory port opens no
+  // OPFS file, the same broker on its OPFS port opens four.
+  test("separates the threads broker's two ports", () => {
+    expect(configurationRequiresOpfsSyncAccess(configuration("pgrust-threads-memory"))).toBe(false);
+    expect(configurationRequiresOpfsSyncAccess(configuration("pgrust-threads-memory-broker"))).toBe(false);
+    expect(configurationRequiresOpfsSyncAccess(configuration("pgrust-threads-opfs-repacked-relaxed"))).toBe(true);
+    expect(configurationRequiresOpfsSyncAccess(configuration("pgrust-threads-opfs-repacked-strict"))).toBe(true);
   });
 });
 
@@ -113,7 +143,7 @@ describe("configurationAvailability", () => {
     }
   });
 
-  test("reports both pgrust Threads Configurations unavailable without isolation, naming both headers", () => {
+  test("reports every pgrust Threads Configuration unavailable without isolation, naming both headers", () => {
     for (const id of PGRUST_THREADS_CONFIGURATION_IDS) {
       const availability = configurationAvailability(configuration(id), WITHOUT_ISOLATION);
       expect(availability.available).toBe(false);
@@ -132,7 +162,7 @@ describe("configurationAvailability", () => {
     }
   });
 
-  test("reports both OPFS Configurations unavailable without a synchronous access handle", () => {
+  test("reports every OPFS Configuration unavailable without a synchronous access handle", () => {
     for (const id of OPFS_CONFIGURATION_IDS) {
       const availability = configurationAvailability(configuration(id), WITHOUT_OPFS);
       expect(availability.available).toBe(false);
@@ -145,8 +175,23 @@ describe("configurationAvailability", () => {
     for (const id of OPFS_CONFIGURATION_IDS) {
       expect(configurationAvailability(configuration(id), WITHOUT_JSPI)).toEqual({ available: true });
     }
-    for (const id of ["pgrust-memory", "pgrust-memory-unlogged", ...PGRUST_THREADS_CONFIGURATION_IDS]) {
+    for (const id of ["pgrust-memory", "pgrust-memory-unlogged", ...PGRUST_THREADS_MEMORY_CONFIGURATION_IDS]) {
       expect(configurationAvailability(configuration(id), WITHOUT_OPFS)).toEqual({ available: true });
+    }
+  });
+
+  // The two capabilities the threads OPFS columns need are asked in one order, and a browser with
+  // neither is told about the one that stops the Engine existing at all rather than the one that
+  // stops its store opening.
+  test("names isolation first for a threads OPFS column that is missing both capabilities", () => {
+    for (const id of PGRUST_THREADS_OPFS_CONFIGURATION_IDS) {
+      expect(configurationAvailability(configuration(id), NOTHING).reason).toBe(SHARED_MEMORY_REQUIREMENT_MESSAGE);
+      expect(configurationAvailability(configuration(id), WITHOUT_ISOLATION).reason).toBe(
+        SHARED_MEMORY_REQUIREMENT_MESSAGE,
+      );
+      expect(configurationAvailability(configuration(id), WITHOUT_OPFS).reason).toBe(
+        OPFS_SYNC_ACCESS_REQUIREMENT_MESSAGE,
+      );
     }
   });
 });

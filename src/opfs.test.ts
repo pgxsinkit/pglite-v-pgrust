@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
 import { CONFIGURATIONS } from "./configurations";
-import { OPFS_DIRECTORY_PREFIX, OPFS_PROBE_DIRECTORY, opfsPathSegments } from "./opfs";
+import {
+  isOwnedOpfsPath,
+  OPFS_DIRECTORY_PREFIX,
+  OPFS_PROBE_DIRECTORY,
+  opfsOwnedRootDirectory,
+  opfsPathSegments,
+} from "./opfs";
 
 describe("opfsPathSegments", () => {
   test("splits a nested path into the directories to walk", () => {
@@ -27,12 +33,45 @@ describe("opfsPathSegments", () => {
   });
 });
 
+describe("opfsOwnedRootDirectory", () => {
+  // The vendored pgrust storage coordinator takes one directory NAME and resolves it against the
+  // OPFS root, and `getDirectoryHandle` rejects a name containing a slash in Chromium and Firefox
+  // alike — so a store it opens cannot live inside the prefix directory. The prefix moves into the
+  // name instead, and the result is still one segment.
+  test("names a root-level directory that still carries the prefix", () => {
+    expect(opfsOwnedRootDirectory("threads-opfs-repacked-relaxed")).toBe(
+      `${OPFS_DIRECTORY_PREFIX}-threads-opfs-repacked-relaxed`,
+    );
+    expect(opfsPathSegments(opfsOwnedRootDirectory("x"))).toHaveLength(1);
+  });
+});
+
+describe("isOwnedOpfsPath", () => {
+  test("accepts the two shapes this app uses and nothing else", () => {
+    expect(isOwnedOpfsPath(`${OPFS_DIRECTORY_PREFIX}/opfs-repacked-relaxed`)).toBe(true);
+    expect(isOwnedOpfsPath(OPFS_DIRECTORY_PREFIX)).toBe(true);
+    expect(isOwnedOpfsPath(opfsOwnedRootDirectory("threads-opfs-repacked-strict"))).toBe(true);
+    // A near miss is not this app's: an origin's OPFS is shared with every other page on it.
+    expect(isOwnedOpfsPath("pglite-v-pgrustling")).toBe(false);
+    expect(isOwnedOpfsPath("pgdata")).toBe(false);
+    expect(isOwnedOpfsPath("elsewhere/pglite-v-pgrust")).toBe(false);
+  });
+});
+
 describe("the directories this app owns", () => {
-  test("all sit under the one prefix, probe included", () => {
+  test("all carry the one prefix, probe included", () => {
     const paths = [OPFS_PROBE_DIRECTORY, ...CONFIGURATIONS.map((config) => config.dataDir).filter((dir) => dir !== "")];
     for (const path of paths) {
-      expect(opfsPathSegments(path)[0]).toBe(OPFS_DIRECTORY_PREFIX);
-      expect(opfsPathSegments(path).length).toBeGreaterThan(1);
+      expect(isOwnedOpfsPath(path)).toBe(true);
+    }
+  });
+
+  // Whatever an owned path's shape, it must never BE the prefix directory: that one is shared by
+  // every Run and by any other tab of this app, and a store owns its directory in full.
+  test("never let a Configuration or the probe own the prefix directory itself", () => {
+    const paths = [OPFS_PROBE_DIRECTORY, ...CONFIGURATIONS.map((config) => config.dataDir).filter((dir) => dir !== "")];
+    for (const path of paths) {
+      expect(path).not.toBe(OPFS_DIRECTORY_PREFIX);
     }
   });
 

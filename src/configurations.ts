@@ -10,10 +10,11 @@
  * Two of those Memory columns are the Reference Engine, wa-sqlite: it is there so the harness can be
  * calibrated against published numbers, and it is never the Baseline of a ratio.
  *
- * The other two are Storage Configurations: PGlite on the `opfs-repacked` store, in each of that
- * store's two durability modes. They are the first columns whose data directory is real storage
- * rather than heap, which is the whole point of measuring them — but they still carry nothing
- * between Runs, because their worker empties the store's OPFS directory before it opens it.
+ * The other four are Storage Configurations, and they are one store twice over: the `opfs-repacked`
+ * store in each of its two durability modes, reached once through PGlite's own filesystem and once
+ * through the threads build's broker coordinator. Their data directory is real storage rather than
+ * heap, which is the whole point of measuring them — but they still carry nothing between Runs,
+ * because their worker empties the store's OPFS directory before it opens it and removes it after.
  *
  * Every Configuration here is wired up; whether one can run in this browser is decided at runtime by
  * `configurationAvailability` (see `./engines/availability`).
@@ -21,7 +22,7 @@
 
 import type { Configuration, SqlDialect } from "./engines/contract";
 import { configurationDialect } from "./engines/contract";
-import { OPFS_DIRECTORY_PREFIX } from "./opfs";
+import { OPFS_DIRECTORY_PREFIX, opfsOwnedRootDirectory } from "./opfs";
 
 /**
  * PGlite's own benchmark-page rewrite, shared by both Postgres builds' unlogged Configurations.
@@ -112,6 +113,33 @@ export const CONFIGURATIONS: readonly Configuration[] = [
     engine: "pgrust-threads",
     dataDir: "",
     options: { pgrustThreads: { fs: "broker" } },
+  },
+  {
+    // The broker column's store moved off the coordinator's heap and onto OPFS: the same four
+    // exclusively owned files the two `PGlite OPFS repacked` columns run on, reached through the
+    // coordinator worker rather than through PGlite. That makes this a Storage Configuration, and
+    // `dataDir` the OPFS directory the coordinator owns in full.
+    //
+    // A root-level directory, not one under `pglite-v-pgrust/`: the vendored coordinator takes a
+    // single `opfsDir` name and resolves it with one `root.getDirectoryHandle(name)`, which rejects
+    // a name containing `/` in both browsers (see `opfsOwnedRootDirectory`). The name carries this
+    // app's prefix instead, and the Run empties the directory before it opens and removes it after.
+    id: "pgrust-threads-opfs-repacked-relaxed",
+    label: "pgrust Threads OPFS repacked (relaxed, pre-release store)",
+    engine: "pgrust-threads",
+    dataDir: opfsOwnedRootDirectory("threads-opfs-repacked-relaxed"),
+    options: { pgrustThreads: { fs: "broker", port: "opfs", durability: "relaxed" } },
+  },
+  {
+    // The same store under its other durability mode. Strict is the coordinator's own reading of
+    // what the package's PGlite adapter does: every mutating broker request is followed by a
+    // store-wide `strictSync()`, arena before metadata, because a postmaster offers no awaited host
+    // sync to hang one off. One option apart from the column above, exactly as with PGlite's pair.
+    id: "pgrust-threads-opfs-repacked-strict",
+    label: "pgrust Threads OPFS repacked (strict, pre-release store)",
+    engine: "pgrust-threads",
+    dataDir: opfsOwnedRootDirectory("threads-opfs-repacked-strict"),
+    options: { pgrustThreads: { fs: "broker", port: "opfs", durability: "strict" } },
   },
   {
     id: "wasqlite-memory",

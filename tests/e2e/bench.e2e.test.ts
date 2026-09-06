@@ -20,8 +20,14 @@ import { RTT_STATEMENTS } from "../../src/suites/rtt/statements";
 import { SPEEDTEST_BENCHMARK_IDS } from "../../src/suites/speedtest/benchmarks";
 import type { SuiteId } from "../../src/suites/types";
 
-/** Build plus two Suites against ten Configurations; generous, because it is a real browser. */
-const LANE_TIMEOUT_MS = 1_500_000;
+/**
+ * Build plus two Suites against twelve Configurations; generous, because it is a real browser.
+ *
+ * The four Storage Configurations are the slow ones — each seeds a whole data directory into a cold
+ * store before its Run and writes every byte the Suite produces to OPFS — so this is a wall clock
+ * for a lane, not a threshold anything is measured against.
+ */
+const LANE_TIMEOUT_MS = 2_400_000;
 
 const RTT_ITERATIONS = 3;
 
@@ -53,14 +59,18 @@ const COLUMNS = {
   pgrustThreadsRatio: 13,
   pgrustThreadsBroker: 14,
   pgrustThreadsBrokerRatio: 15,
-  wasqlite: 16,
-  wasqliteRatio: 17,
-  wasqliteJournalOff: 18,
-  wasqliteJournalOffRatio: 19,
+  pgrustThreadsOpfsRelaxed: 16,
+  pgrustThreadsOpfsRelaxedRatio: 17,
+  pgrustThreadsOpfsStrict: 18,
+  pgrustThreadsOpfsStrictRatio: 19,
+  wasqlite: 20,
+  wasqliteRatio: 21,
+  wasqliteJournalOff: 22,
+  wasqliteJournalOffRatio: 23,
 } as const;
 
-/** Benchmark label, ten Configurations, and a ratio for each of the nine non-Baseline ones. */
-const EXPECTED_CELLS_PER_ROW = 20;
+/** Benchmark label, twelve Configurations, and a ratio for each of the eleven non-Baseline ones. */
+const EXPECTED_CELLS_PER_ROW = 24;
 
 interface ColumnPair {
   readonly label: string;
@@ -69,8 +79,9 @@ interface ColumnPair {
 }
 
 /**
- * The two OPFS columns, held to the same rule as pgrust: they need a capability this browser may
- * not grant (a synchronous access handle in a dedicated worker), so `skipped` is a legitimate cell.
+ * The two PGlite OPFS columns, held to the same rule as pgrust: they need a capability this browser
+ * may not grant (a synchronous access handle in a dedicated worker), so `skipped` is a legitimate
+ * cell.
  */
 const OPFS_COLUMNS: readonly ColumnPair[] = [
   {
@@ -96,6 +107,25 @@ const PGRUST_COLUMNS: readonly ColumnPair[] = [
     label: "pgrust Threads Memory (broker, pre-release store)",
     value: COLUMNS.pgrustThreadsBroker,
     ratio: COLUMNS.pgrustThreadsBrokerRatio,
+  },
+];
+
+/**
+ * The two threads columns whose store is on OPFS: the same store as the two above, reached through
+ * the broker's coordinator worker instead of through PGlite. They need everything the two threads
+ * Memory columns need AND a synchronous access handle, so they have the most ways to be `skipped`
+ * of any column here.
+ */
+const PGRUST_THREADS_OPFS_COLUMNS: readonly ColumnPair[] = [
+  {
+    label: "pgrust Threads OPFS repacked (relaxed, pre-release store)",
+    value: COLUMNS.pgrustThreadsOpfsRelaxed,
+    ratio: COLUMNS.pgrustThreadsOpfsRelaxedRatio,
+  },
+  {
+    label: "pgrust Threads OPFS repacked (strict, pre-release store)",
+    value: COLUMNS.pgrustThreadsOpfsStrict,
+    ratio: COLUMNS.pgrustThreadsOpfsStrictRatio,
   },
 ];
 
@@ -215,7 +245,7 @@ describe("bench lane", () => {
     // every column after it and the tests would quietly assert about the wrong one.
     test(`${suiteId}: names its columns in Configuration order, so the cell positions mean what they say`, () => {
       const header = headerFor(suiteId);
-      for (const column of [...OPFS_COLUMNS, ...PGRUST_COLUMNS, ...WASQLITE_COLUMNS]) {
+      for (const column of [...OPFS_COLUMNS, ...PGRUST_COLUMNS, ...PGRUST_THREADS_OPFS_COLUMNS, ...WASQLITE_COLUMNS]) {
         expect(header[column.value]).toBe(`${column.label} (ms)`);
         expect(header[column.ratio]).toBe(`vs ${BASELINE_LABEL}`);
       }
@@ -239,7 +269,7 @@ describe("bench lane", () => {
     // Both pgrust columns need JSPI and the synced wasm assets, and both OPFS columns need a
     // synchronous access handle, so any of them can legitimately be `skipped` or `failed` here;
     // what the lane checks is that the cell says so honestly.
-    for (const column of [...OPFS_COLUMNS, ...PGRUST_COLUMNS]) {
+    for (const column of [...OPFS_COLUMNS, ...PGRUST_COLUMNS, ...PGRUST_THREADS_OPFS_COLUMNS]) {
       test(`${suiteId}: the ${column.label} column is milliseconds, skipped or failed in every row`, () => {
         const rows = rowsFor(suiteId);
         const offenders = rows

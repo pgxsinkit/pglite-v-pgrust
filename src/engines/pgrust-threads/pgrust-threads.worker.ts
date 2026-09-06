@@ -28,11 +28,22 @@
  * CONTEXT.md ends a Measurement when decoded rows or a command tag are available in JS. The two
  * pgrust columns have to be measured the same way or the pair means nothing.
  *
+ * **The broker's store, and where it lives.** With `fs=broker` one repacked store lives alone in a
+ * coordinator worker and every instance reaches it over a `SharedArrayBuffer` channel. That store is
+ * on one of two ports. On the `memory` port it is the coordinator's heap and dies with it, so those
+ * columns are Memory Configurations. On the `opfs` port it is one dedicated OPFS directory — the
+ * same four exclusively owned files the `PGlite OPFS repacked` columns run on, reached through the
+ * coordinator instead of through PGlite — so those columns are Storage Configurations, and this
+ * worker is what makes them carry nothing between Runs: the coordinator is asked to `reset` the
+ * directory before it opens the store, and `close` removes the directory once the coordinator has
+ * stopped and released its handles.
+ *
  * Deliberately no wasm module cache and no reuse of anything across Runs, for the same reason the
  * single-session worker has none: a benchmark must not carry hidden state, and every worker this
  * one creates is terminated in `close`.
  */
 
+import { removeOpfsDirectory } from "../../opfs";
 import type * as BrokerFs from "../../vendor/pgrust/broker-fs.js";
 import type { RepackedChannel, RepackedDoorbell } from "../../vendor/pgrust/broker-fs.js";
 import type { VfsManifest } from "../../vendor/pgrust/pgrust-wasi.js";
@@ -44,7 +55,7 @@ import { encodeQuery, encodeStartup, TERMINATE, WireReader } from "../../vendor/
 import { defaultWireArgv } from "../../vendor/pgrust/wiresession.js";
 import { SHARED_MEMORY_REQUIREMENT_MESSAGE } from "../availability";
 import { pgrustThreadsOptions } from "../contract";
-import type { EngineOpenOptions, PgrustThreadsFs } from "../contract";
+import type { EngineOpenOptions, PgrustThreadsFs, PgrustThreadsPort, StoreDurability } from "../contract";
 import type { QueryResult } from "../pgrust/pgwire";
 import { assertNoQueryError, decodeQueryResult } from "../pgrust/pgwire";
 import { toErrorPayload } from "../protocol";
@@ -95,6 +106,11 @@ const EXIT_TIMEOUT_MS = 30_000;
 /** How long to wait for the coordinator's own stop after its doorbell is rung. */
 const STORAGE_STOP_TIMEOUT_MS = 5_000;
 
+/** How many times the Run's OPFS directory removal is attempted before the failure is the Run's. */
+const DIRECTORY_REMOVAL_ATTEMPTS = 5;
+/** How long to wait between those attempts, while a terminated worker's handles are still held. */
+const DIRECTORY_REMOVAL_RETRY_MS = 250;
+
 /** Keep only the tail of the guest's stderr: enough to explain a failure, bounded for a long Run. */
 const MAX_STDERR_CHARS = 4_000;
 
@@ -144,12 +160,38 @@ interface HostEvent {
   readonly bytes?: Uint8Array;
   readonly poolSize?: number;
   readonly startArg?: number;
-  readonly restored?: boolean;
-  readonly errorName?: string;
 }
 
 function asHostEvent(message: unknown): HostEvent {
   return typeof message === "object" && message !== null ? (message as HostEvent) : {};
+}
+
+/**
+ * Messages the storage coordinator sends back. A different protocol from the process worker's, and
+ * kept apart from it: both call a field `bytes` and mean entirely different things by it.
+ */
+interface StorageEvent {
+  readonly type?: string;
+  readonly message?: string;
+  /** The store's failures name their own remedy in their class name; it travels beside the message. */
+  readonly errorName?: string;
+  readonly port?: string;
+  readonly opfsDir?: string | null;
+  readonly durability?: string;
+  /** True when the coordinator found a data directory instead of seeding one. */
+  readonly restored?: boolean;
+  readonly openMs?: number;
+  readonly seedMs?: number;
+  /** Files written by the seed, and their total size. */
+  readonly files?: number;
+  readonly bytes?: number;
+  readonly datadirFiles?: number;
+  readonly datadirBytes?: number;
+  readonly arenaBytes?: number;
+}
+
+function asStorageEvent(message: unknown): StorageEvent {
+  return typeof message === "object" && message !== null ? (message as StorageEvent) : {};
 }
 
 /** A promise plus the two settlers, for the several "wait until the guest says so" points. */
@@ -205,6 +247,15 @@ interface ThreadsSession {
 }
 
 let session: ThreadsSession | null = null;
+
+/**
+ * The OPFS directory this Run's store owns, or null when nothing of it is on OPFS.
+ *
+ * Module-level rather than a field of the session, and set before the coordinator is started rather
+ * than after: a coordinator that fails half way through booting has already created the directory,
+ * and `close` — which is called on that path too — is what takes it away again.
+ */
+let storeDirectory: string | null = null;
 
 async function fetchAsset(url: string): Promise<Response> {
   let response: Response;
@@ -278,6 +329,48 @@ interface StorageCoordinator {
   readonly bundleUrl: string;
 }
 
+/** Where this Run's one store lives and how durably: the whole difference between broker columns. */
+interface StoragePortSettings {
+  readonly port: PgrustThreadsPort;
+  readonly durability: StoreDurability;
+  /** The OPFS directory the coordinator owns in full; empty string on the memory port. */
+  readonly directory: string;
+}
+
+/** The coordinator's own `options`, exactly as pgrust's browser harness builds them. */
+interface StorageBootOptions {
+  readonly port: PgrustThreadsPort;
+  readonly durability: StoreDurability;
+  readonly opfsDir?: string;
+  readonly reset?: boolean;
+}
+
+/**
+ * What the coordinator is asked to open.
+ *
+ * `memory` keeps the store in the coordinator's heap, where it dies with the worker: nothing can
+ * outlive a Run, which is what keeps that column a Memory Configuration. `opfs` gives the store one
+ * dedicated directory and asks for a `reset` first — the store refuses a directory holding anything
+ * it did not write, and a Run that inherited an earlier Run's data directory would be measuring a
+ * warm store while claiming a cold one. The directory is removed again by `close`.
+ */
+function storageBootOptions(settings: StoragePortSettings): StorageBootOptions {
+  return settings.port === "opfs"
+    ? { port: "opfs", opfsDir: settings.directory, durability: settings.durability, reset: true }
+    : { port: "memory", durability: settings.durability };
+}
+
+/** One line of what the store cost this Run, none of which is inside any Measurement window. */
+function describeStorageReady(event: StorageEvent): string {
+  const where = event.opfsDir === undefined || event.opfsDir === null ? "" : ` dir=${event.opfsDir}`;
+  const seeded = `seeded ${event.files ?? 0} files (${event.bytes ?? 0} bytes) in ${event.seedMs ?? 0} ms`;
+  return (
+    `pgrust threads storage: port=${event.port ?? "?"}${where} durability=${event.durability ?? "?"}; ` +
+    `store opened in ${event.openMs ?? 0} ms, ${seeded}; /pgdata holds ${event.datadirFiles ?? 0} files ` +
+    `(${event.datadirBytes ?? 0} bytes) in a ${((event.arenaBytes ?? 0) / 1_048_576).toFixed(1)} MiB arena`
+  );
+}
+
 /** Start the storage coordinator and wait for it to seed its store. Broker Configuration only. */
 async function startStorageCoordinator(
   host: ThreadsHostModule,
@@ -285,6 +378,7 @@ async function startStorageCoordinator(
   image: ArrayBuffer,
   manifest: VfsManifest,
   storageStopped: Gate,
+  settings: StoragePortSettings,
 ): Promise<StorageCoordinator> {
   const bundleUrl = brokerFs.repackedBundleUrl(HOST_BASE);
   let bundle;
@@ -308,9 +402,24 @@ async function startStorageCoordinator(
   const worker = host.makeWorker(host.storageWorkerUrl(HOST_BASE), { name: "pgrust-threads-storage" });
   const ready = gate();
   host.onWorkerMessage(worker, (raw: unknown) => {
-    const event = asHostEvent(raw);
+    const event = asStorageEvent(raw);
     switch (event.type) {
       case "storage-ready":
+        // A `reset` was asked for, so a coordinator reporting it RESTORED a data directory found
+        // one this Run did not put there — an earlier Run's directory outlived it. These would be a
+        // warm store's numbers under a cold store's label, which is worse than a failed column.
+        if (event.restored === true) {
+          ready.fail(
+            new Error(
+              `pgrust threads storage opened an existing data directory in "${settings.directory}" ` +
+                "despite being asked to reset it; this Run would be measuring an earlier Run's store",
+            ),
+          );
+          return;
+        }
+        // The seed is a real per-Run cost (the whole packed image written into a fresh store) and it
+        // sits outside every Measurement, so the only place it can be seen is here.
+        console.info(describeStorageReady(event));
         ready.open();
         return;
       case "storage-stopped":
@@ -341,14 +450,21 @@ async function startStorageCoordinator(
       manifest,
       channels: channels.map((channel) => channel.transfer()),
       doorbell: doorbell.buffer,
-      // The memory port: the one store lives in the coordinator's heap and dies with it, so this
-      // stays a Memory Configuration and no Run can read back an earlier Run's data directory.
-      options: { port: "memory", durability: "relaxed" },
+      options: storageBootOptions(settings),
     },
     [image],
   );
 
-  await withTimeout(ready.promise, STORAGE_READY_TIMEOUT_MS, "the storage coordinator did not seed its store");
+  try {
+    await withTimeout(ready.promise, STORAGE_READY_TIMEOUT_MS, "the storage coordinator did not seed its store");
+  } catch (error: unknown) {
+    // A coordinator that never became ready may still have opened the store, and on the OPFS port
+    // that means it holds four synchronous access handles on the directory this Run is about to
+    // remove. Terminating it is what releases them.
+    worker.terminate();
+    storageStopped.open();
+    throw error;
+  }
   return { worker, doorbell, channels, bundleUrl };
 }
 
@@ -356,13 +472,24 @@ async function openEngine(dataDir: string, options: EngineOpenOptions | undefine
   if (!ctx.crossOriginIsolated || typeof SharedArrayBuffer !== "function") {
     throw new Error(SHARED_MEMORY_REQUIREMENT_MESSAGE);
   }
-  if (dataDir !== "") {
-    throw new Error(`pgrust threads Engine supports only the Memory Configuration; got dataDir "${dataDir}"`);
-  }
   if (options?.relaxedDurability === true) {
     throw new Error("pgrust threads Engine has no relaxed-durability setting");
   }
-  const fs: PgrustThreadsFs = pgrustThreadsOptions(options)?.fs ?? "copy";
+  const threads = pgrustThreadsOptions(options);
+  const fs: PgrustThreadsFs = threads?.fs ?? "copy";
+  const port: PgrustThreadsPort = threads?.port ?? "memory";
+  const durability: StoreDurability = threads?.durability ?? "relaxed";
+  if (port === "opfs" && fs !== "broker") {
+    throw new Error('pgrust threads Engine: the OPFS port is the broker seam\'s store; it needs fs: "broker"');
+  }
+  // `dataDir` and the port say the same thing from two sides, and a Configuration that disagreed
+  // with itself would either open a store nothing removes or remove a directory nothing opened.
+  if (port === "opfs" && dataDir === "") {
+    throw new Error("pgrust threads Engine on the OPFS port needs a dataDir: its store owns one directory in full");
+  }
+  if (port === "memory" && dataDir !== "") {
+    throw new Error(`pgrust threads Engine on the memory port is a Memory Configuration; got dataDir "${dataDir}"`);
+  }
 
   const [host, sab] = await Promise.all([
     loadHostModule<ThreadsHostModule>("threads-host.js"),
@@ -385,7 +512,17 @@ async function openEngine(dataDir: string, options: EngineOpenOptions | undefine
   let storage: StorageCoordinator | null = null;
   if (fs === "broker") {
     const brokerFs = await loadHostModule<BrokerFsModule>("broker-fs.js");
-    storage = await startStorageCoordinator(host, brokerFs, image, manifest, storageStopped);
+    // Before the coordinator runs, not after: it creates the directory as part of opening the
+    // store, and a boot that fails half way through has already created it.
+    storeDirectory = port === "opfs" ? dataDir : null;
+    const settings: StoragePortSettings = { port, durability, directory: dataDir };
+    try {
+      storage = await startStorageCoordinator(host, brokerFs, image, manifest, storageStopped, settings);
+    } catch (error: unknown) {
+      // Nothing else is up yet, so this is the whole teardown: it takes the directory away.
+      await closeEngine();
+      throw error instanceof Error ? error : new Error(String(error));
+    }
   } else {
     storageStopped.open();
   }
@@ -604,30 +741,71 @@ async function measureQuery(sql: string): Promise<{ result: QueryResult; elapsed
  * futexes inside the process worker and inside every pool slot. The process worker goes next, which
  * takes its pool workers with it — they are dedicated workers it owns. The coordinator goes last,
  * and only through its doorbell: it is parked in `Atomics.wait` and no `postMessage` will reach it.
+ *
+ * Then, on the OPFS port, the store's directory: the coordinator's stop is what closed the store and
+ * released its handles, so this is the first moment the directory can be removed — and removing it
+ * is what keeps these columns cold-store Measurements rather than a slowly growing data directory.
  */
 async function closeEngine(): Promise<void> {
   const engine = session;
   session = null;
-  if (engine === null) {
-    return;
-  }
+  const directory = storeDirectory;
+  storeDirectory = null;
   try {
-    await engine.send(TERMINATE);
-    engine.stdin.close();
-    await withTimeout(engine.exited.promise, EXIT_TIMEOUT_MS, "the guest did not exit after Terminate").catch(() => {});
-    await Promise.race([engine.pump, new Promise((resolve) => setTimeout(resolve, 2_000))]);
-  } catch {
-    // A guest that cannot be asked to exit is terminated below; the Run's result stands.
+    if (engine === null) {
+      return;
+    }
+    try {
+      await engine.send(TERMINATE);
+      engine.stdin.close();
+      await withTimeout(engine.exited.promise, EXIT_TIMEOUT_MS, "the guest did not exit after Terminate").catch(
+        () => {},
+      );
+      await Promise.race([engine.pump, new Promise((resolve) => setTimeout(resolve, 2_000))]);
+    } catch {
+      // A guest that cannot be asked to exit is terminated below; the Run's result stands.
+    }
+    engine.processWorker.terminate();
+    const storageWorker = engine.storageWorker;
+    if (storageWorker !== null) {
+      engine.doorbell?.requestStop();
+      await Promise.race([
+        engine.storageStopped.promise,
+        new Promise((resolve) => setTimeout(resolve, STORAGE_STOP_TIMEOUT_MS)),
+      ]);
+      storageWorker.terminate();
+    }
+  } finally {
+    // Last, and unconditionally: the coordinator closes the store — releasing its four synchronous
+    // access handles — before it reports it has stopped, so the directory can only go afterwards,
+    // and it has to go, or the next Run inherits this Run's data directory (and meets the store's
+    // `StoreOwnedError` if anything still holds it).
+    if (directory !== null) {
+      await removeStoreDirectory(directory);
+    }
   }
-  engine.processWorker.terminate();
-  const storageWorker = engine.storageWorker;
-  if (storageWorker !== null) {
-    engine.doorbell?.requestStop();
-    await Promise.race([
-      engine.storageStopped.promise,
-      new Promise((resolve) => setTimeout(resolve, STORAGE_STOP_TIMEOUT_MS)),
-    ]);
-    storageWorker.terminate();
+}
+
+/**
+ * Take this Run's OPFS directory away, with a little patience.
+ *
+ * On the normal path nothing holds it: the coordinator has closed its store and stopped. A Run that
+ * gave up waiting for that terminated a worker which may still hold the four handles for a moment —
+ * Chrome does not reap a worker parked inside a guest thread instantly — and OPFS answers a removal
+ * then with `NoModificationAllowedError`. Retrying briefly is the difference between a 43 MiB arena
+ * left in the origin's storage and a short pause.
+ */
+async function removeStoreDirectory(path: string): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await removeOpfsDirectory(path);
+      return;
+    } catch (error: unknown) {
+      if (attempt >= DIRECTORY_REMOVAL_ATTEMPTS) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, DIRECTORY_REMOVAL_RETRY_MS));
+    }
   }
 }
 

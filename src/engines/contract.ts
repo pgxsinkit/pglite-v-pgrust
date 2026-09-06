@@ -70,14 +70,32 @@ export interface WasqliteOpenOptions {
 export type PgrustThreadsFs = "copy" | "broker";
 
 /**
+ * Where the one store behind the broker seam lives.
+ *
+ * `memory` keeps it in the coordinator worker's heap, so it dies with that worker and the column
+ * stays a Memory Configuration. `opfs` puts it in one dedicated OPFS directory the coordinator owns
+ * in full — the same four exclusively owned files the `PGlite OPFS repacked` columns run on, reached
+ * through the coordinator instead of through PGlite — which makes the column a Storage Configuration
+ * and makes an OPFS synchronous access handle a requirement. Only meaningful with `fs: "broker"`:
+ * the copy seam has no store and no coordinator to hold one.
+ */
+export type PgrustThreadsPort = "memory" | "opfs";
+
+/**
  * pgrust's threads-build settings, applied by its worker when it starts the guest.
  *
- * One knob, because one is what distinguishes the two threads columns: everything else — the same
- * wasm module, the same argv, the same pool size — is held identical so the pair measures the
- * filesystem seam and nothing else.
+ * Three knobs, and every one of them is a difference between two threads columns: the filesystem
+ * seam (`copy` against `broker`), the port the broker's store sits on (`memory` against `opfs`) and
+ * that store's durability. Everything else — the same wasm module, the same argv, the same pool
+ * size — is held identical, so a pair of columns measures the knob that differs and nothing else.
+ *
+ * `port` and `durability` are optional because the two Memory columns predate them and mean exactly
+ * what their absence says: the host's own default, a store in the coordinator's heap.
  */
 export interface PgrustThreadsOpenOptions {
   readonly fs: PgrustThreadsFs;
+  readonly port?: PgrustThreadsPort;
+  readonly durability?: StoreDurability;
 }
 
 /**
@@ -147,6 +165,18 @@ export function pgrustThreadsOptions(options: EngineOpenOptions | undefined): Pg
   return options?.pgrustThreads;
 }
 
+/**
+ * Whether this Configuration puts the threads broker's one store on OPFS rather than in the
+ * coordinator's heap.
+ *
+ * The threads twin of `pgliteStore`, and asked by the same availability gate: a store on the OPFS
+ * port needs a synchronous access handle in a dedicated worker just as PGlite's does, whichever
+ * Engine is on the other side of it.
+ */
+export function pgrustThreadsOpensOpfsStore(options: EngineOpenOptions | undefined): boolean {
+  return options?.pgrustThreads?.port === "opfs";
+}
+
 /** An Engine plus the storage and durability settings it is opened with. One column of results. */
 export interface Configuration {
   readonly id: string;
@@ -155,8 +185,10 @@ export interface Configuration {
   /**
    * Empty string means the Memory Configuration: the data directory lives in the worker's heap.
    *
-   * For a Storage Configuration it names the directory the store owns in full — an OPFS path for
-   * `options.pglite.store`, which the worker empties before every Run so no state survives one.
+   * For a Storage Configuration it names the directory the store owns in full: a nested OPFS path
+   * for `options.pglite.store`, a root-level OPFS directory name for the threads broker's OPFS port
+   * (whose vendored coordinator can address nothing else). Either way the Run starts from an empty
+   * directory and removes it on close, so no state survives one.
    */
   readonly dataDir: string;
   readonly options?: EngineOpenOptions;

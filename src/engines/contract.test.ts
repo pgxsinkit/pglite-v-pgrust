@@ -2,7 +2,14 @@ import { describe, expect, test } from "bun:test";
 
 import { CONFIGURATIONS, findConfiguration } from "../configurations";
 import type { Configuration, EngineId } from "./contract";
-import { configurationDialect, engineDialect, pgliteOpenOptions, pgliteStore, pgrustThreadsOptions } from "./contract";
+import {
+  configurationDialect,
+  engineDialect,
+  pgliteOpenOptions,
+  pgliteStore,
+  pgrustThreadsOpensOpfsStore,
+  pgrustThreadsOptions,
+} from "./contract";
 
 function configuration(id: string): Configuration {
   const found = findConfiguration(id);
@@ -38,6 +45,8 @@ describe("configurationDialect", () => {
     expect(configurationDialect(configuration("pgrust-memory-unlogged"))).toBe("postgres");
     expect(configurationDialect(configuration("pgrust-threads-memory"))).toBe("postgres");
     expect(configurationDialect(configuration("pgrust-threads-memory-broker"))).toBe("postgres");
+    expect(configurationDialect(configuration("pgrust-threads-opfs-repacked-relaxed"))).toBe("postgres");
+    expect(configurationDialect(configuration("pgrust-threads-opfs-repacked-strict"))).toBe("postgres");
     expect(configurationDialect(configuration("wasqlite-memory"))).toBe("sqlite");
     expect(configurationDialect(configuration("wasqlite-memory-journal-off"))).toBe("sqlite");
   });
@@ -55,9 +64,19 @@ describe("pgliteOpenOptions", () => {
 });
 
 describe("pgrustThreadsOptions", () => {
-  test("reads the filesystem seam of the two threads Configurations", () => {
+  test("reads the filesystem seam, the port and the durability of the four threads Configurations", () => {
     expect(pgrustThreadsOptions(configuration("pgrust-threads-memory").options)).toEqual({ fs: "copy" });
     expect(pgrustThreadsOptions(configuration("pgrust-threads-memory-broker").options)).toEqual({ fs: "broker" });
+    expect(pgrustThreadsOptions(configuration("pgrust-threads-opfs-repacked-relaxed").options)).toEqual({
+      fs: "broker",
+      port: "opfs",
+      durability: "relaxed",
+    });
+    expect(pgrustThreadsOptions(configuration("pgrust-threads-opfs-repacked-strict").options)).toEqual({
+      fs: "broker",
+      port: "opfs",
+      durability: "strict",
+    });
   });
 
   test("is undefined for every Configuration on another Engine, and for another Engine's key", () => {
@@ -66,6 +85,23 @@ describe("pgrustThreadsOptions", () => {
     }
     expect(pgrustThreadsOptions(undefined)).toBeUndefined();
     expect(pgrustThreadsOptions({ wasqlite: { journalMode: "off" } })).toBeUndefined();
+  });
+});
+
+describe("pgrustThreadsOpensOpfsStore", () => {
+  test("is true for exactly the two threads columns whose store is on OPFS", () => {
+    expect(pgrustThreadsOpensOpfsStore(configuration("pgrust-threads-opfs-repacked-relaxed").options)).toBe(true);
+    expect(pgrustThreadsOpensOpfsStore(configuration("pgrust-threads-opfs-repacked-strict").options)).toBe(true);
+    // The broker seam alone is not a store on OPFS: on the memory port it opens no file at all.
+    expect(pgrustThreadsOpensOpfsStore(configuration("pgrust-threads-memory-broker").options)).toBe(false);
+    expect(pgrustThreadsOpensOpfsStore(configuration("pgrust-threads-memory").options)).toBe(false);
+  });
+
+  test("is false for every other Engine, PGlite's own OPFS columns included", () => {
+    for (const id of ["pglite-memory", "pglite-opfs-repacked-strict", "pgrust-memory", "wasqlite-memory"]) {
+      expect(pgrustThreadsOpensOpfsStore(configuration(id).options)).toBe(false);
+    }
+    expect(pgrustThreadsOpensOpfsStore(undefined)).toBe(false);
   });
 });
 
@@ -88,6 +124,9 @@ describe("pgliteStore", () => {
       "pgrust-memory",
       "pgrust-threads-memory",
       "pgrust-threads-memory-broker",
+      // A store, but not one PGlite opens: this key is the PGlite constructor's and nothing else's.
+      "pgrust-threads-opfs-repacked-relaxed",
+      "pgrust-threads-opfs-repacked-strict",
       "wasqlite-memory-journal-off",
     ]) {
       expect(pgliteStore(configuration(id).options)).toBeUndefined();

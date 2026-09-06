@@ -8,10 +8,17 @@ import {
   findConfiguration,
 } from "./configurations";
 import { applyModSql } from "./engines/contract";
-import { OPFS_DIRECTORY_PREFIX, opfsPathSegments } from "./opfs";
+import { isOwnedOpfsPath, OPFS_DIRECTORY_PREFIX, opfsPathSegments } from "./opfs";
+
+/** Every column whose filesystem is the broker seam, and therefore the pre-release store bundle. */
+const BROKER_CONFIGURATION_IDS: readonly string[] = [
+  "pgrust-threads-memory-broker",
+  "pgrust-threads-opfs-repacked-relaxed",
+  "pgrust-threads-opfs-repacked-strict",
+];
 
 describe("phase-1 Configurations", () => {
-  test("are the ten Configurations, in column order", () => {
+  test("are the twelve Configurations, in column order", () => {
     expect(CONFIGURATIONS.map((config) => config.id)).toEqual([
       "pglite-memory",
       "pglite-memory-unlogged",
@@ -21,6 +28,8 @@ describe("phase-1 Configurations", () => {
       "pgrust-memory-unlogged",
       "pgrust-threads-memory",
       "pgrust-threads-memory-broker",
+      "pgrust-threads-opfs-repacked-relaxed",
+      "pgrust-threads-opfs-repacked-strict",
       "wasqlite-memory",
       "wasqlite-memory-journal-off",
     ]);
@@ -36,24 +45,32 @@ describe("phase-1 Configurations", () => {
       "pgrust Memory (unlogged)",
       "pgrust Threads Memory",
       "pgrust Threads Memory (broker, pre-release store)",
+      "pgrust Threads OPFS repacked (relaxed, pre-release store)",
+      "pgrust Threads OPFS repacked (strict, pre-release store)",
       "wa-sqlite Memory",
       "wa-sqlite Memory (journal off)",
     ]);
   });
 
-  // A reader must never take the broker column for the published package: the store it loads is a
+  // A reader must never take a broker column for the published package: the store they load is a
   // pre-release build out of a pgxsinkit checkout, and no npm version corresponds to it.
-  test("say in the broker column's own label that its store is a pre-release build", () => {
-    expect(findConfiguration("pgrust-threads-memory-broker")?.label).toContain("pre-release store");
+  test("say in every broker column's own label that its store is a pre-release build", () => {
+    for (const id of BROKER_CONFIGURATION_IDS) {
+      expect(findConfiguration(id)?.label).toContain("pre-release store");
+    }
   });
 
-  test("put the two threads columns after the two pgrust columns and before the Reference Engine", () => {
+  test("put the four threads columns after the two pgrust columns and before the Reference Engine", () => {
     const ids = CONFIGURATIONS.map((config) => config.id);
     expect(ids.indexOf("pgrust-threads-memory")).toBe(ids.indexOf("pgrust-memory-unlogged") + 1);
-    expect(ids.indexOf("wasqlite-memory")).toBe(ids.indexOf("pgrust-threads-memory-broker") + 1);
+    expect(ids.indexOf("pgrust-threads-opfs-repacked-relaxed")).toBe(ids.indexOf("pgrust-threads-memory-broker") + 1);
+    expect(ids.indexOf("pgrust-threads-opfs-repacked-strict")).toBe(
+      ids.indexOf("pgrust-threads-opfs-repacked-relaxed") + 1,
+    );
+    expect(ids.indexOf("wasqlite-memory")).toBe(ids.indexOf("pgrust-threads-opfs-repacked-strict") + 1);
   });
 
-  test("give both threads columns one Engine and differ in nothing but the filesystem seam", () => {
+  test("give the two threads Memory columns one Engine and differ in nothing but the filesystem seam", () => {
     const copy = findConfiguration("pgrust-threads-memory");
     const broker = findConfiguration("pgrust-threads-memory-broker");
     expect(copy?.engine).toBe("pgrust-threads");
@@ -67,22 +84,45 @@ describe("phase-1 Configurations", () => {
     expect(broker?.modSql).toBeUndefined();
   });
 
-  test("give a data directory to the Storage Configurations and to nothing else", () => {
-    const withDataDir = CONFIGURATIONS.filter((config) => config.dataDir !== "").map((config) => config.id);
-    expect(withDataDir).toEqual(["pglite-opfs-repacked-relaxed", "pglite-opfs-repacked-strict"]);
+  // The same store on the same OPFS port, one option apart, exactly as PGlite's pair is.
+  test("run both threads OPFS columns through the broker on one store, differing only in durability", () => {
+    const relaxed = findConfiguration("pgrust-threads-opfs-repacked-relaxed");
+    const strict = findConfiguration("pgrust-threads-opfs-repacked-strict");
+    expect(relaxed?.engine).toBe("pgrust-threads");
+    expect(strict?.engine).toBe("pgrust-threads");
+    expect(relaxed?.options).toEqual({ pgrustThreads: { fs: "broker", port: "opfs", durability: "relaxed" } });
+    expect(strict?.options).toEqual({ pgrustThreads: { fs: "broker", port: "opfs", durability: "strict" } });
+    expect(relaxed?.modSql).toBeUndefined();
+    expect(strict?.modSql).toBeUndefined();
   });
 
-  test("give each store its own OPFS directory, under this app's own prefix", () => {
+  test("give a data directory to the Storage Configurations and to nothing else", () => {
+    const withDataDir = CONFIGURATIONS.filter((config) => config.dataDir !== "").map((config) => config.id);
+    expect(withDataDir).toEqual([
+      "pglite-opfs-repacked-relaxed",
+      "pglite-opfs-repacked-strict",
+      "pgrust-threads-opfs-repacked-relaxed",
+      "pgrust-threads-opfs-repacked-strict",
+    ]);
+  });
+
+  test("give each store its own OPFS directory, carrying this app's own prefix", () => {
     const directories = CONFIGURATIONS.filter((config) => config.dataDir !== "").map((config) => config.dataDir);
+    // PGlite's two sit inside the prefix directory. The threads pair cannot: the vendored storage
+    // coordinator resolves its one `opfsDir` name against the OPFS root, which rejects a name with a
+    // slash in it, so they are root-level directories whose NAME carries the prefix instead.
     expect(directories).toEqual([
       `${OPFS_DIRECTORY_PREFIX}/opfs-repacked-relaxed`,
       `${OPFS_DIRECTORY_PREFIX}/opfs-repacked-strict`,
+      `${OPFS_DIRECTORY_PREFIX}-threads-opfs-repacked-relaxed`,
+      `${OPFS_DIRECTORY_PREFIX}-threads-opfs-repacked-strict`,
     ]);
     // Two live owners of one directory is a StoreOwnedError; two columns sharing one would also be
     // one column measuring the other's data directory.
     expect(new Set(directories).size).toBe(directories.length);
     for (const directory of directories) {
-      expect(opfsPathSegments(directory)[0]).toBe(OPFS_DIRECTORY_PREFIX);
+      expect(isOwnedOpfsPath(directory)).toBe(true);
+      expect(opfsPathSegments(directory)[0]).toStartWith(OPFS_DIRECTORY_PREFIX);
     }
   });
 
