@@ -20,11 +20,22 @@ export interface EngineOpenRequest {
   readonly options?: EngineOpenOptions;
 }
 
+/**
+ * Which of an Engine's sessions a request runs on; absent means the first, which is the only one
+ * every Engine has.
+ *
+ * Only the postmaster opens more than one (see `EngineOpenOptions.sessions`), and the two
+ * single-session Suites never name one — so their requests are byte-identical to what they always
+ * were, and an Engine that has one place to run SQL can ignore the field entirely.
+ */
+export type EngineSessionIndex = number;
+
 /** Untimed execution, used for the preamble / initial setup. */
 export interface EngineExecRequest {
   readonly kind: "exec";
   readonly id: number;
   readonly sql: string;
+  readonly session?: EngineSessionIndex;
 }
 
 /** Timed execution: the worker brackets the Engine call with `performance.now()`. */
@@ -32,6 +43,7 @@ export interface EngineMeasureRequest {
   readonly kind: "measure";
   readonly id: number;
   readonly sql: string;
+  readonly session?: EngineSessionIndex;
 }
 
 export interface EngineCloseRequest {

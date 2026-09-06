@@ -34,6 +34,13 @@ const OPFS_CONFIGURATION_IDS: readonly string[] = [
   "pglite-opfs-repacked-strict",
   "pgrust-threads-opfs-repacked-relaxed",
   "pgrust-threads-opfs-repacked-strict",
+  "pgrust-postmaster-opfs-repacked-relaxed",
+];
+
+/** The two postmaster columns: one on the store's memory port, one on its OPFS port. */
+const PGRUST_POSTMASTER_CONFIGURATION_IDS: readonly string[] = [
+  "pgrust-postmaster-memory-broker",
+  "pgrust-postmaster-opfs-repacked-relaxed",
 ];
 
 /** The two threads columns that need isolation and nothing else. */
@@ -72,12 +79,16 @@ describe("engineRequiresJspi", () => {
   // suspending, so a browser without JSPI can still run it.
   test("is false for the threads build, which needs no JSPI at all", () => {
     expect(engineRequiresJspi("pgrust-threads")).toBe(false);
+    expect(engineRequiresJspi("pgrust-postmaster")).toBe(false);
   });
 });
 
 describe("engineRequiresSharedMemory", () => {
-  test("is true for the threads build and false for every other Engine", () => {
+  test("is true for both Engines built on the threads module and false for every other Engine", () => {
     expect(engineRequiresSharedMemory("pgrust-threads")).toBe(true);
+    // The same wasm module, the same shared memory, the same SharedArrayBuffer rings: the postmaster
+    // is gated on exactly what the session Engine is gated on.
+    expect(engineRequiresSharedMemory("pgrust-postmaster")).toBe(true);
     expect(engineRequiresSharedMemory("pgrust")).toBe(false);
     expect(engineRequiresSharedMemory("pglite")).toBe(false);
     expect(engineRequiresSharedMemory("wasqlite")).toBe(false);
@@ -92,7 +103,7 @@ describe("engineRequiresSharedMemory", () => {
 });
 
 describe("configurationRequiresOpfsSyncAccess", () => {
-  test("is true for exactly the four Configurations that open a store on OPFS", () => {
+  test("is true for exactly the Configurations that open a store on OPFS", () => {
     const requiring = CONFIGURATIONS.filter(configurationRequiresOpfsSyncAccess).map((config) => config.id);
     expect(requiring).toEqual([...OPFS_CONFIGURATION_IDS]);
   });
@@ -110,6 +121,12 @@ describe("configurationRequiresOpfsSyncAccess", () => {
     expect(configurationRequiresOpfsSyncAccess(configuration("pgrust-threads-memory-broker"))).toBe(false);
     expect(configurationRequiresOpfsSyncAccess(configuration("pgrust-threads-opfs-repacked-relaxed"))).toBe(true);
     expect(configurationRequiresOpfsSyncAccess(configuration("pgrust-threads-opfs-repacked-strict"))).toBe(true);
+  });
+
+  // And the same question of the same store under a postmaster instead of a session.
+  test("separates the postmaster's two ports", () => {
+    expect(configurationRequiresOpfsSyncAccess(configuration("pgrust-postmaster-memory-broker"))).toBe(false);
+    expect(configurationRequiresOpfsSyncAccess(configuration("pgrust-postmaster-opfs-repacked-relaxed"))).toBe(true);
   });
 });
 
@@ -143,8 +160,8 @@ describe("configurationAvailability", () => {
     }
   });
 
-  test("reports every pgrust Threads Configuration unavailable without isolation, naming both headers", () => {
-    for (const id of PGRUST_THREADS_CONFIGURATION_IDS) {
+  test("reports every shared-memory Configuration unavailable without isolation, naming both headers", () => {
+    for (const id of [...PGRUST_THREADS_CONFIGURATION_IDS, ...PGRUST_POSTMASTER_CONFIGURATION_IDS]) {
       const availability = configurationAvailability(configuration(id), WITHOUT_ISOLATION);
       expect(availability.available).toBe(false);
       expect(availability.reason).toBe(SHARED_MEMORY_REQUIREMENT_MESSAGE);
@@ -154,7 +171,7 @@ describe("configurationAvailability", () => {
   });
 
   test("leaves the pgrust Threads Configurations alone without JSPI, and the pgrust ones without isolation", () => {
-    for (const id of PGRUST_THREADS_CONFIGURATION_IDS) {
+    for (const id of [...PGRUST_THREADS_CONFIGURATION_IDS, ...PGRUST_POSTMASTER_CONFIGURATION_IDS]) {
       expect(configurationAvailability(configuration(id), WITHOUT_JSPI)).toEqual({ available: true });
     }
     for (const id of ["pgrust-memory", "pgrust-memory-unlogged"]) {
@@ -175,7 +192,12 @@ describe("configurationAvailability", () => {
     for (const id of OPFS_CONFIGURATION_IDS) {
       expect(configurationAvailability(configuration(id), WITHOUT_JSPI)).toEqual({ available: true });
     }
-    for (const id of ["pgrust-memory", "pgrust-memory-unlogged", ...PGRUST_THREADS_MEMORY_CONFIGURATION_IDS]) {
+    for (const id of [
+      "pgrust-memory",
+      "pgrust-memory-unlogged",
+      ...PGRUST_THREADS_MEMORY_CONFIGURATION_IDS,
+      "pgrust-postmaster-memory-broker",
+    ]) {
       expect(configurationAvailability(configuration(id), WITHOUT_OPFS)).toEqual({ available: true });
     }
   });
@@ -183,8 +205,8 @@ describe("configurationAvailability", () => {
   // The two capabilities the threads OPFS columns need are asked in one order, and a browser with
   // neither is told about the one that stops the Engine existing at all rather than the one that
   // stops its store opening.
-  test("names isolation first for a threads OPFS column that is missing both capabilities", () => {
-    for (const id of PGRUST_THREADS_OPFS_CONFIGURATION_IDS) {
+  test("names isolation first for an OPFS column on shared memory that is missing both capabilities", () => {
+    for (const id of [...PGRUST_THREADS_OPFS_CONFIGURATION_IDS, "pgrust-postmaster-opfs-repacked-relaxed"]) {
       expect(configurationAvailability(configuration(id), NOTHING).reason).toBe(SHARED_MEMORY_REQUIREMENT_MESSAGE);
       expect(configurationAvailability(configuration(id), WITHOUT_ISOLATION).reason).toBe(
         SHARED_MEMORY_REQUIREMENT_MESSAGE,

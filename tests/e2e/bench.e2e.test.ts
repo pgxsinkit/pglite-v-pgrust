@@ -21,9 +21,9 @@ import { SPEEDTEST_BENCHMARK_IDS } from "../../src/suites/speedtest/benchmarks";
 import type { SuiteId } from "../../src/suites/types";
 
 /**
- * Build plus two Suites against twelve Configurations; generous, because it is a real browser.
+ * Build plus two Suites against fourteen Configurations; generous, because it is a real browser.
  *
- * The four Storage Configurations are the slow ones — each seeds a whole data directory into a cold
+ * The five Storage Configurations are the slow ones — each seeds a whole data directory into a cold
  * store before its Run and writes every byte the Suite produces to OPFS — so this is a wall clock
  * for a lane, not a threshold anything is measured against.
  */
@@ -63,14 +63,18 @@ const COLUMNS = {
   pgrustThreadsOpfsRelaxedRatio: 17,
   pgrustThreadsOpfsStrict: 18,
   pgrustThreadsOpfsStrictRatio: 19,
-  wasqlite: 20,
-  wasqliteRatio: 21,
-  wasqliteJournalOff: 22,
-  wasqliteJournalOffRatio: 23,
+  pgrustPostmasterBroker: 20,
+  pgrustPostmasterBrokerRatio: 21,
+  pgrustPostmasterOpfsRelaxed: 22,
+  pgrustPostmasterOpfsRelaxedRatio: 23,
+  wasqlite: 24,
+  wasqliteRatio: 25,
+  wasqliteJournalOff: 26,
+  wasqliteJournalOffRatio: 27,
 } as const;
 
-/** Benchmark label, twelve Configurations, and a ratio for each of the eleven non-Baseline ones. */
-const EXPECTED_CELLS_PER_ROW = 24;
+/** Benchmark label, fourteen Configurations, and a ratio for each of the thirteen non-Baseline ones. */
+const EXPECTED_CELLS_PER_ROW = 28;
 
 interface ColumnPair {
   readonly label: string;
@@ -126,6 +130,26 @@ const PGRUST_THREADS_OPFS_COLUMNS: readonly ColumnPair[] = [
     label: "pgrust Threads OPFS repacked (strict, pre-release store)",
     value: COLUMNS.pgrustThreadsOpfsStrict,
     ratio: COLUMNS.pgrustThreadsOpfsStrictRatio,
+  },
+];
+
+/**
+ * The two postmaster columns: the same wasm module as the threads columns, booted as a real server.
+ *
+ * They need cross-origin isolation, the threads wasm module and the pre-release store bundle, and
+ * the OPFS one needs a synchronous access handle as well — so, like every pgrust column, an honest
+ * non-number is a legitimate cell here.
+ */
+const PGRUST_POSTMASTER_COLUMNS: readonly ColumnPair[] = [
+  {
+    label: "pgrust Postmaster Memory (broker, pre-release store)",
+    value: COLUMNS.pgrustPostmasterBroker,
+    ratio: COLUMNS.pgrustPostmasterBrokerRatio,
+  },
+  {
+    label: "pgrust Postmaster OPFS repacked (relaxed, pre-release store)",
+    value: COLUMNS.pgrustPostmasterOpfsRelaxed,
+    ratio: COLUMNS.pgrustPostmasterOpfsRelaxedRatio,
   },
 ];
 
@@ -245,7 +269,13 @@ describe("bench lane", () => {
     // every column after it and the tests would quietly assert about the wrong one.
     test(`${suiteId}: names its columns in Configuration order, so the cell positions mean what they say`, () => {
       const header = headerFor(suiteId);
-      for (const column of [...OPFS_COLUMNS, ...PGRUST_COLUMNS, ...PGRUST_THREADS_OPFS_COLUMNS, ...WASQLITE_COLUMNS]) {
+      for (const column of [
+        ...OPFS_COLUMNS,
+        ...PGRUST_COLUMNS,
+        ...PGRUST_THREADS_OPFS_COLUMNS,
+        ...PGRUST_POSTMASTER_COLUMNS,
+        ...WASQLITE_COLUMNS,
+      ]) {
         expect(header[column.value]).toBe(`${column.label} (ms)`);
         expect(header[column.ratio]).toBe(`vs ${BASELINE_LABEL}`);
       }
@@ -269,7 +299,12 @@ describe("bench lane", () => {
     // Both pgrust columns need JSPI and the synced wasm assets, and both OPFS columns need a
     // synchronous access handle, so any of them can legitimately be `skipped` or `failed` here;
     // what the lane checks is that the cell says so honestly.
-    for (const column of [...OPFS_COLUMNS, ...PGRUST_COLUMNS, ...PGRUST_THREADS_OPFS_COLUMNS]) {
+    for (const column of [
+      ...OPFS_COLUMNS,
+      ...PGRUST_COLUMNS,
+      ...PGRUST_THREADS_OPFS_COLUMNS,
+      ...PGRUST_POSTMASTER_COLUMNS,
+    ]) {
       test(`${suiteId}: the ${column.label} column is milliseconds, skipped or failed in every row`, () => {
         const rows = rowsFor(suiteId);
         const offenders = rows

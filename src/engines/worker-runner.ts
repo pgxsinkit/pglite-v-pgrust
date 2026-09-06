@@ -33,7 +33,7 @@ export class WorkerEngineRunner implements EngineRunner {
     this.#createWorker = createWorker;
   }
 
-  async open(config: Configuration, preamble: string): Promise<void> {
+  async open(config: Configuration, preamble: string, sessions = 1): Promise<void> {
     if (this.#worker !== null) {
       throw new Error("Engine runner is already open");
     }
@@ -44,7 +44,7 @@ export class WorkerEngineRunner implements EngineRunner {
     worker.addEventListener("messageerror", this.#onWorkerError);
 
     await this.#waitForReady(worker, config.label);
-    await this.#call({ kind: "open", ...toOpenSettings(config) });
+    await this.#call({ kind: "open", ...toOpenSettings(config, sessions) });
     if (preamble.trim() !== "") {
       await this.#call({ kind: "exec", sql: preamble });
     }

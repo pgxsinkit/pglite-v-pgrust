@@ -15,10 +15,12 @@ const BROKER_CONFIGURATION_IDS: readonly string[] = [
   "pgrust-threads-memory-broker",
   "pgrust-threads-opfs-repacked-relaxed",
   "pgrust-threads-opfs-repacked-strict",
+  "pgrust-postmaster-memory-broker",
+  "pgrust-postmaster-opfs-repacked-relaxed",
 ];
 
-describe("phase-1 Configurations", () => {
-  test("are the twelve Configurations, in column order", () => {
+describe("Configurations", () => {
+  test("are the fourteen Configurations, in column order", () => {
     expect(CONFIGURATIONS.map((config) => config.id)).toEqual([
       "pglite-memory",
       "pglite-memory-unlogged",
@@ -30,6 +32,8 @@ describe("phase-1 Configurations", () => {
       "pgrust-threads-memory-broker",
       "pgrust-threads-opfs-repacked-relaxed",
       "pgrust-threads-opfs-repacked-strict",
+      "pgrust-postmaster-memory-broker",
+      "pgrust-postmaster-opfs-repacked-relaxed",
       "wasqlite-memory",
       "wasqlite-memory-journal-off",
     ]);
@@ -47,6 +51,8 @@ describe("phase-1 Configurations", () => {
       "pgrust Threads Memory (broker, pre-release store)",
       "pgrust Threads OPFS repacked (relaxed, pre-release store)",
       "pgrust Threads OPFS repacked (strict, pre-release store)",
+      "pgrust Postmaster Memory (broker, pre-release store)",
+      "pgrust Postmaster OPFS repacked (relaxed, pre-release store)",
       "wa-sqlite Memory",
       "wa-sqlite Memory (journal off)",
     ]);
@@ -67,7 +73,32 @@ describe("phase-1 Configurations", () => {
     expect(ids.indexOf("pgrust-threads-opfs-repacked-strict")).toBe(
       ids.indexOf("pgrust-threads-opfs-repacked-relaxed") + 1,
     );
-    expect(ids.indexOf("wasqlite-memory")).toBe(ids.indexOf("pgrust-threads-opfs-repacked-strict") + 1);
+    expect(ids.indexOf("pgrust-postmaster-memory-broker")).toBe(ids.indexOf("pgrust-threads-opfs-repacked-strict") + 1);
+  });
+
+  // The postmaster columns come after every session column and before the Reference Engine: they are
+  // the same wasm module asked a different question, and a reader compares them with what is beside
+  // them.
+  test("put the two postmaster columns after the four threads columns and before the Reference Engine", () => {
+    const ids = CONFIGURATIONS.map((config) => config.id);
+    expect(ids.indexOf("pgrust-postmaster-opfs-repacked-relaxed")).toBe(
+      ids.indexOf("pgrust-postmaster-memory-broker") + 1,
+    );
+    expect(ids.indexOf("wasqlite-memory")).toBe(ids.indexOf("pgrust-postmaster-opfs-repacked-relaxed") + 1);
+  });
+
+  // Same Engine, same store, one port apart — and no `fs` knob at all, because a postmaster whose
+  // checkpointer had its own copy of the image could not see what its backends wrote.
+  test("give the two postmaster columns one Engine and differ in nothing but the store's port", () => {
+    const memory = findConfiguration("pgrust-postmaster-memory-broker");
+    const opfs = findConfiguration("pgrust-postmaster-opfs-repacked-relaxed");
+    expect(memory?.engine).toBe("pgrust-postmaster");
+    expect(opfs?.engine).toBe("pgrust-postmaster");
+    expect(memory?.options).toEqual({ pgrustPostmaster: { port: "memory", durability: "relaxed" } });
+    expect(opfs?.options).toEqual({ pgrustPostmaster: { port: "opfs", durability: "relaxed" } });
+    expect(memory?.dataDir).toBe("");
+    expect(memory?.modSql).toBeUndefined();
+    expect(opfs?.modSql).toBeUndefined();
   });
 
   test("give the two threads Memory columns one Engine and differ in nothing but the filesystem seam", () => {
@@ -103,6 +134,7 @@ describe("phase-1 Configurations", () => {
       "pglite-opfs-repacked-strict",
       "pgrust-threads-opfs-repacked-relaxed",
       "pgrust-threads-opfs-repacked-strict",
+      "pgrust-postmaster-opfs-repacked-relaxed",
     ]);
   });
 
@@ -116,6 +148,7 @@ describe("phase-1 Configurations", () => {
       `${OPFS_DIRECTORY_PREFIX}/opfs-repacked-strict`,
       `${OPFS_DIRECTORY_PREFIX}-threads-opfs-repacked-relaxed`,
       `${OPFS_DIRECTORY_PREFIX}-threads-opfs-repacked-strict`,
+      `${OPFS_DIRECTORY_PREFIX}-postmaster-opfs-repacked-relaxed`,
     ]);
     // Two live owners of one directory is a StoreOwnedError; two columns sharing one would also be
     // one column measuring the other's data directory.

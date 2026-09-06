@@ -1,20 +1,21 @@
 /**
- * The phase-1 Configurations, in the order they appear as result columns.
+ * The Configurations, in the order they appear as result columns.
  *
- * A Configuration is an Engine plus the storage and durability settings it is opened with. Eight are
+ * A Configuration is an Engine plus the storage and durability settings it is opened with. Nine are
  * Memory Configurations — the data directory lives in the worker's heap and is discarded when the
- * worker ends — and each of the four Engines gets two of them. For PGlite, pgrust and wa-sqlite the
- * pair is the Engine's default settings and the least durable settings it offers (unlogged tables
- * for the two single-session Postgres builds, journal mode `off` for SQLite); for the pgrust threads
- * build the pair is its two filesystem seams instead, because that is the choice that build makes.
- * Two of those Memory columns are the Reference Engine, wa-sqlite: it is there so the harness can be
- * calibrated against published numbers, and it is never the Baseline of a ratio.
+ * worker ends. For PGlite, pgrust and wa-sqlite the pair is the Engine's default settings and the
+ * least durable settings it offers (unlogged tables for the two single-session Postgres builds,
+ * journal mode `off` for SQLite); for the pgrust threads build the pair is its two filesystem seams
+ * instead, because that is the choice that build makes, and the postmaster has one, on the seam it
+ * cannot do without. Two of those Memory columns are the Reference Engine, wa-sqlite: it is there so
+ * the harness can be calibrated against published numbers, and it is never the Baseline of a ratio.
  *
- * The other four are Storage Configurations, and they are one store twice over: the `opfs-repacked`
- * store in each of its two durability modes, reached once through PGlite's own filesystem and once
- * through the threads build's broker coordinator. Their data directory is real storage rather than
- * heap, which is the whole point of measuring them — but they still carry nothing between Runs,
- * because their worker empties the store's OPFS directory before it opens it and removes it after.
+ * The other five are Storage Configurations, and they are one store several times over: the
+ * `opfs-repacked` store reached through PGlite's own filesystem (both durability modes), through the
+ * threads build's broker coordinator (both durability modes), and through the same coordinator under
+ * a real postmaster. Their data directory is real storage rather than heap, which is the whole point
+ * of measuring them — but they still carry nothing between Runs, because their worker empties the
+ * store's OPFS directory before it opens it and removes it after.
  *
  * Every Configuration here is wired up; whether one can run in this browser is decided at runtime by
  * `configurationAvailability` (see `./engines/availability`).
@@ -140,6 +141,33 @@ export const CONFIGURATIONS: readonly Configuration[] = [
     engine: "pgrust-threads",
     dataDir: opfsOwnedRootDirectory("threads-opfs-repacked-strict"),
     options: { pgrustThreads: { fs: "broker", port: "opfs", durability: "strict" } },
+  },
+  {
+    // The same wasm module as the four columns above, driven as a real `PostmasterMain` over
+    // host-pipe file descriptors instead of as one `--stdio-wire-threaded` session: a postmaster,
+    // its auxiliary processes and one backend thread per session, all sharing one shared memory and
+    // one filesystem. The filesystem has to be the broker's — the checkpointer is its own guest
+    // thread and could see nothing a backend wrote if every thread had its own copy of the image —
+    // so this pair is the broker seam's third and fourth column and loads the same pre-release store.
+    //
+    // On the memory port nothing leaves the coordinator's heap, so this is a Memory Configuration
+    // and the twin of `pgrust Threads Memory (broker, pre-release store)`: same commit, same store,
+    // same port, one postmaster instead of one session.
+    id: "pgrust-postmaster-memory-broker",
+    label: "pgrust Postmaster Memory (broker, pre-release store)",
+    engine: "pgrust-postmaster",
+    dataDir: "",
+    options: { pgrustPostmaster: { port: "memory", durability: "relaxed" } },
+  },
+  {
+    // The postmaster's store on OPFS: the same four exclusively owned files the other OPFS repacked
+    // columns run on, in the coordinator's own root-level directory, at `relaxed` durability. A
+    // Storage Configuration, emptied before the Run and removed after it like every other one.
+    id: "pgrust-postmaster-opfs-repacked-relaxed",
+    label: "pgrust Postmaster OPFS repacked (relaxed, pre-release store)",
+    engine: "pgrust-postmaster",
+    dataDir: opfsOwnedRootDirectory("postmaster-opfs-repacked-relaxed"),
+    options: { pgrustPostmaster: { port: "opfs", durability: "relaxed" } },
   },
   {
     id: "wasqlite-memory",

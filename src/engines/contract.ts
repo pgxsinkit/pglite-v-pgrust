@@ -17,8 +17,14 @@
  * different wasm module, different host JS, different blocking primitive (JSPI versus
  * `Atomics.wait`), different browser requirement. A Configuration picks one of them, and the
  * availability gate asks each a different question.
+ *
+ * `pgrust-postmaster` is the same wasm module as `pgrust-threads` driven a different way: a real
+ * `PostmasterMain` over host-pipe file descriptors, with one backend thread per session, instead of
+ * one `--stdio-wire-threaded` session on fds 0/1. It is a separate Engine because what it can be
+ * asked is different in kind — several sessions at once, on several real backends — and because its
+ * boot, its pool size and its shutdown are the postmaster's rather than a session's.
  */
-export type EngineId = "pglite" | "pgrust" | "pgrust-threads" | "wasqlite";
+export type EngineId = "pglite" | "pgrust" | "pgrust-threads" | "pgrust-postmaster" | "wasqlite";
 
 /**
  * The SQL dialect an Engine speaks. The Benchmarks themselves are dialect-neutral; only a Suite's
@@ -31,6 +37,7 @@ const ENGINE_DIALECTS: Readonly<Record<EngineId, SqlDialect>> = {
   pglite: "postgres",
   pgrust: "postgres",
   "pgrust-threads": "postgres",
+  "pgrust-postmaster": "postgres",
   wasqlite: "sqlite",
 };
 
@@ -99,6 +106,24 @@ export interface PgrustThreadsOpenOptions {
 }
 
 /**
+ * The postmaster Engine's settings: where its one store lives, and how durably.
+ *
+ * There is no `fs` knob, and deliberately so. A postmaster is not one session: its checkpointer,
+ * background writer and every backend are separate guest threads, and on the copy seam each of them
+ * would build its own filesystem out of its own copy of the packed image — so the checkpointer could
+ * not see a relation file a backend had just created. The broker seam, where one store lives in a
+ * coordinator worker every instance reaches over a `SharedArrayBuffer` channel, is what makes the
+ * postmaster lane a single Postgres rather than N private ones, and it is therefore not optional.
+ *
+ * How many sessions to open is not here either: that is the Suite's question, not the
+ * Configuration's, and it travels as `EngineOpenOptions.sessions`.
+ */
+export interface PgrustPostmasterOpenOptions {
+  readonly port?: PgrustThreadsPort;
+  readonly durability?: StoreDurability;
+}
+
+/**
  * A storage backend PGlite's data directory can be opened through instead of its own filesystems.
  *
  * One so far: `opfs-repacked` is `@pgxsinkit/pglite-opfs-repacked`, which packs a whole data
@@ -138,7 +163,18 @@ export interface EngineOpenOptions {
   readonly relaxedDurability?: boolean;
   readonly pglite?: PgliteStoreSettings;
   readonly pgrustThreads?: PgrustThreadsOpenOptions;
+  readonly pgrustPostmaster?: PgrustPostmasterOpenOptions;
   readonly wasqlite?: WasqliteOpenOptions;
+  /**
+   * How many sessions the Run needs, asked for by the **Suite** rather than by the Configuration.
+   *
+   * The two existing Suites need one and never set it; the Concurrency Suite needs one per Client.
+   * Every Engine is told, and only one can act on it: the postmaster opens that many host-pipe
+   * sessions, each on its own backend thread, and everything else has exactly one place to run SQL
+   * (which is why the Concurrency Suite is reported unavailable on the Engines where "concurrent"
+   * could only mean "serialised" — see `./availability`).
+   */
+  readonly sessions?: number;
 }
 
 /** The PGlite-shaped subset of the open settings; `undefined` when there is nothing to pass. */
@@ -177,6 +213,32 @@ export function pgrustThreadsOpensOpfsStore(options: EngineOpenOptions | undefin
   return options?.pgrustThreads?.port === "opfs";
 }
 
+/**
+ * The postmaster settings this Configuration opens pgrust with, or `undefined` for the defaults
+ * (one store on the coordinator's memory port, relaxed). Read only by the `pgrust-postmaster` worker.
+ */
+export function pgrustPostmasterOptions(
+  options: EngineOpenOptions | undefined,
+): PgrustPostmasterOpenOptions | undefined {
+  return options?.pgrustPostmaster;
+}
+
+/**
+ * Whether this Configuration puts the postmaster's one store on OPFS rather than in the
+ * coordinator's heap — the third way into the same gate `pgliteStore` and
+ * `pgrustThreadsOpensOpfsStore` answer, and asked for the same reason: the store needs a
+ * synchronous access handle whichever Engine is on the other side of it.
+ */
+export function pgrustPostmasterOpensOpfsStore(options: EngineOpenOptions | undefined): boolean {
+  return options?.pgrustPostmaster?.port === "opfs";
+}
+
+/** How many sessions a Run asked for; one unless a Suite asked for more. */
+export function requestedSessions(options: EngineOpenOptions | undefined): number {
+  const sessions = options?.sessions;
+  return sessions === undefined || !Number.isInteger(sessions) || sessions < 1 ? 1 : sessions;
+}
+
 /** An Engine plus the storage and durability settings it is opened with. One column of results. */
 export interface Configuration {
   readonly id: string;
@@ -208,19 +270,28 @@ export interface Configuration {
  * messaging is deliberately outside the window.
  */
 export interface EngineRunner {
-  /** Boot a fresh Engine for `config`, then run `preamble` (untimed) if it is non-empty. */
-  open(config: Configuration, preamble: string): Promise<void>;
+  /**
+   * Boot a fresh Engine for `config`, then run `preamble` (untimed) if it is non-empty.
+   *
+   * `sessions` is the Suite's request, not the Configuration's: the Concurrency Suite needs one
+   * session per Client, and everything else needs the one every Engine has anyway.
+   */
+  open(config: Configuration, preamble: string, sessions?: number): Promise<void>;
   /** Execute one SQL string and return its Measurement. */
   measure(sql: string): Promise<Measurement>;
   /** Tear the Engine and its worker down. Safe to call more than once. */
   close(): Promise<void>;
 }
 
-/** Narrow a Configuration to the settings that can cross the worker boundary. */
-export function toOpenSettings(config: Configuration): { dataDir: string; options?: EngineOpenOptions } {
-  return config.options === undefined
-    ? { dataDir: config.dataDir }
-    : { dataDir: config.dataDir, options: config.options };
+/**
+ * Narrow a Configuration to the settings that can cross the worker boundary.
+ *
+ * The Suite's session count is folded in here, and only when it is more than one: a Run of the two
+ * single-session Suites then sends byte-identical open settings to what it always did.
+ */
+export function toOpenSettings(config: Configuration, sessions = 1): { dataDir: string; options?: EngineOpenOptions } {
+  const options: EngineOpenOptions | undefined = sessions > 1 ? { ...config.options, sessions } : config.options;
+  return options === undefined ? { dataDir: config.dataDir } : { dataDir: config.dataDir, options };
 }
 
 /** Apply a Configuration's SQL rewrite, if it has one. */

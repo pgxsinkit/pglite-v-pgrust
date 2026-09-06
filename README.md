@@ -67,18 +67,20 @@ rule lives beside wa-sqlite's git-tag rule in `src/dependency-version.ts` and is
 
 ## The columns
 
-Twelve Configurations. Eight are **Memory Configurations**, two per Engine. For PGlite, pgrust and
-wa-sqlite the pair is the Engine's default settings and the least durable settings it offers:
-`PGlite Memory`, `PGlite Memory (unlogged)`, `pgrust Memory`, `pgrust Memory (unlogged)`,
-`wa-sqlite Memory`, `wa-sqlite Memory (journal off)`. For the pgrust threads build the pair is its
-two filesystem seams instead: `pgrust Threads Memory` and
-`pgrust Threads Memory (broker, pre-release store)`. Four are **Storage Configurations**, and they
-are one store measured through two Engines: `PGlite OPFS repacked (relaxed)` and
-`PGlite OPFS repacked (strict)` reach it through PGlite, and
+Fourteen Configurations. Nine are **Memory Configurations**. For PGlite, pgrust and wa-sqlite the
+pair is the Engine's default settings and the least durable settings it offers: `PGlite Memory`,
+`PGlite Memory (unlogged)`, `pgrust Memory`, `pgrust Memory (unlogged)`, `wa-sqlite Memory`,
+`wa-sqlite Memory (journal off)`. For the pgrust threads build the pair is its two filesystem seams
+instead: `pgrust Threads Memory` and `pgrust Threads Memory (broker, pre-release store)`. The ninth
+is `pgrust Postmaster Memory (broker, pre-release store)`, which is the same store and the same seam
+under a real postmaster rather than one session. Five are **Storage Configurations**, and they are
+one store measured through three Engines: `PGlite OPFS repacked (relaxed)` and
+`PGlite OPFS repacked (strict)` reach it through PGlite,
 `pgrust Threads OPFS repacked (relaxed, pre-release store)` and
 `pgrust Threads OPFS repacked (strict, pre-release store)` reach the same store through the threads
-build's broker coordinator. Every ratio is against `PGlite Memory`, which is the only column without
-one.
+build's broker coordinator, and `pgrust Postmaster OPFS repacked (relaxed, pre-release store)`
+reaches it through that coordinator with a whole postmaster on top. Every ratio is against
+`PGlite Memory`, which is the only column without one.
 
 The two unlogged columns rewrite `CREATE TABLE` to `CREATE UNLOGGED TABLE` — PGlite's own benchmark
 page does this, and pgrust accepts the same syntax — so the Engine writes no WAL for the Suite's
@@ -128,12 +130,55 @@ precisely so that stays true. The last two are [Storage
 Configurations](#the-opfs-repacked-columns) on the same store the `PGlite OPFS repacked` columns
 run on.
 
-**`pre-release store` is not decoration.** The three broker columns load a build of
+**`pre-release store` is not decoration.** The five broker columns — the three above and the two
+[postmaster columns](#the-pgrust-postmaster-columns) — load a build of
 `@pgxsinkit/pglite-opfs-repacked` whose sync broker and WASI filesystem adapter are in **no
 published version** of that package: `bun run sync:pgrust` copies it out of a pgxsinkit checkout and
 records the exact commit in `src/vendor/pgrust/SOURCE.md`. The two `PGlite OPFS repacked` columns
 are a different thing entirely — they run the published package this repo depends on. Without that
-bundle the three broker columns report it missing and everything else runs.
+bundle the broker columns report it missing and everything else runs.
+
+### The pgrust Postmaster columns
+
+The two `pgrust Postmaster` columns are **the same wasm module as the four `pgrust Threads` columns,
+booted as a server instead of as a session**. The threads columns run
+`postgres --stdio-wire-threaded`: one session, on one spawned thread, reading fd 0 and writing fd 1.
+These two run `postgres --host-pipes`, which picks a transport and then falls through to the ordinary
+`PostmasterMain` — so what starts is a postmaster with a startup process, a checkpointer, a
+background writer, a WAL writer and a warm standby pool, and **every session is a real backend on its
+own guest thread**. Two sessions here are two backends contending in shared memory and in the lock
+manager, not two callers of one queue.
+
+| Column                                                         | Store port | What is on top of the store                                                         |
+| -------------------------------------------------------------- | ---------- | ----------------------------------------------------------------------------------- |
+| `pgrust Postmaster Memory (broker, pre-release store)`         | `memory`   | A whole postmaster; nothing leaves the coordinator's heap, so it is a Memory column |
+| `pgrust Postmaster OPFS repacked (relaxed, pre-release store)` | `opfs`     | The same postmaster on the same four OPFS files the other repacked columns use      |
+
+The transport is pgrust's host-pipe file-descriptor contract, and the host half of it lives in
+`src/engines/pgrust-postmaster/pgrust-postmaster.worker.ts`: a listener ring on fd 1000, a wake
+channel on fd 999 and one `(in, out)` pair of `SharedArrayBuffer` rings per session at fds
+1001+2k/1002+2k. **Every one of those rings is created before the guest starts**, because the fd
+registry is handed to the pool workers at prewarm — which is why the number of sessions is settled
+when the Engine is opened (`EngineOpenOptions.sessions`, asked for by the Suite) rather than grown on
+demand. A session is opened by writing a 16-byte `HPGP` record to the listener and one token byte to
+the wake fd; the postmaster wakes, accepts, spawns the backend, and the backend answers the startup
+packet. That accept costs 10–110 ms per session and is paid inside `open`, outside every Measurement.
+
+There is no `--fs copy` here. A postmaster's checkpointer is its own guest thread, and on the copy
+seam it would build its filesystem from its own copy of the packed image and see nothing the backends
+wrote — so the broker seam is not a knob on this Engine, it is a requirement, and both columns load
+the same [pre-release store](#the-pgrust-threads-columns) the broker threads columns do.
+
+Shutdown is Postgres's own. Each session is sent Terminate, then the listener ring is **closed**, and
+that EOF is what `pqcomm_hostpipes` turns into a fast-shutdown request — the same flag a `SIGINT`
+raises. The guest then walks its ordinary ceremony (stop backends, wait for them, shutdown
+checkpoint, `exit(0)`) and the worker waits for that exit rather than terminating a worker out from
+under a running server. Only then is the coordinator stopped through its doorbell, and only then can
+the OPFS directory be removed.
+
+These are the only columns that can be asked more than one thing at a time and answer it with more
+than one backend: N sessions here are N real Postgres backends, sharing one buffer pool, one lock
+manager and one WAL.
 
 ### The OPFS repacked columns
 
@@ -370,16 +415,16 @@ blocking stdin read, which needs **JS Promise Integration** (`WebAssembly.Suspen
 The header shows whether JSPI was detected. Where it is missing the pgrust column is greyed out with
 that reason and the PGlite columns run as normal — no Run is aborted for it.
 
-The four `pgrust Threads` columns need the opposite thing. Their build spawns real threads and blocks
-on `Atomics.wait`, so they need **no JSPI at all** — what they need is `SharedArrayBuffer` and a
-shared `WebAssembly.Memory`, which every browser gates on
-[cross-origin isolation](#cross-origin-isolation) (and, for the two whose store is on OPFS, a
+The four `pgrust Threads` columns and the two `pgrust Postmaster` columns need the opposite thing.
+Their build spawns real threads and blocks on `Atomics.wait`, so they need **no JSPI at all** — what
+they need is `SharedArrayBuffer` and a shared `WebAssembly.Memory`, which every browser gates on
+[cross-origin isolation](#cross-origin-isolation) (and, for the three whose store is on OPFS, a
 synchronous access handle as well):
 
-| Browser                        | `crossOriginIsolated` under COOP+COEP | pgrust Threads columns |
-| ------------------------------ | ------------------------------------- | ---------------------- |
-| Chrome / Edge, Firefox, Safari | yes                                   | run                    |
-| Anything that withholds it     | no                                    | reported skipped       |
+| Browser                        | `crossOriginIsolated` under COOP+COEP | pgrust Threads and Postmaster columns |
+| ------------------------------ | ------------------------------------- | ------------------------------------- |
+| Chrome / Edge, Firefox, Safari | yes                                   | run                                   |
+| Anything that withholds it     | no                                    | reported skipped                      |
 
 The header shows the answer as `cross-origin isolated yes|no`. Because this repo serves both headers
 from every server it owns, a `no` there is a browser withholding them, not a missing server config.
@@ -494,7 +539,7 @@ revisions it will look for — floating it would silently ask for builds that ar
 
 | Browser in the lane           | Behaviour                                                                                                                                                                                                                                                   |
 | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Chromium (default)            | JSPI on by default, cross-origin isolation from the lane's own server and synchronous access handles granted in dedicated workers, so all twelve Configurations run                                                                                         |
+| Chromium (default)            | JSPI on by default, cross-origin isolation from the lane's own server and synchronous access handles granted in dedicated workers, so all fourteen Configurations run                                                                                       |
 | Firefox (`--browser firefox`) | The lane sets `javascript.options.wasm_js_promise_integration`; where JSPI is still missing the pgrust column reports `skipped` and the Run continues. Firefox's reduced timer precision quantises Measurements, so its numbers are coarser than Chromium's |
 | WebKit (`--browser webkit`)   | Exits 0 with `WebKit skipped: Playwright's WebKit build has no JSPI yet`, without launching. That build also refuses synchronous access handles in both worker kinds, so it could contribute neither the pgrust nor the OPFS columns                        |
 
@@ -540,7 +585,8 @@ protocol in `src/engines/protocol.ts`, register its worker factory in `src/engin
 it a SQL dialect in `src/engines/contract.ts`, and add its Configuration to `src/configurations.ts`.
 Engine-specific open settings go under that Engine's own key in `EngineOpenOptions` — `wasqlite` for
 the journal mode, `pglite` for the store and its durability, `pgrustThreads` for the filesystem seam,
-the store's port and its durability — so one Engine's knob can never reach another's constructor.
+the store's port and its durability, `pgrustPostmaster` for the port and durability of the
+postmaster's store — so one Engine's knob can never reach another's constructor.
 Everything this app puts in OPFS goes through `src/opfs.ts`, which keeps it under one owned prefix
 and takes it away again; the one thing that cannot sit inside that prefix directory is a store the
 vendored pgrust coordinator opens, which gets a root-level directory carrying the prefix in its name

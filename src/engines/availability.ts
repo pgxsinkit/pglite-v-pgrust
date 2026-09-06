@@ -11,7 +11,8 @@
  *   `Atomics.wait` — but it imports one shared `WebAssembly.Memory` and speaks to the host over
  *   `SharedArrayBuffer` ring pipes, and both are gated on cross-origin isolation. This repo serves
  *   the two headers everywhere, so a `no` here is a browser that withholds them, not a missing
- *   server config.
+ *   server config. Both Engines built on that module are gated here: the single-session threads
+ *   Engine and the postmaster.
  * - **An OPFS synchronous access handle**, per Configuration. The `opfs-repacked` store needs one to
  *   open its four files, and no Engine as such needs one: the same PGlite runs the Memory columns
  *   here regardless, and so does the same threads build. That is why this gate reads the
@@ -27,7 +28,7 @@
  */
 
 import type { Configuration, EngineId } from "./contract";
-import { pgliteStore, pgrustThreadsOpensOpfsStore } from "./contract";
+import { pgliteStore, pgrustPostmasterOpensOpfsStore, pgrustThreadsOpensOpfsStore } from "./contract";
 
 /** Shown in the pgrust column header, and thrown by the pgrust worker, when JSPI is missing. */
 export const JSPI_REQUIREMENT_MESSAGE =
@@ -63,7 +64,7 @@ export function engineRequiresJspi(engine: EngineId): boolean {
  * Deliberately not `pgrust`: the two builds want opposite things, and an Engine gated on both would
  * be reported unavailable in a browser that can in fact run it.
  */
-const ENGINES_REQUIRING_SHARED_MEMORY: readonly EngineId[] = ["pgrust-threads"];
+const ENGINES_REQUIRING_SHARED_MEMORY: readonly EngineId[] = ["pgrust-threads", "pgrust-postmaster"];
 
 export function engineRequiresSharedMemory(engine: EngineId): boolean {
   return ENGINES_REQUIRING_SHARED_MEMORY.includes(engine);
@@ -79,7 +80,11 @@ export function engineRequiresSharedMemory(engine: EngineId): boolean {
  * its **memory** port opens no OPFS file at all and is deliberately not gated here.
  */
 export function configurationRequiresOpfsSyncAccess(configuration: Configuration): boolean {
-  return pgliteStore(configuration.options) !== undefined || pgrustThreadsOpensOpfsStore(configuration.options);
+  return (
+    pgliteStore(configuration.options) !== undefined ||
+    pgrustThreadsOpensOpfsStore(configuration.options) ||
+    pgrustPostmasterOpensOpfsStore(configuration.options)
+  );
 }
 
 export interface Availability {

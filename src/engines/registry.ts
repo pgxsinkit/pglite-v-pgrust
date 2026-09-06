@@ -15,6 +15,8 @@ const engineWorkerFactories: Readonly<Record<EngineId, WorkerFactory>> = {
   pgrust: () => new Worker(new URL("./pgrust/pgrust.worker.ts", import.meta.url), { type: "module" }),
   "pgrust-threads": () =>
     new Worker(new URL("./pgrust-threads/pgrust-threads.worker.ts", import.meta.url), { type: "module" }),
+  "pgrust-postmaster": () =>
+    new Worker(new URL("./pgrust-postmaster/pgrust-postmaster.worker.ts", import.meta.url), { type: "module" }),
   wasqlite: () => new Worker(new URL("./wasqlite/wasqlite.worker.ts", import.meta.url), { type: "module" }),
 };
 
