@@ -377,10 +377,10 @@ function syncHostRuntime(): void {
 /**
  * Copy the **pre-release** `@pgxsinkit/pglite-opfs-repacked` bundle the broker column loads.
  *
- * Not vendored and not a dependency: the sync broker and the WASI adapter that column needs exist
+ * Not vendored and not a dependency: the sync broker and the WASI adapter those columns need exist
  * in no published version of the package, so the bytes come out of a pgxsinkit checkout and are
  * recorded — commit and all — in `SOURCE.md`. Missing is not fatal: every other column, the two
- * published-package OPFS columns included, runs without it, and the broker column reports the
+ * published-package OPFS columns included, runs without it, and each broker column reports the
  * missing bundle in its own header.
  */
 function syncStoreBundle(): boolean {
@@ -394,7 +394,7 @@ function syncStoreBundle(): boolean {
   if (!existsSync(source)) {
     console.warn("");
     console.warn(`sync:pgrust: the pre-release store bundle is not at ${source}.`);
-    console.warn("  The `pgrust Threads Memory (broker, pre-release store)` column will report it missing;");
+    console.warn("  The three `pgrust Threads` broker columns will report it missing;");
     console.warn("  every other column is unaffected. Build it in a pgxsinkit checkout:");
     console.warn(`    ${STORE_BUNDLE_BUILD_HINT}`);
     console.warn("  and point PGXSINKIT_DIR at that checkout if it is not a sibling of this repo.");

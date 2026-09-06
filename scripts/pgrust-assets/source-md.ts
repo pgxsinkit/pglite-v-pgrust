@@ -164,21 +164,22 @@ export interface StoreBundleProvenance {
 }
 
 /**
- * The block recording the **pre-release** store bundle the broker column runs on.
+ * The block recording the **pre-release** store bundle the broker columns run on.
  *
  * The published `@pgxsinkit/pglite-opfs-repacked` this repo depends on carries neither the sync
- * broker nor the WASI adapter the broker column needs, so that one column runs a bundle built from
- * a checkout instead. That is a materially different claim from "the package on npm", and the two
- * must never be read as one: the Configuration's own label says `pre-release store`, and this block
- * is where the exact commit behind that label is written down.
+ * broker nor the WASI adapter those columns need, so they run a bundle built from a checkout
+ * instead. That is a materially different claim from "the package on npm", and the two must never
+ * be read as one: each of those Configurations' labels says `pre-release store`, and this block is
+ * where the exact commit behind that label is written down.
  */
 export function storeBundleSection(provenance: StoreBundleProvenance): string {
   return [
     "## Pre-release store bundle in `public/pgrust/host/`",
     "",
-    "Copied by `bun run sync:pgrust` from a **pgxsinkit checkout**, not from npm. The",
-    "`pgrust Threads Memory (broker, pre-release store)` column is the only thing that loads it, and",
-    "it is a gitignored build output; only this record of it is committed.",
+    "Copied by `bun run sync:pgrust` from a **pgxsinkit checkout**, not from npm. The three",
+    "`pgrust Threads` broker columns are the only things that load it — the Memory one on the store's",
+    "memory port, the two OPFS repacked ones on its OPFS port — and it is a gitignored build output;",
+    "only this record of it is committed.",
     "",
     `- Package: \`@pgxsinkit/pglite-opfs-repacked\` (manifest version \`${provenance.packageVersion}\`)`,
     `- Commit: \`${provenance.commit}\``,
@@ -187,9 +188,10 @@ export function storeBundleSection(provenance: StoreBundleProvenance): string {
     `- Copied to: \`${provenance.target}\` (${provenance.bytes} bytes)`,
     `- Copied: ${provenance.syncedAt}`,
     "",
-    "The `RepackedSyncBroker` + `createWasiPreview1Fs` pair this column needs is **not** in any",
-    "published version of the package, so no npm release corresponds to these bytes. The two OPFS",
-    "repacked columns are unaffected: they run the published dependency in `package.json`.",
+    "The `RepackedSyncBroker` + `createWasiPreview1Fs` pair those columns need is **not** in any",
+    "published version of the package, so no npm release corresponds to these bytes. The two",
+    "`PGlite OPFS repacked` columns are unaffected: they run the published dependency in",
+    "`package.json`.",
   ].join("\n");
 }
 
