@@ -20,6 +20,18 @@ describe("describeDependencyVersion", () => {
     expect(describeDependencyVersion("github:owner/repo#feature#v3", "0.0.0")).toBe("v3 (github)");
   });
 
+  test("reports the exact version an npm: alias pins, including a scoped, prereleased one", () => {
+    expect(describeDependencyVersion("npm:@pgxsinkit/pglite@0.5.5-pgx.2", "0.5.5-pgx.2")).toBe("0.5.5-pgx.2");
+    expect(describeDependencyVersion("npm:@pgxsinkit/pglite@0.5.5-pgx.2", "unknown")).toBe("0.5.5-pgx.2");
+    expect(describeDependencyVersion("npm:other-package@1.2.3", "unknown")).toBe("1.2.3");
+  });
+
+  test("falls back to the manifest for an alias that pins no exact version", () => {
+    expect(describeDependencyVersion("npm:@pgxsinkit/pglite", "0.5.5-pgx.2")).toBe("0.5.5-pgx.2");
+    expect(describeDependencyVersion("npm:@pgxsinkit/pglite@^0.5.5", "0.5.5-pgx.2")).toBe("0.5.5-pgx.2");
+    expect(describeDependencyVersion("npm:some-package@latest", "1.2.3")).toBe("1.2.3");
+  });
+
   test("falls back to the manifest for a plain semver specifier", () => {
     expect(describeDependencyVersion("^19.2.8", "19.2.9")).toBe("19.2.9");
     expect(describeDependencyVersion("0.5.5-pgx.2", "0.5.5-pgx.2")).toBe("0.5.5-pgx.2");

@@ -20,8 +20,8 @@ import { RTT_STATEMENTS } from "../../src/suites/rtt/statements";
 import { SPEEDTEST_BENCHMARK_IDS } from "../../src/suites/speedtest/benchmarks";
 import type { SuiteId } from "../../src/suites/types";
 
-/** Build plus two Suites against six Configurations; generous, because it is a real browser. */
-const LANE_TIMEOUT_MS = 900_000;
+/** Build plus two Suites against eight Configurations; generous, because it is a real browser. */
+const LANE_TIMEOUT_MS = 1_200_000;
 
 const RTT_ITERATIONS = 3;
 
@@ -41,24 +41,41 @@ const COLUMNS = {
   baseline: 1,
   pgliteUnlogged: 2,
   pgliteUnloggedRatio: 3,
-  pgrust: 4,
-  pgrustRatio: 5,
-  pgrustUnlogged: 6,
-  pgrustUnloggedRatio: 7,
-  wasqlite: 8,
-  wasqliteRatio: 9,
-  wasqliteJournalOff: 10,
-  wasqliteJournalOffRatio: 11,
+  pgliteOpfsRelaxed: 4,
+  pgliteOpfsRelaxedRatio: 5,
+  pgliteOpfsStrict: 6,
+  pgliteOpfsStrictRatio: 7,
+  pgrust: 8,
+  pgrustRatio: 9,
+  pgrustUnlogged: 10,
+  pgrustUnloggedRatio: 11,
+  wasqlite: 12,
+  wasqliteRatio: 13,
+  wasqliteJournalOff: 14,
+  wasqliteJournalOffRatio: 15,
 } as const;
 
-/** Benchmark label, six Configurations, and a ratio for each of the five non-Baseline ones. */
-const EXPECTED_CELLS_PER_ROW = 12;
+/** Benchmark label, eight Configurations, and a ratio for each of the seven non-Baseline ones. */
+const EXPECTED_CELLS_PER_ROW = 16;
 
 interface ColumnPair {
   readonly label: string;
   readonly value: number;
   readonly ratio: number;
 }
+
+/**
+ * The two OPFS columns, held to the same rule as pgrust: they need a capability this browser may
+ * not grant (a synchronous access handle in a dedicated worker), so `skipped` is a legitimate cell.
+ */
+const OPFS_COLUMNS: readonly ColumnPair[] = [
+  {
+    label: "PGlite OPFS repacked (relaxed)",
+    value: COLUMNS.pgliteOpfsRelaxed,
+    ratio: COLUMNS.pgliteOpfsRelaxedRatio,
+  },
+  { label: "PGlite OPFS repacked (strict)", value: COLUMNS.pgliteOpfsStrict, ratio: COLUMNS.pgliteOpfsStrictRatio },
+];
 
 /** The two pgrust columns, held to the same rule: a number with a ratio, or an honest non-number. */
 const PGRUST_COLUMNS: readonly ColumnPair[] = [
@@ -129,6 +146,7 @@ describe("bench lane", () => {
     expect(report.environmentLine).toContain("pgrust");
     expect(report.environmentLine).toContain("wa-sqlite");
     expect(report.environmentLine).toContain("JSPI");
+    expect(report.environmentLine).toContain("OPFS sync access");
     expect(report.environmentLine).toContain(describeRttIterations(RTT_ITERATIONS));
   });
 
@@ -165,9 +183,10 @@ describe("bench lane", () => {
       expect(offenders).toEqual([]);
     });
 
-    // Both pgrust columns need JSPI and the synced wasm assets, so either can legitimately be
-    // `skipped` or `failed` here; what the lane checks is that the cell says so honestly.
-    for (const column of PGRUST_COLUMNS) {
+    // Both pgrust columns need JSPI and the synced wasm assets, and both OPFS columns need a
+    // synchronous access handle, so any of them can legitimately be `skipped` or `failed` here;
+    // what the lane checks is that the cell says so honestly.
+    for (const column of [...OPFS_COLUMNS, ...PGRUST_COLUMNS]) {
       test(`${suiteId}: the ${column.label} column is milliseconds, skipped or failed in every row`, () => {
         const rows = rowsFor(suiteId);
         const offenders = rows

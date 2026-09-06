@@ -28,13 +28,14 @@ function readManifestString(manifestPath: string, ...path: readonly string[]): s
 }
 
 /**
- * An Engine version stamped into the environment header.
+ * A dependency version stamped into the environment header.
  *
- * Neither `@pgxsinkit/pglite` nor `wa-sqlite` exports `./package.json`, so resolve the entry point
- * and walk up to the manifest beside it. What is reported is then decided by
- * `describeDependencyVersion`: for a git dependency the pinned ref in our own specifier wins over
- * that manifest, because a tagged tree's manifest can lag the tag — wa-sqlite's `v1.1.2` still says
- * `1.1.1` inside.
+ * None of these packages exports `./package.json`, so resolve the entry point and walk up to the
+ * manifest beside it. What is reported is then decided by `describeDependencyVersion`: for a git
+ * dependency the pinned ref in our own specifier wins over that manifest, because a tagged tree's
+ * manifest can lag the tag — wa-sqlite's `v1.1.2` still says `1.1.1` inside — and for an `npm:`
+ * alias the aliased target's version wins, because the installed package is not the one the
+ * dependency key names.
  */
 function readDependencyVersion(name: string, manifestFromEntry: string): string {
   const specifier = readManifestString(resolve(rootDir, "package.json"), "dependencies", name);
@@ -61,15 +62,22 @@ function readPgrustVersion(): string {
 export default defineConfig({
   plugins: [react()],
   define: {
-    __PGLITE_VERSION__: JSON.stringify(readDependencyVersion("@pgxsinkit/pglite", "../package.json")),
+    // Installed under the upstream name through an `npm:` alias, so the store package and this app
+    // resolve one single PGlite: the pgx fork. The header still reports what is really installed.
+    __PGLITE_VERSION__: JSON.stringify(readDependencyVersion("@electric-sql/pglite", "../package.json")),
+    __OPFS_REPACKED_VERSION__: JSON.stringify(
+      readDependencyVersion("@pgxsinkit/pglite-opfs-repacked", "../package.json"),
+    ),
     __PGRUST_VERSION__: JSON.stringify(readPgrustVersion()),
     // `wa-sqlite`'s entry point is `src/sqlite-api.js`; its manifest is the directory above. It is
     // installed from a GitHub tag, so what lands here is the tag, not that manifest's version.
     __WASQLITE_VERSION__: JSON.stringify(readDependencyVersion("wa-sqlite", "../package.json")),
   },
-  // PGlite ships its own wasm/data assets and must not be pre-bundled.
+  // PGlite ships its own wasm/data assets and must not be pre-bundled. The store package is
+  // excluded with it, because it imports PGlite: pre-bundling one half of that pair while excluding
+  // the other is how a dev server ends up serving two PGlites.
   optimizeDeps: {
-    exclude: ["@pgxsinkit/pglite"],
+    exclude: ["@electric-sql/pglite", "@pgxsinkit/pglite-opfs-repacked"],
   },
   worker: {
     format: "es",

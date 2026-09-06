@@ -51,14 +51,44 @@ export interface WasqliteOpenOptions {
 }
 
 /**
+ * A storage backend PGlite's data directory can be opened through instead of its own filesystems.
+ *
+ * One so far: `opfs-repacked` is `@pgxsinkit/pglite-opfs-repacked`, which packs a whole data
+ * directory into four exclusively owned OPFS files.
+ */
+export type PgliteStoreId = "opfs-repacked";
+
+/**
+ * A store's physical durability, chosen once when the store is opened and never changed after.
+ *
+ * `relaxed` skips the per-query strict sequence and amortizes flushes; `strict` flushes arena data
+ * before metadata on every awaited host sync, so a successful query has a stable boundary. These are
+ * the store's own two modes, not PGlite's `relaxedDurability` boolean, which the store owns.
+ */
+export type StoreDurability = "relaxed" | "strict";
+
+/**
+ * PGlite's own store settings: which storage backend to open the data directory through, and how
+ * durably. Both fields travel together because a store without a durability has no defined
+ * behaviour to report and a durability without a store has nothing to apply to.
+ */
+export interface PgliteStoreSettings {
+  readonly store: PgliteStoreId;
+  readonly durability: StoreDurability;
+}
+
+/**
  * Engine-open settings that are structured-cloneable and therefore safe to send to the worker.
  *
  * Engine-specific settings live under their Engine's key rather than in one flat bag, so a
  * Configuration cannot quietly hand wa-sqlite a PGlite knob (or the other way round) and each
- * worker reads a shape it can type. `relaxedDurability` is PGlite's and predates the split.
+ * worker reads a shape it can type. `relaxedDurability` is the exception, and deliberately so: it
+ * is a Postgres-level durability request that both Postgres builds are asked about — PGlite honours
+ * it, the pgrust worker rejects it — so it is not any single Engine's key.
  */
 export interface EngineOpenOptions {
   readonly relaxedDurability?: boolean;
+  readonly pglite?: PgliteStoreSettings;
   readonly wasqlite?: WasqliteOpenOptions;
 }
 
@@ -67,12 +97,28 @@ export function pgliteOpenOptions(options: EngineOpenOptions | undefined): Pglit
   return options?.relaxedDurability === undefined ? undefined : { relaxedDurability: options.relaxedDurability };
 }
 
+/**
+ * The store this Configuration opens PGlite through, or `undefined` for PGlite's own filesystem.
+ *
+ * The one call site that decides between `new PGlite(dataDir, …)` and the store factory, and the one
+ * the availability gate asks — a store needs an OPFS synchronous access handle, which not every
+ * browser grants.
+ */
+export function pgliteStore(options: EngineOpenOptions | undefined): PgliteStoreSettings | undefined {
+  return options?.pglite;
+}
+
 /** An Engine plus the storage and durability settings it is opened with. One column of results. */
 export interface Configuration {
   readonly id: string;
   readonly label: string;
   readonly engine: EngineId;
-  /** Empty string means the Memory Configuration: the data directory lives in the worker's heap. */
+  /**
+   * Empty string means the Memory Configuration: the data directory lives in the worker's heap.
+   *
+   * For a Storage Configuration it names the directory the store owns in full — an OPFS path for
+   * `options.pglite.store`, which the worker empties before every Run so no state survives one.
+   */
   readonly dataDir: string;
   readonly options?: EngineOpenOptions;
   /**

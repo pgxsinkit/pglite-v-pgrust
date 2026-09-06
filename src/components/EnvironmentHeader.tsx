@@ -8,6 +8,15 @@ export interface EnvironmentHeaderProps {
   readonly environment: EnvironmentInfo;
 }
 
+function describeOpfsSyncAccess(environment: EnvironmentInfo): string {
+  if (environment.opfsSyncAccessAvailable) {
+    return "available";
+  }
+  return environment.opfsSyncAccessReason === null
+    ? "unavailable"
+    : `unavailable (${environment.opfsSyncAccessReason})`;
+}
+
 export function EnvironmentHeader({ environment }: EnvironmentHeaderProps): JSX.Element {
   return (
     <>
@@ -21,6 +30,10 @@ export function EnvironmentHeader({ environment }: EnvironmentHeaderProps): JSX.
           <dd>{environment.pgliteVersion}</dd>
         </div>
         <div>
+          <dt>@pgxsinkit/pglite-opfs-repacked</dt>
+          <dd>{environment.opfsRepackedVersion}</dd>
+        </div>
+        <div>
           <dt>pgrust</dt>
           <dd>{environment.pgrustVersion}</dd>
         </div>
@@ -31,6 +44,11 @@ export function EnvironmentHeader({ environment }: EnvironmentHeaderProps): JSX.
         <div>
           <dt>JSPI</dt>
           <dd>{environment.jspiAvailable ? "available" : "unavailable"}</dd>
+        </div>
+        <div>
+          <dt>OPFS sync access</dt>
+          {/* The probe's own words when it was refused: what the store hit, not what we assumed. */}
+          <dd>{describeOpfsSyncAccess(environment)}</dd>
         </div>
         {environment.rttIterationsOverride === null ? null : (
           <div className="non-standard">

@@ -5,10 +5,11 @@
     "": {
       "name": "pglite-v-pgrust",
       "dependencies": {
-        "@pgxsinkit/pglite": "0.5.5-pgx.2",
-        "wa-sqlite": "github:rhashimoto/wa-sqlite#v1.1.2",
+        "@electric-sql/pglite": "npm:@pgxsinkit/pglite@0.5.5-pgx.2",
+        "@pgxsinkit/pglite-opfs-repacked": "0.3.0",
         "react": "^19.2.8",
         "react-dom": "^19.2.8",
+        "wa-sqlite": "github:rhashimoto/wa-sqlite#v1.1.2",
       },
       "devDependencies": {
         "@playwright/test": "1.61.1",
@@ -25,6 +26,8 @@
     },
   },
   "packages": {
+    "@electric-sql/pglite": ["@pgxsinkit/pglite@0.5.5-pgx.2", "", {}, "sha512-K9piqBQpcsTo87BqnvOOy901umYpDQPcq/rtZQCvDfn6LfLCuzvLbvKYB0LnBfF/FRBVnmVZpL4B/RX7wwVsYg=="],
+
     "@oxc-project/types": ["@oxc-project/types@0.147.0", "", {}, "sha512-IJ3s6ltHLp45S0bh7phkX+gJO7A1Wuz2EaqpAhb8WjqDwbzMiWKHhyyT42tskaWjEYXtHtVCPpnBJVT9+dcRLg=="],
 
     "@oxfmt/binding-android-arm-eabi": ["@oxfmt/binding-android-arm-eabi@0.65.0", "", { "os": "android", "cpu": "arm" }, "sha512-M10Gs1SSpTNI6ahGx3M/OlIdUF4hkaP6OgUb+MS79t/Pgflk3r1nW5gPFqsZGUAXg0H1AfANT9AvLdBSTIhZKg=="],
@@ -115,7 +118,7 @@
 
     "@oxlint/binding-win32-x64-msvc": ["@oxlint/binding-win32-x64-msvc@1.80.0", "", { "os": "win32", "cpu": "x64" }, "sha512-yAnO7lwBYQnz2pcfBPIGQQZWIX5zd5R/1aAKIF3oE+TVj7IhoHcROjOkz3sRDngzqhfPKfFaXqug5j5rE5dn6Q=="],
 
-    "@pgxsinkit/pglite": ["@pgxsinkit/pglite@0.5.5-pgx.2", "", {}, "sha512-K9piqBQpcsTo87BqnvOOy901umYpDQPcq/rtZQCvDfn6LfLCuzvLbvKYB0LnBfF/FRBVnmVZpL4B/RX7wwVsYg=="],
+    "@pgxsinkit/pglite-opfs-repacked": ["@pgxsinkit/pglite-opfs-repacked@0.3.0", "", { "peerDependencies": { "@electric-sql/pglite": ">=0.5.5-pgx.0 <0.5.5" } }, "sha512-zIK83ekWWFbFUdRK9CNZAGApMkeKhe3vSFIa+YTwIumb9JHoD+oXdgBEVf3B3lb0em5c+rcFWyNkSs34DqQ2bQ=="],
 
     "@playwright/test": ["@playwright/test@1.61.1", "", { "dependencies": { "playwright": "1.61.1" }, "bin": { "playwright": "cli.js" } }, "sha512-8nKv6+0RJSL9FE4jYOEGXnPeM/Hg12qZpmqzZjRh3qM0Y7c3z1mrOTfFLids72RDQYVh9WpLEfR5WdpNX4fkig=="],
 

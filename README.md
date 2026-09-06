@@ -47,12 +47,32 @@ dialect-specific.** Its two `CREATE TABLE` statements are run as `INTEGER PRIMAR
 rather than `SERIAL`, byte-identical to PGlite's own SQLite variant. That is the only SQL that differs
 anywhere: every timed Benchmark in both Suites is run byte-identically against every Engine.
 
+## PGlite, once
+
+The PGlite columns and the OPFS store have to be the **same** PGlite: a benchmark that ran the Engine
+on one build and the store on another would be measuring neither. PGlite here is this project's fork,
+published as `@pgxsinkit/pglite`, while the store package declares its peer against the upstream name
+`@electric-sql/pglite`. Rather than install both, PGlite is installed under the upstream name through
+an npm alias:
+
+```json
+"@electric-sql/pglite": "npm:@pgxsinkit/pglite@0.5.5-pgx.2"
+```
+
+One dependency, one copy in `node_modules` (`bun pm ls`), one `pglite.wasm` and one `pglite.data` in
+`dist/`, and the store's peer satisfied by the exact build being measured. The environment header
+still names the fork — `@pgxsinkit/pglite 0.5.5-pgx.2` — and takes the version from the alias rather
+than from the dependency key, which under an alias is not the installed package's name at all. That
+rule lives beside wa-sqlite's git-tag rule in `src/dependency-version.ts` and is unit-tested with it.
+
 ## The columns
 
-Six Configurations, two per Engine: its default settings, and the least durable settings it offers —
-`PGlite Memory`, `PGlite Memory (unlogged)`, `pgrust Memory`, `pgrust Memory (unlogged)`,
-`wa-sqlite Memory`, `wa-sqlite Memory (journal off)`. Every ratio is against `PGlite Memory`, which is
-the only column without one.
+Eight Configurations. Six are **Memory Configurations**, two per Engine — its default settings, and
+the least durable settings it offers: `PGlite Memory`, `PGlite Memory (unlogged)`, `pgrust Memory`,
+`pgrust Memory (unlogged)`, `wa-sqlite Memory`, `wa-sqlite Memory (journal off)`. Two are **Storage
+Configurations** on the OPFS repacked store: `PGlite OPFS repacked (relaxed)` and
+`PGlite OPFS repacked (strict)`. Every ratio is against `PGlite Memory`, which is the only column
+without one.
 
 The two unlogged columns rewrite `CREATE TABLE` to `CREATE UNLOGGED TABLE` — PGlite's own benchmark
 page does this, and pgrust accepts the same syntax — so the Engine writes no WAL for the Suite's
@@ -69,6 +89,39 @@ then cannot roll a statement or a transaction back. The pragma is verified rathe
 answers a refused journal change with the mode still in force, not with an error), and the Run fails
 loudly if the read-back is not `off`. The default `wa-sqlite Memory` column keeps SQLite's own default
 journal mode.
+
+### The OPFS repacked columns
+
+The two `PGlite OPFS repacked` columns are the first whose data directory is real storage rather than
+the worker's heap. They run PGlite on
+[`@pgxsinkit/pglite-opfs-repacked`](https://www.npmjs.com/package/@pgxsinkit/pglite-opfs-repacked), a
+PGlite filesystem that packs a whole Postgres data directory into exactly four exclusively owned OPFS
+files — an arena, two metadata logs and an activation record — instead of giving every virtual file
+its own synchronous access handle the way PGlite's native OPFS filesystem does. The store's
+`durability` is chosen once when it is opened and is the **only** difference between the two columns:
+`relaxed` skips the per-query strict sequence and amortizes arena flushes, `strict` flushes arena data
+before metadata on every awaited host sync, so a successful query has a stable boundary behind it.
+Same Engine, same SQL, same store, one option.
+
+**Neither column persists anything between Runs.** Each Run empties its store's OPFS directory before
+opening it and removes the directory again when it closes, so what these columns measure is what OPFS
+costs a cold data directory per statement — not what a warm one reads back. That is the same rule the
+Memory Configurations get for free by dying with their worker, and it is the reason a repeated Run
+gives repeatable numbers. Nothing this app writes to OPFS outlives a Run.
+
+The store needs a `createSyncAccessHandle()` that really opens, in the dedicated worker the Engine
+already runs in. That is probed at page load — a real handle on a real file, because the method's
+presence proves nothing — and reported in the header:
+
+| Browser                    | Synchronous access handle in a dedicated worker | OPFS columns     |
+| -------------------------- | ----------------------------------------------- | ---------------- |
+| Chromium                   | granted                                         | run              |
+| Firefox                    | granted                                         | run              |
+| Playwright's WebKit        | refused                                         | reported skipped |
+| Safari (SharedWorker only) | refused in a dedicated worker                   | reported skipped |
+
+Where it is refused the two columns are greyed out with that reason, the probe's own words are in the
+header, and every other column runs as normal — exactly as the pgrust column behaves without JSPI.
 
 ## Results
 
@@ -107,7 +160,9 @@ bun run preview
 ```
 
 Both Suites are started from the page — nothing runs until you press **Start**. Each Run opens a fresh
-Engine in a fresh worker, so no state carries over between Configurations.
+Engine in a fresh worker, so no state carries over between Configurations; a Storage Configuration's
+OPFS directory is emptied before its Run and removed after it, so nothing carries over between page
+loads either.
 
 The RTT Suite is 100 iterations by definition, and the page offers no control that changes it. For
 automation only, the URL query `?rttIterations=N` — an integer from 1 to 1000, anything else ignored —
@@ -283,16 +338,16 @@ revisions it will look for — floating it would silently ask for builds that ar
 
 | Browser in the lane           | Behaviour                                                                                                                                                                                                                                                   |
 | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Chromium (default)            | JSPI on by default, so all six Configurations run                                                                                                                                                                                                           |
+| Chromium (default)            | JSPI on by default and synchronous access handles granted in dedicated workers, so all eight Configurations run                                                                                                                                             |
 | Firefox (`--browser firefox`) | The lane sets `javascript.options.wasm_js_promise_integration`; where JSPI is still missing the pgrust column reports `skipped` and the Run continues. Firefox's reduced timer precision quantises Measurements, so its numbers are coarser than Chromium's |
-| WebKit (`--browser webkit`)   | Exits 0 with `WebKit skipped: Playwright's WebKit build has no JSPI yet`, without launching                                                                                                                                                                 |
+| WebKit (`--browser webkit`)   | Exits 0 with `WebKit skipped: Playwright's WebKit build has no JSPI yet`, without launching. That build also refuses synchronous access handles in both worker kinds, so it could contribute neither the pgrust nor the OPFS columns                        |
 
 `bun run test:e2e` drives the same lane from `bun test` (Chromium, both Suites, RTT at three
 iterations) and asserts the shape of the result rather than any timing: an environment line, a
-millisecond figure and a ratio in every PGlite and wa-sqlite cell, and `skipped`, `failed` or a
-millisecond figure in every pgrust cell. The Reference Engine is held to the stricter rule on
-purpose — it needs no JSPI and no asset that can be missing, so a cell without a number in it is a
-harness bug rather than a browser or a build state. It is deliberately outside `test`, `check` and `validate` — `bun run
+millisecond figure and a ratio in every PGlite Memory and wa-sqlite cell, and `skipped`, `failed` or a
+millisecond figure in every pgrust and OPFS cell. The Reference Engine is held to the stricter rule on
+purpose — it needs no JSPI, no synchronous access handle and no asset that can be missing, so a cell
+without a number in it is a harness bug rather than a browser or a build state. It is deliberately outside `test`, `check` and `validate` — `bun run
 validate:full` is `validate` plus this lane.
 
 Everything in `src/` is TypeScript with one sanctioned exception: `src/vendor/pgrust/*.js` is copied
@@ -305,6 +360,10 @@ ours, hand-written, and are what makes the vendored JavaScript type-check under 
 Adding an Engine is additive: write `src/engines/<engine>/<engine>.worker.ts` against the message
 protocol in `src/engines/protocol.ts`, register its worker factory in `src/engines/registry.ts`, give
 it a SQL dialect in `src/engines/contract.ts`, and add its Configuration to `src/configurations.ts`.
+Engine-specific open settings go under that Engine's own key in `EngineOpenOptions` — `wasqlite` for
+the journal mode, `pglite` for the store and its durability — so one Engine's knob can never reach
+another's constructor. Everything this app puts in OPFS goes through `src/opfs.ts`, which keeps it
+under one owned prefix and takes it away again.
 The dialect is read only by `Suite.initialSetupFor(dialect)`, which is what a Suite's untimed setup
 comes from; no Benchmark is ever rewritten for an Engine. Whether a Configuration can run is decided at
 runtime in `src/engines/availability.ts` rather than stored on the Configuration; a Configuration that
@@ -331,6 +390,10 @@ Run — is defined in [CONTEXT.md](CONTEXT.md).
 - They were adapted for Postgres by the [PGlite](https://github.com/electric-sql/pglite) authors
   (ElectricSQL), Apache-2.0 licensed; the SQL and statement lists here are byte-identical ports of
   PGlite's copies.
+- [`@pgxsinkit/pglite-opfs-repacked`](https://www.npmjs.com/package/@pgxsinkit/pglite-opfs-repacked),
+  MIT licensed, is the OPFS store the two Storage Configurations run on, installed from npm and used
+  unmodified. It declares a peer dependency on `@electric-sql/pglite`, which is why PGlite is
+  installed here under that name (see [PGlite, once](#pglite-once)).
 - [pgrust](https://github.com/malisper/pgrust) is AGPL-3.0 licensed. Its browser host JavaScript is
   vendored byte-verbatim under `src/vendor/pgrust/`, together with its `LICENSE` and `NOTICE`; the
   synced commit is recorded in `src/vendor/pgrust/SOURCE.md`. The wasm binaries published from this

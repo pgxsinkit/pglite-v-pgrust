@@ -3,26 +3,35 @@
  * export, because a benchmark number without its environment is not a result.
  */
 
+import { detectOpfsSyncAccess } from "./opfs-sync-access";
 import { describeRttIterations, readRttIterationsOverride } from "./rtt-iterations";
 
 declare const __PGLITE_VERSION__: string;
+declare const __OPFS_REPACKED_VERSION__: string;
 declare const __PGRUST_VERSION__: string;
 declare const __WASQLITE_VERSION__: string;
 
 /** Substituted by Vite `define`; absent under `bun test`, hence the `typeof` guards. */
 const PGLITE_VERSION = typeof __PGLITE_VERSION__ === "string" ? __PGLITE_VERSION__ : "unknown";
+const OPFS_REPACKED_VERSION = typeof __OPFS_REPACKED_VERSION__ === "string" ? __OPFS_REPACKED_VERSION__ : "unknown";
 const PGRUST_VERSION = typeof __PGRUST_VERSION__ === "string" ? __PGRUST_VERSION__ : "not synced";
 const WASQLITE_VERSION = typeof __WASQLITE_VERSION__ === "string" ? __WASQLITE_VERSION__ : "unknown";
 
 export interface EnvironmentInfo {
   readonly userAgent: string;
   readonly pgliteVersion: string;
+  /** The store the two OPFS Configurations run on; it is as much a subject as PGlite itself. */
+  readonly opfsRepackedVersion: string;
   /** The pgrust commit written by `bun run sync:pgrust`, or "not synced". */
   readonly pgrustVersion: string;
   /** The Reference Engine's npm version, read from `wa-sqlite`'s own manifest at build time. */
   readonly wasqliteVersion: string;
   /** Whether the JavaScript Promise Integration proposal is available (pgrust's wasm build wants it). */
   readonly jspiAvailable: boolean;
+  /** Whether a real OPFS synchronous access handle opened in a dedicated worker (the store needs one). */
+  readonly opfsSyncAccessAvailable: boolean;
+  /** Why the probe was refused, when it was; null when the handle opened. */
+  readonly opfsSyncAccessReason: string | null;
   /**
    * A non-standard RTT iteration count requested through `?rttIterations=N`, or null for the
    * defined 100. Reported everywhere the environment is, because it changes what the numbers mean.
@@ -39,13 +48,30 @@ export function detectJspi(): boolean {
   return typeof wasm.Suspending === "function" && typeof wasm.promising === "function";
 }
 
-export function readEnvironment(): EnvironmentInfo {
+/**
+ * Read the environment once, before anything is rendered.
+ *
+ * Asynchronous because one of the capabilities cannot be read synchronously: an OPFS synchronous
+ * access handle can only be opened from a worker, so it is opened from one. Waiting for it costs a
+ * few milliseconds at page load and buys a header — and a set of column headers — that are true
+ * before the first Start is pressed rather than shortly after.
+ */
+export async function readEnvironment(): Promise<EnvironmentInfo> {
+  const opfsSyncAccess = await detectOpfsSyncAccess();
+  if (!opfsSyncAccess.available) {
+    // Surfaced rather than swallowed: the headless lane records page errors, so a browser that
+    // refuses handles says why in the run's own results file.
+    console.error(`OPFS sync access unavailable: ${opfsSyncAccess.reason ?? "no reason given"}`);
+  }
   return {
     userAgent: typeof navigator === "undefined" ? "unknown" : navigator.userAgent,
     pgliteVersion: PGLITE_VERSION,
+    opfsRepackedVersion: OPFS_REPACKED_VERSION,
     pgrustVersion: PGRUST_VERSION,
     wasqliteVersion: WASQLITE_VERSION,
     jspiAvailable: detectJspi(),
+    opfsSyncAccessAvailable: opfsSyncAccess.available,
+    opfsSyncAccessReason: opfsSyncAccess.reason ?? null,
     rttIterationsOverride: readRttIterationsOverride(),
   };
 }
@@ -54,9 +80,11 @@ export function readEnvironment(): EnvironmentInfo {
 export function formatEnvironmentLine(environment: EnvironmentInfo): string {
   const parts = [
     `@pgxsinkit/pglite ${environment.pgliteVersion}`,
+    `@pgxsinkit/pglite-opfs-repacked ${environment.opfsRepackedVersion}`,
     `pgrust ${environment.pgrustVersion}`,
     `wa-sqlite ${environment.wasqliteVersion}`,
     `JSPI ${environment.jspiAvailable ? "available" : "unavailable"}`,
+    `OPFS sync access ${environment.opfsSyncAccessAvailable ? "available" : "unavailable"}`,
     environment.userAgent,
   ];
   if (environment.rttIterationsOverride !== null) {

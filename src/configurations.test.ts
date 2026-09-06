@@ -8,29 +8,64 @@ import {
   findConfiguration,
 } from "./configurations";
 import { applyModSql } from "./engines/contract";
+import { OPFS_DIRECTORY_PREFIX, opfsPathSegments } from "./opfs";
 
 describe("phase-1 Configurations", () => {
-  test("are the six memory Configurations, in column order", () => {
+  test("are the eight Configurations, in column order", () => {
     expect(CONFIGURATIONS.map((config) => config.id)).toEqual([
       "pglite-memory",
       "pglite-memory-unlogged",
+      "pglite-opfs-repacked-relaxed",
+      "pglite-opfs-repacked-strict",
       "pgrust-memory",
       "pgrust-memory-unlogged",
       "wasqlite-memory",
       "wasqlite-memory-journal-off",
     ]);
-    expect(CONFIGURATIONS.every((config) => config.dataDir === "")).toBe(true);
   });
 
   test("label every column the way its header reads", () => {
     expect(CONFIGURATIONS.map((config) => config.label)).toEqual([
       "PGlite Memory",
       "PGlite Memory (unlogged)",
+      "PGlite OPFS repacked (relaxed)",
+      "PGlite OPFS repacked (strict)",
       "pgrust Memory",
       "pgrust Memory (unlogged)",
       "wa-sqlite Memory",
       "wa-sqlite Memory (journal off)",
     ]);
+  });
+
+  test("give a data directory to the Storage Configurations and to nothing else", () => {
+    const withDataDir = CONFIGURATIONS.filter((config) => config.dataDir !== "").map((config) => config.id);
+    expect(withDataDir).toEqual(["pglite-opfs-repacked-relaxed", "pglite-opfs-repacked-strict"]);
+  });
+
+  test("give each store its own OPFS directory, under this app's own prefix", () => {
+    const directories = CONFIGURATIONS.filter((config) => config.dataDir !== "").map((config) => config.dataDir);
+    expect(directories).toEqual([
+      `${OPFS_DIRECTORY_PREFIX}/opfs-repacked-relaxed`,
+      `${OPFS_DIRECTORY_PREFIX}/opfs-repacked-strict`,
+    ]);
+    // Two live owners of one directory is a StoreOwnedError; two columns sharing one would also be
+    // one column measuring the other's data directory.
+    expect(new Set(directories).size).toBe(directories.length);
+    for (const directory of directories) {
+      expect(opfsPathSegments(directory)[0]).toBe(OPFS_DIRECTORY_PREFIX);
+    }
+  });
+
+  test("run both OPFS columns on the same Engine and store, differing only in durability", () => {
+    const relaxed = findConfiguration("pglite-opfs-repacked-relaxed");
+    const strict = findConfiguration("pglite-opfs-repacked-strict");
+    expect(relaxed?.engine).toBe("pglite");
+    expect(strict?.engine).toBe("pglite");
+    expect(relaxed?.options).toEqual({ pglite: { store: "opfs-repacked", durability: "relaxed" } });
+    expect(strict?.options).toEqual({ pglite: { store: "opfs-repacked", durability: "strict" } });
+    // No SQL rewrite: the two columns must be the same workload on the same store.
+    expect(relaxed?.modSql).toBeUndefined();
+    expect(strict?.modSql).toBeUndefined();
   });
 
   test("take their ratios against PGlite Memory", () => {
@@ -70,7 +105,7 @@ describe("phase-1 Configurations", () => {
     expect(findConfiguration("wasqlite-memory")?.options).toBeUndefined();
   });
 
-  test("leave the open options to the Engines that have them", () => {
+  test("leave the open options to the Configurations that have them", () => {
     for (const id of ["pglite-memory", "pglite-memory-unlogged", "pgrust-memory", "pgrust-memory-unlogged"]) {
       expect(findConfiguration(id)?.options).toBeUndefined();
     }

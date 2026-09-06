@@ -29,12 +29,20 @@ The Configuration every ratio is computed against: PGlite Memory.
 _Avoid_: reference, control column
 
 **Configuration**:
-An Engine plus the storage and durability settings it is opened with; one Configuration is one column of results. Phase 1 has exactly six: PGlite Memory, PGlite Memory (unlogged), pgrust Memory, pgrust Memory (unlogged), wa-sqlite Memory, wa-sqlite Memory (journal off).
+An Engine plus the storage and durability settings it is opened with; one Configuration is one column of results. Phase 1 has exactly eight: PGlite Memory, PGlite Memory (unlogged), PGlite OPFS repacked (relaxed), PGlite OPFS repacked (strict), pgrust Memory, pgrust Memory (unlogged), wa-sqlite Memory, wa-sqlite Memory (journal off).
 _Avoid_: setup, mode, variant, column
 
 **Memory Configuration**:
 A Configuration whose data directory lives entirely in the worker's heap and is discarded when the worker ends.
 _Avoid_: in-memory mode, ephemeral, transient
+
+**Storage Configuration**:
+A Configuration whose data directory lives in a Store rather than the worker's heap. It still carries nothing between Runs: the Run empties the Store's directory before opening it and removes it on close, so it measures a cold data directory on real storage.
+_Avoid_: persistent mode, OPFS mode, disk configuration
+
+**Store**:
+The package a Storage Configuration opens its data directory through, and the durability it is opened with. Phase 1 has one: `@pgxsinkit/pglite-opfs-repacked`, which packs a whole Postgres data directory into four exclusively owned OPFS files, in either its relaxed or its strict durability.
+_Avoid_: VFS, filesystem, backend, persistence layer
 
 **Unlogged Configuration**:
 A Postgres Memory Configuration whose tables are created UNLOGGED, so the Engine writes no WAL for them; it pays for no durability the Memory Configuration could not deliver anyway. wa-sqlite's twin is the journal-off Configuration (`PRAGMA journal_mode = OFF`).
