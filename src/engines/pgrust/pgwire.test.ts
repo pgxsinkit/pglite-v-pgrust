@@ -177,8 +177,26 @@ describe("decodeQueryResult", () => {
       ),
     );
 
-    expect(result.error).toEqual({ severity: "ERROR", message: 'relation "missing" does not exist' });
+    expect(result.error).toEqual({
+      severity: "ERROR",
+      message: 'relation "missing" does not exist',
+      code: "42P01",
+    });
     expect(result.tag).toBeNull();
+  });
+
+  // A Concurrency Scenario counts tolerated failures by SQLSTATE — a lock timeout is a result, not a
+  // Run failure — so the code has to survive the decode rather than only the message text.
+  test("keeps the SQLSTATE of the error it kept", () => {
+    const result = decodeQueryResult(
+      read(errorResponse({ S: "ERROR", C: "55P03", M: "canceling statement due to lock timeout" }), readyForQuery("E")),
+    );
+    expect(result.error?.code).toBe("55P03");
+  });
+
+  test("reports an empty SQLSTATE for a backend error that carried none", () => {
+    const result = decodeQueryResult(read(errorResponse({ S: "ERROR", M: "no code here" }), readyForQuery("E")));
+    expect(result.error?.code).toBe("");
   });
 
   test("ignores notices, parameter status and backend key data", () => {
@@ -205,11 +223,11 @@ describe("the Engine boundary", () => {
 
     expect(() => {
       assertNoQueryError(result);
-    }).toThrow('pgrust ERROR: relation "missing" does not exist');
+    }).toThrow('pgrust ERROR: relation "missing" does not exist (SQLSTATE 42P01)');
   });
 
   test("keeps the severity in the thrown message", () => {
-    expect(toQueryError({ severity: "FATAL", message: "terminating connection" }).message).toBe(
+    expect(toQueryError({ severity: "FATAL", message: "terminating connection", code: "" }).message).toBe(
       "pgrust FATAL: terminating connection",
     );
   });

@@ -5,8 +5,8 @@ A browser benchmark that runs the same SQL workloads against PGlite and pgrust (
 ## Language
 
 **Suite**:
-A named, fixed list of Benchmarks run in order against one Engine. Phase 1 has exactly two: the Speedtest Suite and the RTT Suite.
-_Avoid_: test set, benchmark set, scenario
+A named, fixed list of Benchmarks run in order against one Engine. There are exactly three: the Speedtest Suite, the RTT Suite and the Concurrency Suite.
+_Avoid_: test set, benchmark set (a **Scenario** is a different thing: one Benchmark's script)
 
 **Speedtest Suite**:
 The 16 SQL scripts ported from the SQLite speedtest via wa-sqlite and PGlite, byte-identical to PGlite's copies; one timing per script.
@@ -15,6 +15,30 @@ _Avoid_: wa-sqlite benchmarks, SQLite benchmarks
 **RTT Suite**:
 Twelve single-statement CRUD queries each executed 100 times; reports the per-statement round-trip time as a trimmed mean (lowest and highest 10% of Measurements discarded), exactly as PGlite does.
 _Avoid_: latency suite, CRUD suite
+
+**Concurrency Suite**:
+Five Benchmarks run by N Clients at once (four by default) against one 100,000-row indexed table built in the untimed setup: a read fan-out, a reader under a bulk write, short queries beside a long one, writers on disjoint rows and writers on the same row. Each row reports one headline number — a wall time, a percentile or a rate — and its Detail. What concurrency _is_ differs per Engine and is the thing being reported: real backends on pgrust Postmaster, queue interleaving on PGlite, and unavailable with a reason on the Engines that have one Session or a synchronous API.
+_Avoid_: parallel suite, contention suite, multi-client suite
+
+**Client**:
+One scripted program inside a Scenario — a list of Steps — run against one Session, concurrently with every other Client of that Scenario. N Clients is what "concurrent" means in the Concurrency Suite; on an Engine with one Session every Client runs on it, which is exactly the property being measured there.
+_Avoid_: worker, thread, connection, user
+
+**Scenario**:
+The script one Concurrency Benchmark runs: a list of Clients, an optional per-Session setup and the SQLSTATEs it tolerates. It is data, not code — it crosses the worker boundary by structured clone and a Configuration's SQL rewrite reaches every statement in it — and it yields one Measurement, whose number the Benchmark's own summary picks out.
+_Avoid_: workload, script, plan, test case
+
+**Step**:
+One entry in a Client's program: a statement, a transaction (every statement of it, committed or rolled back, timed as ONE sample), a repeat of a statement, a statement looped until a Signal, or the raising of a Signal.
+_Avoid_: command, instruction, action
+
+**Signal**:
+A name one Client raises and others wait on, and the only thing Clients share besides the database. It is how "read until the bulk write finishes" is expressed without either Client knowing how long the other will take. A Client waiting on a Signal always runs its statement at least once.
+_Avoid_: flag, event, barrier, latch
+
+**Detail**:
+The supporting numbers of a Measurement whose single figure cannot say what happened — per-Client percentiles, statement counts, SQLSTATE counts, the writer's own total. It is rendered under the table in the Markdown export (one line per Configuration per Benchmark) and folded away under the row in the page; never inside a cell, which is one number.
+_Avoid_: metadata, extras, breakdown, stats
 
 **Engine**:
 One of the WebAssembly databases under comparison: PGlite, pgrust, pgrust Threads, pgrust Postmaster, or wa-sqlite. PGlite and the pgrust Engines are the subjects; wa-sqlite is the Reference Engine.
@@ -73,11 +97,11 @@ A Postgres Memory Configuration whose tables are created UNLOGGED, so the Engine
 _Avoid_: no-WAL mode, fast mode, unsafe mode
 
 **Benchmark**:
-One timed unit within a Suite: a Speedtest script, or one RTT statement. It is the row of the results table.
-_Avoid_: test, case, step, query
+One timed unit within a Suite: a Speedtest script, one RTT statement, or one Concurrency Scenario. It is the row of the results table.
+_Avoid_: test, case, step (a **Step** is one entry in a Client's program), query
 
 **Measurement**:
-The wall time, taken inside the Engine's worker, from handing SQL to the Engine until decoded rows or a command tag are available in JS. Nothing outside that window counts.
+The wall time, taken inside the Engine's worker, from handing SQL to the Engine until decoded rows or a command tag are available in JS. Nothing outside that window counts. A Concurrency Benchmark's Measurement is a number computed from many such windows — a percentile, a wall time or a rate — every one of them taken inside the worker, and it carries its Detail with it.
 _Avoid_: timing, latency, elapsed, duration
 
 **Run**:

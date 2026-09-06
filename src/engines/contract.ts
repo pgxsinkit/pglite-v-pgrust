@@ -7,6 +7,8 @@
  * browser is not stored here — it is computed at runtime in `./availability`.
  */
 
+import type { ConcurrentScenario, ScenarioReport } from "./scenario";
+
 /**
  * The WebAssembly databases under comparison. `pglite` and the two pgrust builds are the subjects;
  * `wasqlite` is the Reference Engine, present only so the numbers can be calibrated against
@@ -45,10 +47,24 @@ export function engineDialect(engine: EngineId): SqlDialect {
   return ENGINE_DIALECTS[engine];
 }
 
-/** The wall time, taken inside the Engine's worker, of handing one SQL string to the Engine. */
+/**
+ * What one row of one column carries in it.
+ *
+ * The number in the cell is `elapsedMs`, and for the two single-statement Suites that is all there
+ * is: the wall time, taken inside the Engine's worker, of handing one SQL string to the Engine.
+ *
+ * `detail` exists for a Benchmark whose one number cannot say what happened — a Concurrency
+ * Benchmark reports a percentile or a rate in the cell, and the per-Client spread, the statement
+ * counts and the SQLSTATEs behind it belong beside it rather than in a second table. It is rendered
+ * under the table in the Markdown export and under the row in the page, never inside the cell.
+ */
 export interface Measurement {
   readonly elapsedMs: number;
+  readonly detail?: MeasurementDetail;
 }
+
+/** A Measurement's supporting numbers, in the order they should be read. Keys carry their own units. */
+export type MeasurementDetail = Readonly<Record<string, number | string>>;
 
 /** The open settings the PGlite constructor understands, and the only ones handed to it. */
 export interface PgliteOpenOptions {
@@ -279,6 +295,8 @@ export interface EngineRunner {
   open(config: Configuration, preamble: string, sessions?: number): Promise<void>;
   /** Execute one SQL string and return its Measurement. */
   measure(sql: string): Promise<Measurement>;
+  /** Run one scripted Scenario — every Client at once — and return what each of them did. */
+  concurrent(scenario: ConcurrentScenario): Promise<ScenarioReport>;
   /** Tear the Engine and its worker down. Safe to call more than once. */
   close(): Promise<void>;
 }

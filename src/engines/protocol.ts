@@ -7,6 +7,7 @@
  */
 
 import type { EngineOpenOptions, Measurement } from "./contract";
+import type { ConcurrentScenario, ScenarioReport } from "./scenario";
 
 /** Sent once by the worker as soon as its module has evaluated. */
 export interface EngineReadyMessage {
@@ -46,17 +47,38 @@ export interface EngineMeasureRequest {
   readonly session?: EngineSessionIndex;
 }
 
+/**
+ * Run a whole scripted Scenario — every Client at once — and report what each of them did.
+ *
+ * The unit of this request is the Scenario rather than the statement because the concurrency is the
+ * thing being measured: a main thread that sent one statement at a time would be the serialiser. So
+ * the Clients, their Steps, their Signals and every one of their per-statement clocks live inside
+ * the worker, and only the report crosses back.
+ */
+export interface EngineConcurrentRequest {
+  readonly kind: "concurrent";
+  readonly id: number;
+  readonly scenario: ConcurrentScenario;
+}
+
 export interface EngineCloseRequest {
   readonly kind: "close";
   readonly id: number;
 }
 
-export type EngineRequest = EngineOpenRequest | EngineExecRequest | EngineMeasureRequest | EngineCloseRequest;
+export type EngineRequest =
+  | EngineOpenRequest
+  | EngineExecRequest
+  | EngineMeasureRequest
+  | EngineConcurrentRequest
+  | EngineCloseRequest;
 
 export interface EngineOkResponse {
   readonly kind: "ok";
   readonly id: number;
   readonly measurement: Measurement | null;
+  /** Present only in answer to a `concurrent` request. */
+  readonly report?: ScenarioReport;
 }
 
 export interface EngineErrorResponse {

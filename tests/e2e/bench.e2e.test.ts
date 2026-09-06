@@ -14,20 +14,23 @@ import { describe, expect, test } from "bun:test";
 
 import type { BenchReport } from "../../scripts/bench";
 import { runBench, WEBKIT_SKIP_MESSAGE } from "../../scripts/bench";
+import { SINGLE_SESSION_SUITE_REASON, SYNCHRONOUS_API_SUITE_REASON } from "../../src/engines/availability";
 import { EMPTY_CELL } from "../../src/results/format";
 import { describeRttIterations } from "../../src/rtt-iterations";
+import { CONCURRENCY_CLIENTS, CONCURRENCY_SUITE } from "../../src/suites/concurrency";
 import { RTT_STATEMENTS } from "../../src/suites/rtt/statements";
 import { SPEEDTEST_BENCHMARK_IDS } from "../../src/suites/speedtest/benchmarks";
 import type { SuiteId } from "../../src/suites/types";
 
 /**
- * Build plus two Suites against fourteen Configurations; generous, because it is a real browser.
+ * Build plus three Suites against fourteen Configurations; generous, because it is a real browser.
  *
  * The five Storage Configurations are the slow ones — each seeds a whole data directory into a cold
- * store before its Run and writes every byte the Suite produces to OPFS — so this is a wall clock
- * for a lane, not a threshold anything is measured against.
+ * store before its Run and writes every byte the Suite produces to OPFS — and the Concurrency Suite
+ * builds a 100 000-row table before every one of its Runs. This is a wall clock for a lane, not a
+ * threshold anything is measured against.
  */
-const LANE_TIMEOUT_MS = 2_400_000;
+const LANE_TIMEOUT_MS = 3_600_000;
 
 const RTT_ITERATIONS = 3;
 
@@ -167,9 +170,34 @@ const WASQLITE_COLUMNS: readonly ColumnPair[] = [
 const EXPECTED_ROW_COUNTS: Readonly<Record<SuiteId, number>> = {
   speedtest: SPEEDTEST_BENCHMARK_IDS.length,
   rtt: RTT_STATEMENTS.length,
+  concurrency: CONCURRENCY_SUITE.benchmarks.length,
 };
 
-const SUITE_IDS: readonly SuiteId[] = ["speedtest", "rtt"];
+const SUITE_IDS: readonly SuiteId[] = ["speedtest", "rtt", "concurrency"];
+
+/** The Suite whose cells are not all times, and whose Engines are not all able to run it. */
+const CONCURRENCY_SUITE_ID: SuiteId = "concurrency";
+
+/**
+ * The columns that cannot run the Concurrency Suite, and the reason each of them carries.
+ *
+ * Not a browser capability: no header and no flag would change either answer, so these cells must be
+ * `skipped` in every environment, including the one where every other cell has a number.
+ */
+const CONCURRENCY_UNAVAILABLE_COLUMNS: readonly { readonly column: ColumnPair; readonly reason: string }[] = [
+  {
+    column: { label: "pgrust Memory", value: COLUMNS.pgrust, ratio: COLUMNS.pgrustRatio },
+    reason: SINGLE_SESSION_SUITE_REASON,
+  },
+  {
+    column: { label: "pgrust Threads Memory", value: COLUMNS.pgrustThreads, ratio: COLUMNS.pgrustThreadsRatio },
+    reason: SINGLE_SESSION_SUITE_REASON,
+  },
+  {
+    column: WASQLITE_COLUMNS[0] ?? { label: "wa-sqlite Memory", value: COLUMNS.wasqlite, ratio: COLUMNS.wasqliteRatio },
+    reason: SYNCHRONOUS_API_SUITE_REASON,
+  },
+];
 
 /** The Baseline's own label, which every ratio header names. */
 const BASELINE_LABEL = "PGlite Memory";
@@ -325,17 +353,71 @@ describe("bench lane", () => {
     // asset that can be missing, so a `skipped` or `failed` cell here is a harness bug, not a
     // browser or a build state. Its whole purpose is to be the column that always has a number.
     test(`${suiteId}: both wa-sqlite Reference columns report milliseconds and a ratio in every row`, () => {
+      // Except in the one Suite it cannot run at all: wa-sqlite's API is synchronous, so there is
+      // nothing for a second Client to interleave with and `skipped` is the honest cell.
+      const expectSkipped = suiteId === CONCURRENCY_SUITE_ID;
       const rows = rowsFor(suiteId);
       const offenders = rows
         .filter((row) =>
-          WASQLITE_COLUMNS.some(
-            (column) => !MS_PATTERN.test(row[column.value] ?? "") || !RATIO_PATTERN.test(row[column.ratio] ?? ""),
+          WASQLITE_COLUMNS.some((column) =>
+            expectSkipped
+              ? (row[column.value] ?? "") !== "skipped" || (row[column.ratio] ?? "") !== EMPTY_CELL
+              : !MS_PATTERN.test(row[column.value] ?? "") || !RATIO_PATTERN.test(row[column.ratio] ?? ""),
           ),
         )
         .map(describeRow);
       expect(offenders).toEqual([]);
     });
   }
+});
+
+describe("the Concurrency Suite", () => {
+  test("records how many Clients ran, in the Suite's own header line", () => {
+    const suite = report.suites.find((candidate) => candidate.suiteId === CONCURRENCY_SUITE_ID);
+    expect(suite?.markdown).toContain(`Concurrency clients: ${CONCURRENCY_CLIENTS}`);
+  });
+
+  // Every Concurrency row reports one headline number and its supporting numbers under the table:
+  // a p95 with no statement count behind it is not something a reader can check.
+  test("exports a Detail block under the table, naming Benchmarks and Configurations", () => {
+    const suite = report.suites.find((candidate) => candidate.suiteId === CONCURRENCY_SUITE_ID);
+    const markdown = suite?.markdown ?? "";
+    expect(markdown).toContain("#### Detail");
+    expect(markdown).toContain("PGlite Memory: ");
+    expect(markdown).toMatch(/- \*\*Test 1: Read fan-out/);
+  });
+
+  test("says skipped, with the Engine's own reason, wherever concurrency could only be serialised", () => {
+    const rows = rowsFor(CONCURRENCY_SUITE_ID);
+    for (const { column } of CONCURRENCY_UNAVAILABLE_COLUMNS) {
+      const offenders = rows
+        .filter((row) => (row[column.value] ?? "") !== "skipped" || (row[column.ratio] ?? "") !== EMPTY_CELL)
+        .map(describeRow);
+      expect(offenders).toEqual([]);
+    }
+  });
+
+  test("greys those columns out for the Engine's reason rather than for a browser capability", () => {
+    // The reasons are in the page, not in the table, so this is the lane's own console: a column
+    // skipped here must never be skipped for a missing header or a missing handle.
+    const suite = report.suites.find((candidate) => candidate.suiteId === CONCURRENCY_SUITE_ID);
+    expect(suite?.failures).toBe("");
+    for (const { reason } of CONCURRENCY_UNAVAILABLE_COLUMNS) {
+      expect(reason.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("runs on both PGlite and both postmaster columns", () => {
+    const rows = rowsFor(CONCURRENCY_SUITE_ID);
+    const offenders = rows
+      .filter(
+        (row) =>
+          !MS_PATTERN.test(row[COLUMNS.baseline] ?? "") ||
+          PGRUST_POSTMASTER_COLUMNS.some((column) => !MS_PATTERN.test(row[column.value] ?? "")),
+      )
+      .map(describeRow);
+    expect(offenders).toEqual([]);
+  });
 });
 
 describe("bench lane, WebKit", () => {

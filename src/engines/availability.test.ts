@@ -10,6 +10,9 @@ import {
   JSPI_REQUIREMENT_MESSAGE,
   OPFS_SYNC_ACCESS_REQUIREMENT_MESSAGE,
   SHARED_MEMORY_REQUIREMENT_MESSAGE,
+  SINGLE_SESSION_SUITE_REASON,
+  suiteAvailability,
+  SYNCHRONOUS_API_SUITE_REASON,
 } from "./availability";
 import type { Configuration } from "./contract";
 
@@ -215,5 +218,71 @@ describe("configurationAvailability", () => {
         OPFS_SYNC_ACCESS_REQUIREMENT_MESSAGE,
       );
     }
+  });
+});
+
+describe("suiteAvailability", () => {
+  /** The slice of the Concurrency Suite this gate reads. */
+  const CONCURRENCY = {
+    unsupportedEngines: {
+      pgrust: SINGLE_SESSION_SUITE_REASON,
+      "pgrust-threads": SINGLE_SESSION_SUITE_REASON,
+      wasqlite: SYNCHRONOUS_API_SUITE_REASON,
+    },
+  } as const;
+
+  /** A Suite that names no Engine: every Configuration is as available as it ever was. */
+  const EVERY_ENGINE = {} as const;
+
+  test("leaves a Suite that names no Engine exactly as the Configuration gate left it", () => {
+    for (const config of CONFIGURATIONS) {
+      expect(suiteAvailability(EVERY_ENGINE, config, EVERYTHING)).toEqual(
+        configurationAvailability(config, EVERYTHING),
+      );
+      expect(suiteAvailability(EVERY_ENGINE, config, NOTHING)).toEqual(configurationAvailability(config, NOTHING));
+    }
+  });
+
+  test("reports the Engines that cannot run a Suite unavailable, whatever the browser can do", () => {
+    for (const id of ["pgrust-memory", "pgrust-memory-unlogged", "pgrust-threads-memory"]) {
+      const availability = suiteAvailability(CONCURRENCY, configuration(id), EVERYTHING);
+      expect(availability.available).toBe(false);
+      expect(availability.reason).toBe(SINGLE_SESSION_SUITE_REASON);
+      expect(availability.reason).toContain("one session");
+    }
+    for (const id of ["wasqlite-memory", "wasqlite-memory-journal-off"]) {
+      expect(suiteAvailability(CONCURRENCY, configuration(id), EVERYTHING).reason).toBe(SYNCHRONOUS_API_SUITE_REASON);
+    }
+  });
+
+  // The Engine's own reason first: a wa-sqlite column told about cross-origin isolation would be
+  // told something that has nothing to do with why its cells are empty.
+  test("names the Engine's reason ahead of any missing browser capability", () => {
+    expect(suiteAvailability(CONCURRENCY, configuration("wasqlite-memory"), NOTHING).reason).toBe(
+      SYNCHRONOUS_API_SUITE_REASON,
+    );
+    expect(suiteAvailability(CONCURRENCY, configuration("pgrust-memory"), WITHOUT_JSPI).reason).toBe(
+      SINGLE_SESSION_SUITE_REASON,
+    );
+  });
+
+  test("keeps PGlite and the postmaster available for a Suite about concurrency", () => {
+    for (const id of [
+      "pglite-memory",
+      "pglite-opfs-repacked-strict",
+      "pgrust-postmaster-memory-broker",
+      "pgrust-postmaster-opfs-repacked-relaxed",
+    ]) {
+      expect(suiteAvailability(CONCURRENCY, configuration(id), EVERYTHING)).toEqual({ available: true });
+    }
+  });
+
+  test("still applies the browser gates to an Engine the Suite does not exclude", () => {
+    expect(suiteAvailability(CONCURRENCY, configuration("pgrust-postmaster-memory-broker"), WITHOUT_ISOLATION)).toEqual(
+      { available: false, reason: SHARED_MEMORY_REQUIREMENT_MESSAGE },
+    );
+    expect(
+      suiteAvailability(CONCURRENCY, configuration("pgrust-postmaster-opfs-repacked-relaxed"), WITHOUT_OPFS),
+    ).toEqual({ available: false, reason: OPFS_SYNC_ACCESS_REQUIREMENT_MESSAGE });
   });
 });

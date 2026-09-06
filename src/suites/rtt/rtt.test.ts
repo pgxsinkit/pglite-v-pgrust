@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import { benchmarkSql } from "../types";
 import { buildRttBenchmarks, RTT_SUITE } from "./index";
 import {
   RTT_BENCHMARK_LABELS,
@@ -49,7 +50,7 @@ describe("RTT Suite definition", () => {
 
   test("keeps the twelve timed statements shared between the dialects", () => {
     // The dialect knob is the setup and nothing more: no Benchmark is rewritten for SQLite.
-    expect(RTT_SUITE.benchmarks.map((benchmark) => benchmark.sql)).toEqual([...RTT_STATEMENTS]);
+    expect(RTT_SUITE.benchmarks.map(benchmarkSql)).toEqual([...RTT_STATEMENTS]);
   });
 
   test("runs 100 iterations per Benchmark and reports a trimmed mean", () => {
@@ -77,7 +78,7 @@ describe("RTT Suite definition", () => {
     ]);
     expect(benchmarks[0]?.label).toBe("Test 1: insert small row");
     expect(benchmarks[11]?.label).toBe("Test 12: delete 10kb row");
-    expect(benchmarks.map((benchmark) => benchmark.sql)).toEqual([...RTT_STATEMENTS]);
+    expect(benchmarks.map(benchmarkSql)).toEqual([...RTT_STATEMENTS]);
   });
 
   test("runs its setup untimed rather than offering an editable preamble", () => {

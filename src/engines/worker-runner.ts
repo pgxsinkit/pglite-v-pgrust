@@ -7,7 +7,8 @@
 
 import type { Configuration, EngineRunner, Measurement } from "./contract";
 import { toOpenSettings } from "./contract";
-import type { EngineRequest, EngineResponse } from "./protocol";
+import type { EngineOkResponse, EngineRequest, EngineResponse } from "./protocol";
+import type { ConcurrentScenario, ScenarioReport } from "./scenario";
 
 /** A request as the caller writes it: the runner owns the correlation id. */
 type EngineRequestBody = EngineRequest extends infer T ? (T extends { id: number } ? Omit<T, "id"> : never) : never;
@@ -16,7 +17,7 @@ type EngineRequestBody = EngineRequest extends infer T ? (T extends { id: number
 const READY_TIMEOUT_MS = 30_000;
 
 interface PendingCall {
-  readonly resolve: (measurement: Measurement | null) => void;
+  readonly resolve: (response: EngineOkResponse) => void;
   readonly reject: (error: Error) => void;
 }
 
@@ -51,11 +52,26 @@ export class WorkerEngineRunner implements EngineRunner {
   }
 
   async measure(sql: string): Promise<Measurement> {
-    const measurement = await this.#call({ kind: "measure", sql });
+    const { measurement } = await this.#call({ kind: "measure", sql });
     if (measurement === null) {
       throw new Error("Engine worker returned no Measurement for a measure request");
     }
     return measurement;
+  }
+
+  /**
+   * Run one Scenario and bring back what every Client did.
+   *
+   * One request for the whole Scenario, and deliberately so: the Clients run concurrently inside the
+   * worker, where their statements are timed. Driving them from here would put a postMessage round
+   * trip between every statement and make the main thread the thing that serialises them.
+   */
+  async concurrent(scenario: ConcurrentScenario): Promise<ScenarioReport> {
+    const { report } = await this.#call({ kind: "concurrent", scenario });
+    if (report === undefined) {
+      throw new Error("Engine worker returned no report for a concurrent request");
+    }
+    return report;
   }
 
   async close(): Promise<void> {
@@ -104,7 +120,7 @@ export class WorkerEngineRunner implements EngineRunner {
     });
   }
 
-  #call(body: EngineRequestBody): Promise<Measurement | null> {
+  #call(body: EngineRequestBody): Promise<EngineOkResponse> {
     const worker = this.#worker;
     if (worker === null) {
       return Promise.reject(new Error("Engine runner is not open"));
@@ -114,7 +130,7 @@ export class WorkerEngineRunner implements EngineRunner {
     }
     const id = this.#nextRequestId;
     this.#nextRequestId += 1;
-    return new Promise<Measurement | null>((resolve, reject) => {
+    return new Promise<EngineOkResponse>((resolve, reject) => {
       this.#pending.set(id, { resolve, reject });
       // Safe by construction: `body` is one arm of EngineRequest minus its id, and `id` restores it.
       worker.postMessage({ ...body, id } as EngineRequest);
@@ -132,7 +148,7 @@ export class WorkerEngineRunner implements EngineRunner {
     }
     this.#pending.delete(message.id);
     if (message.kind === "ok") {
-      pending.resolve(message.measurement);
+      pending.resolve(message);
       return;
     }
     const error = new Error(message.message);

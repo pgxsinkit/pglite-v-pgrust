@@ -5,7 +5,8 @@ import type { Configuration } from "../engines/contract";
 import { configurationDialect } from "../engines/contract";
 import { RTT_SUITE } from "../suites/rtt";
 import { RTT_INITIAL_SETUP_POSTGRES, RTT_STATEMENTS } from "../suites/rtt/statements";
-import type { Suite } from "../suites/types";
+import type { Benchmark, Suite } from "../suites/types";
+import { benchmarkSql, isScenarioBenchmark } from "../suites/types";
 import { planRun } from "./run-suite";
 
 function configuration(id: string): Configuration {
@@ -37,7 +38,7 @@ describe("planRun, the RTT Suite", () => {
 
     test(`${id}: leaves the twelve timed statements exactly as the Baseline runs them`, () => {
       // The rewrite is DDL-only: rewriting a Benchmark would make the column measure different SQL.
-      expect(planFor(RTT_SUITE, id).benchmarks.map((benchmark) => benchmark.sql)).toEqual([...RTT_STATEMENTS]);
+      expect(planFor(RTT_SUITE, id).benchmarks.map(benchmarkSql)).toEqual([...RTT_STATEMENTS]);
     });
   }
 
@@ -52,7 +53,7 @@ describe("planRun, the RTT Suite", () => {
       const plan = planFor(RTT_SUITE, id);
       expect(plan.setupSql).toBe(RTT_SUITE.initialSetupFor("sqlite"));
       expect(plan.setupSql).not.toContain("UNLOGGED");
-      expect(plan.benchmarks.map((benchmark) => benchmark.sql)).toEqual([...RTT_STATEMENTS]);
+      expect(plan.benchmarks.map(benchmarkSql)).toEqual([...RTT_STATEMENTS]);
     }
   });
 
@@ -66,6 +67,9 @@ describe("planRun, the RTT Suite", () => {
     );
   });
 });
+
+/** The stand-in a missing index falls back to, so a failing assertion names the index rather than it. */
+const EMPTY_BENCHMARK: Benchmark = { id: "missing", label: "missing", sql: "" };
 
 /**
  * A stand-in for the Speedtest Suite: the real one imports its scripts with `?raw`, which is a
@@ -88,11 +92,74 @@ describe("planRun, an editable preamble", () => {
   test("rewrites the preamble the textarea holds, not just the Benchmarks", () => {
     const plan = planRun(EDITABLE_SETUP_SUITE, configuration("pglite-memory-unlogged"), "CREATE TABLE warmup (a int);");
     expect(plan.setupSql).toBe("CREATE UNLOGGED TABLE warmup (a int);");
-    expect(plan.benchmarks[0]?.sql).toBe("CREATE UNLOGGED TABLE t (a int);\nINSERT INTO t VALUES (1);");
+    expect(benchmarkSql(plan.benchmarks[0] ?? EMPTY_BENCHMARK)).toBe(
+      "CREATE UNLOGGED TABLE t (a int);\nINSERT INTO t VALUES (1);",
+    );
   });
 
   test("leaves an unrewritten Configuration's preamble byte-identical", () => {
     const plan = planRun(EDITABLE_SETUP_SUITE, configuration("pglite-memory"), "CREATE TABLE warmup (a int);");
     expect(plan.setupSql).toBe("CREATE TABLE warmup (a int);");
+  });
+});
+
+/**
+ * A stand-in for the Concurrency Suite: one Scenario Benchmark with DDL in it.
+ *
+ * The real Suite builds 100 000 rows and four Clients; what matters here is the one property a
+ * Scenario shares with a Benchmark's SQL — a Configuration's rewrite has to reach every statement in
+ * it, or an unlogged column would run the logged column's tables under another name.
+ */
+const SCENARIO_SUITE: Suite = {
+  id: "concurrency",
+  title: "Scenario Suite",
+  description: "A Suite whose Benchmark is a Scenario rather than a statement.",
+  benchmarks: [
+    {
+      id: "1",
+      label: "two clients",
+      scenario: {
+        id: "two-clients",
+        setup: ["SET lock_timeout = '2s'"],
+        clients: [
+          { steps: [{ transaction: ["CREATE TABLE tx_t (a int)"] }, { signal: "made" }] },
+          { steps: [{ untilSignal: "made", sql: "CREATE TABLE reader_t (a int)" }] },
+          { session: 1, steps: [{ sql: "SELECT 1" }] },
+        ],
+      },
+      summarize: (report) => ({ elapsedMs: report.totalMs }),
+    },
+  ],
+  initialSetupFor: () => "CREATE TABLE setup_t (a int);",
+  editableSetup: false,
+  iterations: 1,
+  aggregation: "mean",
+};
+
+describe("planRun, a Suite of Scenarios", () => {
+  test("rewrites every statement of every Client, and the Scenario's setup with them", () => {
+    const plan = planRun(SCENARIO_SUITE, configuration("pglite-memory-unlogged"), "");
+    const benchmark = plan.benchmarks[0];
+    if (benchmark === undefined || !isScenarioBenchmark(benchmark)) {
+      throw new Error("the planned Suite lost its Scenario Benchmark");
+    }
+    expect(benchmark.scenario.clients[0]?.steps[0]).toEqual({ transaction: ["CREATE UNLOGGED TABLE tx_t (a int)"] });
+    expect(benchmark.scenario.clients[1]?.steps[0]).toEqual({
+      untilSignal: "made",
+      sql: "CREATE UNLOGGED TABLE reader_t (a int)",
+    });
+    expect(benchmark.scenario.setup).toEqual(["SET lock_timeout = '2s'"]);
+  });
+
+  test("rewrites the untimed setup of a Suite of Scenarios exactly as it rewrites any other", () => {
+    expect(planFor(SCENARIO_SUITE, "pglite-memory-unlogged").setupSql).toBe("CREATE UNLOGGED TABLE setup_t (a int);");
+    expect(planFor(SCENARIO_SUITE, "pglite-memory").setupSql).toBe("CREATE TABLE setup_t (a int);");
+  });
+
+  // The Engine is opened with as many Sessions as the Scenario's Clients need, and the two
+  // single-statement Suites keep asking for the one every Engine has.
+  test("opens as many Sessions as the Scenario needs, and one for a Suite of statements", () => {
+    expect(planRun(SCENARIO_SUITE, configuration("pgrust-postmaster-memory-broker"), "").sessions).toBe(2);
+    expect(planRun(RTT_SUITE, configuration("pgrust-postmaster-memory-broker"), "").sessions).toBe(1);
   });
 });

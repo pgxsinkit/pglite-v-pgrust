@@ -17,6 +17,14 @@ import { parseMessage } from "../../vendor/pgrust/wire.js";
 export interface QueryError {
   readonly severity: string;
   readonly message: string;
+  /**
+   * The SQLSTATE (field `C`), or an empty string where the backend sent none.
+   *
+   * Kept beside the message because a Concurrency Scenario counts errors by SQLSTATE — a lock
+   * timeout is `55P03` and is a result rather than a failure — and the message text is not something
+   * to match on.
+   */
+  readonly code: string;
 }
 
 export interface QueryResult {
@@ -66,7 +74,7 @@ export function decodeQueryResult(messages: readonly WireMessage[]): QueryResult
       case "E": {
         if (error === null) {
           const parsed = parseMessage("E", message.body);
-          error = { severity: parsed.severity, message: parsed.message };
+          error = { severity: parsed.severity, message: parsed.message, code: parsed.fields["C"] ?? "" };
         }
         break;
       }
@@ -80,7 +88,8 @@ export function decodeQueryResult(messages: readonly WireMessage[]): QueryResult
 
 /** The Error the Engine boundary throws for a backend error, carrying the Postgres message text. */
 export function toQueryError(error: QueryError): Error {
-  return new Error(`pgrust ${error.severity}: ${error.message}`);
+  const code = error.code === "" ? "" : ` (SQLSTATE ${error.code})`;
+  return new Error(`pgrust ${error.severity}: ${error.message}${code}`);
 }
 
 /** Fail the Run rather than record a Measurement for a query the backend rejected. */

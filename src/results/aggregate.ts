@@ -38,3 +38,22 @@ export function aggregateMeasurements(measurements: readonly Measurement[], stra
   const values = measurements.map((measurement) => measurement.elapsedMs);
   return strategy === "trimmed-mean" ? trimmedMean(values) : mean(values);
 }
+
+/**
+ * The whole cell: the aggregated number, plus the Detail of the last iteration that carried one.
+ *
+ * The number is an aggregate over iterations; a Detail is not, and pretending to average one would
+ * invent numbers. The Suites that produce a Detail run one iteration, so "the last one" is "the only
+ * one" — and where a future Suite runs several, the Detail belongs to a real Run rather than to an
+ * arithmetic mean of several.
+ */
+export function aggregateRun(measurements: readonly Measurement[], strategy: AggregationStrategy): Measurement {
+  const elapsedMs = aggregateMeasurements(measurements, strategy);
+  for (let index = measurements.length - 1; index >= 0; index -= 1) {
+    const detail = measurements[index]?.detail;
+    if (detail !== undefined) {
+      return { elapsedMs, detail };
+    }
+  }
+  return { elapsedMs };
+}

@@ -1,18 +1,19 @@
 import type { JSX } from "react";
 import { useState } from "react";
 
+import { applyConcurrencyClients, describeConcurrencyClientsOverride } from "../concurrency-clients";
 import {
   BASELINE_CONFIGURATION_DIALECT,
   BASELINE_CONFIGURATION_ID,
   BASELINE_CONFIGURATION_LABEL,
   CONFIGURATIONS,
 } from "../configurations";
-import { configurationAvailability } from "../engines/availability";
+import { suiteAvailability } from "../engines/availability";
 import type { Configuration } from "../engines/contract";
 import { configurationDialect } from "../engines/contract";
 import type { EnvironmentInfo } from "../environment";
 import { formatEnvironmentLine } from "../environment";
-import type { GridCells, GridColumn, ResultsGrid } from "../results/grid";
+import type { GridCells, GridColumn, GridDetails, ResultsGrid } from "../results/grid";
 import { cellKey } from "../results/grid";
 import { toMarkdown } from "../results/markdown";
 import { applyRttIterations, describeRttIterations } from "../rtt-iterations";
@@ -36,7 +37,12 @@ type RunState = "idle" | "running" | "complete";
  * already failed. Either way the reason is shown in the header and the Run moves on to the next
  * Configuration rather than abandoning the whole table.
  */
-function toColumn(configuration: Configuration, environment: EnvironmentInfo, failure: string | undefined): GridColumn {
+function toColumn(
+  suite: Suite,
+  configuration: Configuration,
+  environment: EnvironmentInfo,
+  failure: string | undefined,
+): GridColumn {
   if (failure !== undefined) {
     return {
       id: configuration.id,
@@ -46,7 +52,7 @@ function toColumn(configuration: Configuration, environment: EnvironmentInfo, fa
       failed: true,
     };
   }
-  const availability = configurationAvailability(configuration, environment);
+  const availability = suiteAvailability(suite, configuration, environment);
   if (availability.available) {
     return { id: configuration.id, label: configuration.label, available: true };
   }
@@ -68,6 +74,8 @@ function describeError(error: unknown): string {
 export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Element {
   const [setupSql, setSetupSql] = useState(() => suite.initialSetupFor(BASELINE_CONFIGURATION_DIALECT));
   const [cells, setCells] = useState<GridCells>({});
+  /** The Detail of the cells that have one; keyed exactly as the cells are. */
+  const [details, setDetails] = useState<GridDetails>({});
   const [runState, setRunState] = useState<RunState>("idle");
   const [activeColumnId, setActiveColumnId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -85,15 +93,27 @@ export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Ele
   }
 
   const running = runState === "running";
-  /** The Suite as run: identical to `suite` unless `?rttIterations=N` reduced the RTT Suite. */
-  const runnableSuite = applyRttIterations(suite, environment.rttIterationsOverride);
-  const nonStandard = runnableSuite.iterations !== suite.iterations;
+  /**
+   * The Suite as run: identical to `suite` unless a URL asked for fewer RTT iterations or another
+   * number of Concurrency Clients. Both rewrite the Suite rather than the Run, and both say so.
+   */
+  const runnableSuite = applyConcurrencyClients(
+    applyRttIterations(suite, environment.rttIterationsOverride),
+    environment.concurrencyClientsOverride,
+  );
+  const nonStandardIterations = runnableSuite.iterations !== suite.iterations;
+  const nonStandardClients = suite.id === "concurrency" && environment.concurrencyClientsOverride !== null;
 
   const grid: ResultsGrid = {
-    rows: suite.benchmarks.map((benchmark) => ({ id: benchmark.id, label: benchmark.label })),
-    columns: CONFIGURATIONS.map((configuration) => toColumn(configuration, environment, failures[configuration.id])),
+    // The runnable Suite's rows, not the declared Suite's: a Concurrency Run with another Client
+    // count has other labels, and the table has to be the table that was run.
+    rows: runnableSuite.benchmarks.map((benchmark) => ({ id: benchmark.id, label: benchmark.label })),
+    columns: CONFIGURATIONS.map((configuration) =>
+      toColumn(runnableSuite, configuration, environment, failures[configuration.id]),
+    ),
     baselineColumnId: BASELINE_CONFIGURATION_ID,
     cells,
+    details,
   };
 
   /** Recomputed every render, so the exported element and the clipboard can never disagree. */
@@ -101,6 +121,7 @@ export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Ele
     title: suite.title,
     environmentLine: formatEnvironmentLine(environment),
     baselineLabel: BASELINE_CONFIGURATION_LABEL,
+    ...(runnableSuite.headerLine === undefined ? {} : { suiteLine: runnableSuite.headerLine }),
   });
 
   function recordFailure(configuration: Configuration, message: string): void {
@@ -114,10 +135,11 @@ export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Ele
     setError(null);
     setCopyStatus(null);
     setCells({});
+    setDetails({});
     setFailures({});
     try {
       for (const configuration of CONFIGURATIONS) {
-        if (!configurationAvailability(configuration, environment).available) {
+        if (!suiteAvailability(runnableSuite, configuration, environment).available) {
           continue;
         }
         setActiveColumnId(configuration.id);
@@ -132,6 +154,13 @@ export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Ele
                 ...previous,
                 [cellKey(result.configurationId, result.benchmarkId)]: result.elapsedMs,
               }));
+              const detail = result.detail;
+              if (detail !== undefined) {
+                setDetails((previous) => ({
+                  ...previous,
+                  [cellKey(result.configurationId, result.benchmarkId)]: detail,
+                }));
+              }
             },
           });
         } catch (thrown) {
@@ -160,8 +189,15 @@ export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Ele
   return (
     <section className="suite" data-testid={`suite-${suite.id}`} data-suite-id={suite.id} data-state={runState}>
       <h2>{suite.title}</h2>
-      <p className="description">{suite.description}</p>
-      {nonStandard ? <p className="non-standard-note">{describeRttIterations(runnableSuite.iterations)}</p> : null}
+      <p className="description">{runnableSuite.description}</p>
+      {nonStandardIterations ? (
+        <p className="non-standard-note">{describeRttIterations(runnableSuite.iterations)}</p>
+      ) : null}
+      {nonStandardClients && environment.concurrencyClientsOverride !== null ? (
+        <p className="non-standard-note">
+          {describeConcurrencyClientsOverride(environment.concurrencyClientsOverride)}
+        </p>
+      ) : null}
 
       <div className="controls">
         {suite.editableSetup ? (

@@ -3,6 +3,7 @@
  * export, because a benchmark number without its environment is not a result.
  */
 
+import { describeConcurrencyClientsOverride, readConcurrencyClientsOverride } from "./concurrency-clients";
 import { detectOpfsSyncAccess } from "./opfs-sync-access";
 import { describeRttIterations, readRttIterationsOverride } from "./rtt-iterations";
 
@@ -46,6 +47,12 @@ export interface EnvironmentInfo {
    * defined 100. Reported everywhere the environment is, because it changes what the numbers mean.
    */
   readonly rttIterationsOverride: number | null;
+  /**
+   * A non-standard Concurrency Client count requested through `?concurrencyClients=N`, or null for
+   * the defined four. Reported everywhere the environment is, for the same reason: it changes what
+   * every number in that Suite means.
+   */
+  readonly concurrencyClientsOverride: number | null;
 }
 
 /**
@@ -95,6 +102,7 @@ export async function readEnvironment(): Promise<EnvironmentInfo> {
     opfsSyncAccessAvailable: opfsSyncAccess.available,
     opfsSyncAccessReason: opfsSyncAccess.reason ?? null,
     rttIterationsOverride: readRttIterationsOverride(),
+    concurrencyClientsOverride: readConcurrencyClientsOverride(),
   };
 }
 
@@ -112,6 +120,9 @@ export function formatEnvironmentLine(environment: EnvironmentInfo): string {
   ];
   if (environment.rttIterationsOverride !== null) {
     parts.push(describeRttIterations(environment.rttIterationsOverride));
+  }
+  if (environment.concurrencyClientsOverride !== null) {
+    parts.push(describeConcurrencyClientsOverride(environment.concurrencyClientsOverride));
   }
   return parts.join(" | ");
 }

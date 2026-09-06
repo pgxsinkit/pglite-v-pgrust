@@ -58,6 +58,8 @@ import type { QueryResult } from "../pgrust/pgwire";
 import { assertNoQueryError, decodeQueryResult } from "../pgrust/pgwire";
 import { toErrorPayload } from "../protocol";
 import type { EngineOkResponse, EngineReadyMessage, EngineRequest, EngineResponse } from "../protocol";
+import type { ScenarioExecutor } from "../scenario-runner";
+import { runScenario } from "../scenario-runner";
 
 type ThreadsHostModule = typeof ThreadsHost;
 type SabPipeModule = typeof SabPipes;
@@ -1005,6 +1007,47 @@ async function removeStoreDirectory(path: string): Promise<void> {
   }
 }
 
+/**
+ * The postmaster's Clients: one Session each, and therefore one real backend each.
+ *
+ * `resolveSession` is the identity, which is the whole difference between this Engine and every
+ * other one: Client `i` speaks to backend `i` over its own rings, and two Clients contending for a
+ * row contend in the lock manager rather than in a queue.
+ *
+ * A `transaction` Step is `BEGIN`, the statements, `COMMIT` — three simple-query cycles on the one
+ * Session, timed as one unit by the shared runner. A backend error inside one leaves the Session in
+ * a failed transaction, so the rollback is issued here before the Client's next Step: it is part of
+ * failing the transaction, not part of the next thing the Client does.
+ */
+function postmasterExecutor(): ScenarioExecutor {
+  const query = async (session: number, sql: string): Promise<QueryResult> => {
+    const { result } = await requireSession(session).query(sql);
+    return result;
+  };
+  return {
+    resolveSession: (requested) => requested,
+    setup: async (session, sql) => {
+      assertNoQueryError(await query(session, sql));
+    },
+    statement: async (session, sql) => {
+      const result = await query(session, sql);
+      return result.error === null ? undefined : result.error.code;
+    },
+    transaction: async (session, statements) => {
+      assertNoQueryError(await query(session, "BEGIN"));
+      for (const sql of statements) {
+        const result = await query(session, sql);
+        if (result.error !== null) {
+          assertNoQueryError(await query(session, "ROLLBACK"));
+          return result.error.code;
+        }
+      }
+      const commit = await query(session, "COMMIT");
+      return commit.error === null ? undefined : commit.error.code;
+    },
+  };
+}
+
 async function handle(request: EngineRequest): Promise<void> {
   switch (request.kind) {
     case "open": {
@@ -1022,6 +1065,12 @@ async function handle(request: EngineRequest): Promise<void> {
       const { result, elapsedMs } = await requireSession(request.session ?? 0).query(request.sql);
       assertNoQueryError(result);
       ok(request.id, { elapsedMs });
+      return;
+    }
+    case "concurrent": {
+      requireRun();
+      const report = await runScenario(request.scenario, postmasterExecutor());
+      post({ kind: "ok", id: request.id, measurement: null, report });
       return;
     }
     case "close": {

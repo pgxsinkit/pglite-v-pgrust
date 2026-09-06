@@ -19,6 +19,8 @@ import type { EngineOpenOptions, PgliteStoreSettings } from "../contract";
 import { pgliteOpenOptions, pgliteStore } from "../contract";
 import { toErrorPayload } from "../protocol";
 import type { EngineOkResponse, EngineReadyMessage, EngineRequest, EngineResponse } from "../protocol";
+import type { ScenarioExecutor } from "../scenario-runner";
+import { runScenario } from "../scenario-runner";
 import { toStoreError } from "./store-error";
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
@@ -41,6 +43,71 @@ function requireEngine(): PGlite {
     throw new Error("PGlite Engine is not open");
   }
   return pg;
+}
+
+/** The SQLSTATE of a backend error, or `undefined` for anything that is not one. */
+function sqlstateOf(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) {
+    return undefined;
+  }
+  const code: unknown = (error as { code?: unknown }).code;
+  return typeof code === "string" && code !== "" ? code : undefined;
+}
+
+/** Rethrow anything that is not a backend error: only a SQLSTATE is a result rather than a failure. */
+function toSqlstate(error: unknown): string {
+  const sqlstate = sqlstateOf(error);
+  if (sqlstate === undefined) {
+    throw error;
+  }
+  return sqlstate;
+}
+
+/**
+ * PGlite's Clients: one instance, one queue, and the two calls an application really has.
+ *
+ * There is exactly one Session here and `resolveSession` says so — every Client's work goes to the
+ * same PGlite, and the per-Session setup therefore runs once. What decides whether two Clients
+ * interleave is which call they make:
+ *
+ * - a plain Step is `pg.query(sql)`, one statement through the queue, so another Client's statement
+ *   can be served between two of this Client's;
+ * - a `transaction` Step is `pg.transaction(...)`, which holds the queue for the whole callback, so
+ *   nothing interleaves inside one — and a reader waiting on a bulk write waits for all of it.
+ *
+ * That is not a limitation this harness imposes; it is what PGlite is, and it is exactly what the
+ * Concurrency Suite is there to show against a server with real backends. The transaction body uses
+ * `tx.exec` rather than `tx.query` because a Step's SQL may be a script (the bulk-write Benchmark's
+ * is) and because `exec` is the simple-protocol call every other Suite in this harness measures;
+ * inside `transaction` nothing can interleave either way.
+ */
+function pgliteExecutor(engine: PGlite): ScenarioExecutor {
+  return {
+    resolveSession: () => 0,
+    setup: async (_session, sql) => {
+      await engine.exec(sql);
+    },
+    statement: async (_session, sql) => {
+      try {
+        await engine.query(sql);
+        return undefined;
+      } catch (error: unknown) {
+        return toSqlstate(error);
+      }
+    },
+    transaction: async (_session, statements) => {
+      try {
+        await engine.transaction(async (tx) => {
+          for (const sql of statements) {
+            await tx.exec(sql);
+          }
+        });
+        return undefined;
+      } catch (error: unknown) {
+        return toSqlstate(error);
+      }
+    },
+  };
 }
 
 /** PGlite on its own filesystem: in the worker's heap when `dataDir` is empty. */
@@ -90,6 +157,11 @@ async function handle(request: EngineRequest): Promise<void> {
       await engine.exec(request.sql);
       const elapsedMs = performance.now() - startTime;
       ok(request.id, { elapsedMs });
+      return;
+    }
+    case "concurrent": {
+      const report = await runScenario(request.scenario, pgliteExecutor(requireEngine()));
+      post({ kind: "ok", id: request.id, measurement: null, report });
       return;
     }
     case "close": {

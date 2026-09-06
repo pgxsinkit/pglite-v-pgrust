@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { Measurement } from "../engines/contract";
-import { aggregateMeasurements, mean, trimmedMean } from "./aggregate";
+import { aggregateMeasurements, aggregateRun, mean, trimmedMean } from "./aggregate";
 
 function measurements(values: readonly number[]): readonly Measurement[] {
   return values.map((elapsedMs) => ({ elapsedMs }));
@@ -60,5 +60,26 @@ describe("aggregateMeasurements", () => {
 
   test("a single-iteration Benchmark reports its one Measurement unchanged", () => {
     expect(aggregateMeasurements(measurements([0.123]), "mean")).toBe(0.123);
+  });
+});
+
+describe("aggregateRun", () => {
+  test("carries the aggregated number and no Detail where no Measurement had one", () => {
+    expect(aggregateRun(measurements([10, 20, 30]), "mean")).toEqual({ elapsedMs: 20 });
+  });
+
+  test("carries the Detail of the last Measurement that had one", () => {
+    const withDetail: readonly Measurement[] = [
+      { elapsedMs: 10, detail: { statements: 1 } },
+      { elapsedMs: 20, detail: { statements: 2 } },
+    ];
+    expect(aggregateRun(withDetail, "mean")).toEqual({ elapsedMs: 15, detail: { statements: 2 } });
+  });
+
+  // Averaging a Detail would invent numbers nothing measured, so the one that is kept belongs to a
+  // real iteration — which for the Suites that carry a Detail is the only one there was.
+  test("keeps a real iteration's Detail rather than inventing an average of several", () => {
+    const mixed: readonly Measurement[] = [{ elapsedMs: 10, detail: { statements: 1 } }, { elapsedMs: 30 }];
+    expect(aggregateRun(mixed, "mean")).toEqual({ elapsedMs: 20, detail: { statements: 1 } });
   });
 });

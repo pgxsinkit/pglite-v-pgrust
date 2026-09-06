@@ -11,7 +11,7 @@
  * `data-state="complete"` — rather than from a sleep.
  *
  * Usage:
- *   bun run bench                                  # both Suites, Chromium, fresh build
+ *   bun run bench                                  # all three Suites, Chromium, fresh build
  *   bun run bench --suite rtt --iterations 5       # a short, explicitly non-standard RTT Run
  *   bun run bench --browser firefox --no-build     # reuse the existing dist/
  *   bun run bench --browser webkit                 # skips: Playwright's WebKit has no JSPI
@@ -31,7 +31,7 @@ import type { SuiteId } from "../src/suites/types";
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** The Suites the page renders, in page order. */
-const ALL_SUITE_IDS: readonly SuiteId[] = ["speedtest", "rtt"];
+const ALL_SUITE_IDS: readonly SuiteId[] = ["speedtest", "rtt", "concurrency"];
 
 export type BenchBrowser = "chromium" | "firefox" | "webkit";
 
@@ -100,7 +100,9 @@ export const DEFAULT_BENCH_OPTIONS: BenchOptions = {
   // Never 5580: a dev server or another session's browser may be sitting on it.
   port: 0,
   headless: true,
-  timeoutMs: 600_000,
+  // Three Suites against fourteen Configurations, five of which seed a whole data directory into a
+  // cold store first. The default has to cover the run the default flags ask for.
+  timeoutMs: 2_400_000,
   outputDir: resolve(REPO_ROOT, "tmp/results"),
 };
 
@@ -327,12 +329,12 @@ export async function runBench(overrides: Partial<BenchOptions> = {}): Promise<B
 const USAGE = `Usage: bun run bench [options]
 
   --browser <chromium|firefox|webkit>  Browser to drive (default: chromium)
-  --suite <speedtest|rtt>              Run one Suite; repeatable (default: both)
+  --suite <speedtest|rtt|concurrency>  Run one Suite; repeatable (default: all three)
   --iterations <N>                     Non-standard RTT iterations, ${MIN_RTT_ITERATIONS}-${MAX_RTT_ITERATIONS}
   --no-build                           Reuse the existing dist/ instead of rebuilding
   --port <N>                           Port for the local static server (default: a free one)
   --headed                             Show the browser window
-  --timeout <ms>                       Overall in-browser deadline (default: 600000)
+  --timeout <ms>                       Overall in-browser deadline (default: 2400000)
   --out <dir>                          Results directory (default: tmp/results)
   -h, --help                           Print this message`;
 

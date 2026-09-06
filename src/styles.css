@@ -153,3 +153,31 @@ th .reason {
   color: #7a5c00;
   font-weight: 600;
 }
+
+/*
+ * The Detail of one Benchmark, folded away under its row: a cell stays one number, and everything
+ * that number was computed from is one click away.
+ */
+tr.detail td {
+  padding: 0 0.5rem 0.4rem;
+  border-top: none;
+  text-align: left;
+  font-variant-numeric: normal;
+}
+
+tr.detail summary {
+  cursor: pointer;
+  color: #666;
+  font-size: 0.85em;
+}
+
+tr.detail ul {
+  margin: 0.3rem 0 0.2rem;
+  padding-left: 1.2rem;
+  font-size: 0.85em;
+  color: #444;
+}
+
+tr.detail li {
+  margin: 0.1rem 0;
+}

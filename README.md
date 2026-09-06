@@ -5,20 +5,26 @@ A browser benchmark that runs the same SQL workloads against [PGlite](https://pg
 timings side by side, with [wa-sqlite](https://github.com/rhashimoto/wa-sqlite) alongside them as a
 calibration reference.
 
-Two Suites are ported unchanged from PGlite's own benchmark pages:
+Two Suites are ported unchanged from PGlite's own benchmark pages, and a third asks what the first
+two cannot:
 
 - **Speedtest Suite** — the 16 SQL scripts ported from the SQLite speed test via
   [wa-sqlite](https://github.com/rhashimoto/wa-sqlite), byte-identical to PGlite's copies. One timing
   per script.
 - **RTT Suite** — twelve single-statement CRUD queries, 100 iterations each, top and bottom 10% of
   timings discarded, mean of the rest.
+- **[Concurrency Suite](#the-concurrency-suite)** — five scripted scenarios run by four **Clients**
+  at once against one 100 000-row table: a read fan-out, a reader under a bulk write, short queries
+  beside a long one, writers on disjoint rows and writers on the same row. What "at once" means is
+  the Engine's answer and is exactly what the Suite reports.
 
 Each Engine runs in its own dedicated module worker, and every timing is taken **inside** that worker
 around the Engine call alone — the main-thread messaging is deliberately outside the measured window.
 Results are shown per Configuration (an Engine plus its storage and durability settings), with a ratio
 column against the `PGlite Memory` baseline and a "Copy as Markdown" button per Suite.
 
-Times are milliseconds; lower is better.
+Times are milliseconds; lower is better — except one Concurrency row that reports a rate and says so
+in its own label.
 
 ## The Reference Engine
 
@@ -178,7 +184,7 @@ the OPFS directory be removed.
 
 These are the only columns that can be asked more than one thing at a time and answer it with more
 than one backend: N sessions here are N real Postgres backends, sharing one buffer pool, one lock
-manager and one WAL.
+manager and one WAL. That is what the [Concurrency Suite](#the-concurrency-suite) is for.
 
 ### The OPFS repacked columns
 
@@ -228,6 +234,60 @@ Where it is refused the four columns are greyed out with that reason, the probe'
 the header, and every other column runs as normal — exactly as the pgrust column behaves without
 JSPI. The two threads columns need cross-origin isolation as well, and are told about that first: it
 is what decides whether that Engine can exist at all.
+
+## The Concurrency Suite
+
+The Speedtest and RTT Suites time one statement at a time. This one runs **four Clients at once** and
+reports what they did to each other, which is a different question — and one where the Engines
+genuinely differ rather than merely differing in speed.
+
+**What "at once" means, per Engine.** This is the whole point of the Suite, so it is worth being
+exact:
+
+| Engine                     | What concurrency is there                                                                                                                                                                                                                                       |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pgrust Postmaster`        | **Real backends.** Client `i` gets Session `i`, which is a Postgres backend on its own guest thread; they share one buffer pool, one lock manager and one WAL, and they block on each other exactly as backends do                                              |
+| `PGlite`                   | **Queue interleaving.** One instance, one queue: plain statements go through `pg.query`, so another Client's statement can be served between two of this Client's; a `pg.transaction` holds the queue for its whole callback, so nothing interleaves inside one |
+| `pgrust`, `pgrust Threads` | **Unavailable** — "one session". Both run a single backend on one pipe, so the only number they could produce would be the Clients run one after another                                                                                                        |
+| `wa-sqlite`                | **Unavailable** — "synchronous API". Each statement runs to completion on the calling thread; there is nothing for a second Client to interleave with                                                                                                           |
+
+The unavailable cells say `skipped` with that reason in the column header, exactly as a missing
+capability does. Nothing here is ever faked by serialising the Clients and calling the result
+concurrency.
+
+**The dataset** is built in each Run's untimed setup and is the same everywhere: `concurrency_rows`,
+100 000 rows with an integer key, an integer value and a 100-byte text payload (different in every
+row), a primary key and a second index; plus `concurrency_contended`, the one row the last Benchmark
+fights over.
+
+**The five rows**, each with the one number it reports and the Detail beneath it:
+
+| Benchmark                       | What runs                                                                                      | The cell                              | The Detail                                           |
+| ------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------- | ---------------------------------------------------- |
+| Read fan-out                    | 4 Clients x 500 indexed point SELECTs by random key                                            | total wall for all Clients            | statements, statements/s, per-Client p50/p95/max     |
+| Reader under a bulk write       | Client 0 inserts 25 000 rows in one transaction, then signals; the others read `untilSignal`   | the readers' **p95**                  | writer total, reader max, reader statement count     |
+| Short queries beside a long one | Client 0 runs a full scan with two string comparisons (~150-250 ms), then signals; others read | the short Clients' **p95**            | long query time, short max, short statement count    |
+| Writers on disjoint rows        | 4 Clients x 200 short transactions, each in its own quarter of the key space                   | **transactions/s** (higher is better) | per-Client p95, total wall, transactions             |
+| Writers on the same row         | 4 Clients x 200 short transactions on one row, `lock_timeout = 2s` per Session                 | **p95** commit latency                | lock timeouts (55P03), per-Client totals, total wall |
+
+A **transaction is one sample**, not three. A postmaster Session can time a `COMMIT` on its own and
+PGlite cannot (its `transaction` issues both ends itself), so the only unit both can be asked for
+honestly is the whole short transaction — which is what "commit latency" means in this Suite.
+
+**The keys are seeded.** Every key every Client reads or updates is drawn from a fixed seed on the
+main thread and written into the Scenario as a literal, so every Engine is asked the same questions
+in the same order and a re-run reads the same rows. A column whose keys came from `random()` inside
+the database would be a different workload per column, and the table would compare nothing.
+
+**The Detail** is under the table in the Markdown export (one line per Configuration per Benchmark)
+and folded away under the row in the page. A cell stays one number; a p95 with no statement count
+behind it is not something a reader can check.
+
+The Suite runs four Clients by definition, and the page offers no control that changes it. For
+automation only, the URL query `?concurrencyClients=N` — an integer from 2 to 8, anything else
+ignored — rebuilds the Suite for another Client count, and says so in the environment header, in the
+Suite itself and in every Markdown export. Every export carries the Client count either way, as its
+own line under the environment: `Concurrency clients: 4`.
 
 ## Results
 
@@ -299,7 +359,8 @@ Engine in a fresh worker, so no state carries over between Configurations; a Sto
 OPFS directory is emptied before its Run and removed after it, so nothing carries over between page
 loads either.
 
-The RTT Suite is 100 iterations by definition, and the page offers no control that changes it. For
+Both Suites the page runs unchanged are fixed by definition. The RTT Suite is 100 iterations, and the
+page offers no control that changes it. For
 automation only, the URL query `?rttIterations=N` — an integer from 1 to 1000, anything else ignored —
 shortens it, and says so everywhere: the environment header, the Suite itself and every Markdown
 export carry `RTT iterations: N (non-standard)`, so a shortened Run cannot be mistaken for a real one.
@@ -511,8 +572,9 @@ The lane times nothing. Every Measurement is still taken inside the Engine's wor
 itself, so a headless result and a hand-run result are the same result.
 
 ```sh
-bun run bench                                # both Suites, Chromium, fresh build
+bun run bench                                # all three Suites, Chromium, fresh build
 bun run bench --suite rtt --iterations 5     # one Suite, deliberately short RTT Run
+bun run bench --suite concurrency            # the Concurrency Suite on its own
 bun run bench --browser firefox --no-build   # reuse the existing dist/
 bun run bench --help                         # every flag
 ```
@@ -520,12 +582,12 @@ bun run bench --help                         # every flag
 | Flag               | Meaning                                                                       |
 | ------------------ | ----------------------------------------------------------------------------- |
 | `--browser <name>` | `chromium` (default), `firefox` or `webkit`                                   |
-| `--suite <id>`     | `speedtest` or `rtt`; repeatable, defaults to both                            |
+| `--suite <id>`     | `speedtest`, `rtt` or `concurrency`; repeatable, defaults to all three        |
 | `--iterations <N>` | Passes `?rttIterations=N` to the page; 1-1000                                 |
 | `--no-build`       | Reuse the existing `dist/` instead of rebuilding                              |
 | `--port <N>`       | Port for the local static server; the default asks for a free one, never 5580 |
 | `--headed`         | Show the browser window                                                       |
-| `--timeout <ms>`   | Overall in-browser deadline (default 600000)                                  |
+| `--timeout <ms>`   | Overall in-browser deadline (default 2400000)                                 |
 | `--out <dir>`      | Results directory (default `tmp/results`)                                     |
 
 Each run writes `tmp/results/<ISO-timestamp>-<browser>.md` (gitignored) and prints the same content:
@@ -539,16 +601,18 @@ revisions it will look for — floating it would silently ask for builds that ar
 
 | Browser in the lane           | Behaviour                                                                                                                                                                                                                                                   |
 | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Chromium (default)            | JSPI on by default, cross-origin isolation from the lane's own server and synchronous access handles granted in dedicated workers, so all fourteen Configurations run                                                                                       |
+| Chromium (default)            | JSPI on by default, cross-origin isolation from the lane's own server and synchronous access handles granted in dedicated workers, so all fourteen Configurations run (six of them the Concurrency Suite)                                                   |
 | Firefox (`--browser firefox`) | The lane sets `javascript.options.wasm_js_promise_integration`; where JSPI is still missing the pgrust column reports `skipped` and the Run continues. Firefox's reduced timer precision quantises Measurements, so its numbers are coarser than Chromium's |
 | WebKit (`--browser webkit`)   | Exits 0 with `WebKit skipped: Playwright's WebKit build has no JSPI yet`, without launching. That build also refuses synchronous access handles in both worker kinds, so it could contribute neither the pgrust nor the OPFS columns                        |
 
-`bun run test:e2e` drives the same lane from `bun test` (Chromium, both Suites, RTT at three
+`bun run test:e2e` drives the same lane from `bun test` (Chromium, all three Suites, RTT at three
 iterations) and asserts the shape of the result rather than any timing: an environment line that says
 `cross-origin isolated yes` — the lane serves both headers, so anything else is a lane bug — column
 headers in Configuration order so the positional assertions cannot drift, a millisecond figure and a
 ratio in every PGlite Memory and wa-sqlite cell, and `skipped`, `failed` or a millisecond figure in
-every pgrust, pgrust Threads and OPFS cell. The Reference Engine is held to the stricter rule on
+every pgrust, pgrust Threads, postmaster and OPFS cell. For the Concurrency Suite it also asserts the
+Suite's own header line, the Detail block under the table, and an explicit `skipped` in every column
+whose Engine cannot run it. The Reference Engine is held to the stricter rule on
 purpose — it needs no JSPI, no synchronous access handle and no asset that can be missing, so a cell
 without a number in it is a harness bug rather than a browser or a build state. It is deliberately outside `test`, `check` and `validate` — `bun run
 validate:full` is `validate` plus this lane.

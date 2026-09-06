@@ -1,8 +1,10 @@
 import type { JSX } from "react";
+import { Fragment } from "react";
 
-import { formatMs, formatRatio } from "../results/format";
-import type { ResultsGrid } from "../results/grid";
-import { hasRatioColumn, readCell, unmeasuredCellText } from "../results/grid";
+import type { MeasurementDetail } from "../engines/contract";
+import { formatDetail, formatMs, formatRatio } from "../results/format";
+import type { GridColumn, ResultsGrid } from "../results/grid";
+import { gridColumnSpan, hasRatioColumn, readCell, rowDetails, unmeasuredCellText } from "../results/grid";
 
 export interface ResultsTableProps {
   readonly grid: ResultsGrid;
@@ -33,25 +35,64 @@ export function ResultsTable({ grid, baselineLabel, activeColumnId }: ResultsTab
       </thead>
       <tbody>
         {grid.rows.map((row) => (
-          <tr key={row.id}>
-            <td>{row.label}</td>
-            {grid.columns.map((column) => {
-              const value = readCell(grid.cells, column.id, row.id);
-              const baseline = readCell(grid.cells, grid.baselineColumnId, row.id);
-              const className = column.available ? undefined : "unavailable";
-              return (
-                <ValueCells
-                  key={column.id}
-                  className={className}
-                  text={column.available || value !== undefined ? formatMs(value) : unmeasuredCellText(column)}
-                  ratio={hasRatioColumn(grid, column.id) ? formatRatio(value, baseline) : null}
-                />
-              );
-            })}
-          </tr>
+          <Fragment key={row.id}>
+            <tr>
+              <td>{row.label}</td>
+              {grid.columns.map((column) => {
+                const value = readCell(grid.cells, column.id, row.id);
+                const baseline = readCell(grid.cells, grid.baselineColumnId, row.id);
+                const className = column.available ? undefined : "unavailable";
+                return (
+                  <ValueCells
+                    key={column.id}
+                    className={className}
+                    text={column.available || value !== undefined ? formatMs(value) : unmeasuredCellText(column)}
+                    ratio={hasRatioColumn(grid, column.id) ? formatRatio(value, baseline) : null}
+                  />
+                );
+              })}
+            </tr>
+            <DetailRow grid={grid} rowId={row.id} rowLabel={row.label} />
+          </Fragment>
         ))}
       </tbody>
     </table>
+  );
+}
+
+interface DetailRowProps {
+  readonly grid: ResultsGrid;
+  readonly rowId: string;
+  readonly rowLabel: string;
+}
+
+/**
+ * The Detail of one Benchmark, folded away under its row.
+ *
+ * A cell stays one number; everything that number was computed from — per-Client percentiles,
+ * statement counts, SQLSTATEs — is one click away, and is the same text the Markdown export writes
+ * under the table. A row whose Benchmarks report no Detail renders nothing at all.
+ */
+function DetailRow({ grid, rowId, rowLabel }: DetailRowProps): JSX.Element | null {
+  const details = rowDetails(grid, rowId);
+  if (details.length === 0) {
+    return null;
+  }
+  return (
+    <tr className="detail">
+      <td colSpan={gridColumnSpan(grid)}>
+        <details>
+          <summary>{rowLabel}: detail</summary>
+          <ul>
+            {details.map((entry: { column: GridColumn; detail: MeasurementDetail }) => (
+              <li key={entry.column.id}>
+                <strong>{entry.column.label}</strong>: {formatDetail(entry.detail)}
+              </li>
+            ))}
+          </ul>
+        </details>
+      </td>
+    </tr>
   );
 }
 

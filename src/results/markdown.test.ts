@@ -92,3 +92,41 @@ describe("toMarkdown", () => {
     expect(piped.split("\n")[6]).toBe("| a \\| b | – | – | – | skipped | – |");
   });
 });
+
+describe("toMarkdown, a Suite that reports more than one number per cell", () => {
+  const withDetail: ResultsGrid = {
+    ...GRID,
+    details: {
+      [cellKey("pglite-memory", "1")]: { "writer total ms": 663.355, "reader statements": 3 },
+      [cellKey("pglite-memory-unlogged", "1")]: { "writer total ms": 641.2, "reader statements": 4 },
+    },
+  };
+
+  test("writes the Detail under the table, one line per Configuration per Benchmark", () => {
+    const markdown = toMarkdown(withDetail, OPTIONS);
+    expect(markdown).toContain("#### Detail");
+    expect(markdown).toContain(
+      "- **Test 1: 1000 INSERTs** — PGlite Memory: writer total ms = 663.355; reader statements = 3",
+    );
+    expect(markdown).toContain(
+      "- **Test 1: 1000 INSERTs** — PGlite Memory (unlogged): writer total ms = 641.200; reader statements = 4",
+    );
+  });
+
+  // The cell stays one number: a Detail belongs under the table, never inside a column.
+  test("leaves the table itself byte-identical to the same grid without a Detail", () => {
+    const table = (markdown: string): string => markdown.split("#### Detail")[0] ?? "";
+    expect(table(toMarkdown(withDetail, OPTIONS)).trimEnd()).toBe(toMarkdown(GRID, OPTIONS).trimEnd());
+  });
+
+  test("writes no Detail block for a grid that has none", () => {
+    expect(toMarkdown(GRID, OPTIONS)).not.toContain("#### Detail");
+  });
+
+  test("carries the Suite's own header line under the environment when it has one", () => {
+    const lines = toMarkdown(GRID, { ...OPTIONS, suiteLine: "Concurrency clients: 4" }).split("\n");
+    expect(lines[2]).toBe(OPTIONS.environmentLine);
+    expect(lines[4]).toBe("Concurrency clients: 4");
+    expect(lines[6]?.startsWith("| Benchmark |")).toBe(true);
+  });
+});

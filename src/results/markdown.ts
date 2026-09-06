@@ -3,14 +3,19 @@
  * line so a pasted table is self-describing.
  */
 
-import { EMPTY_CELL, formatMs, formatRatio } from "./format";
+import { EMPTY_CELL, formatDetail, formatMs, formatRatio } from "./format";
 import type { ResultsGrid } from "./grid";
-import { hasRatioColumn, readCell, unmeasuredCellText } from "./grid";
+import { hasRatioColumn, readCell, rowDetails, unmeasuredCellText } from "./grid";
 
 export interface MarkdownExportOptions {
   readonly title: string;
   readonly environmentLine: string;
   readonly baselineLabel: string;
+  /**
+   * A line the Suite itself contributes under the environment — how many Clients ran, for the
+   * Concurrency Suite. Absent for a Suite with nothing to add.
+   */
+  readonly suiteLine?: string;
 }
 
 function row(cells: readonly string[]): string {
@@ -52,18 +57,36 @@ function bodyRowCells(grid: ResultsGrid, rowId: string, rowLabel: string): reado
   return cells;
 }
 
+/**
+ * The Detail block: one line per Configuration per Benchmark, under the table.
+ *
+ * Under it and not in it, because a cell is one number and a Detail is a handful of them. A row with
+ * nothing to add contributes nothing, so the two Suites that report a single time per Benchmark
+ * export exactly what they always did.
+ */
+function detailLines(grid: ResultsGrid): readonly string[] {
+  const lines: string[] = [];
+  for (const gridRow of grid.rows) {
+    for (const { column, detail } of rowDetails(grid, gridRow.id)) {
+      lines.push(`- **${gridRow.label}** — ${column.label}: ${formatDetail(detail)}`);
+    }
+  }
+  return lines;
+}
+
 export function toMarkdown(grid: ResultsGrid, options: MarkdownExportOptions): string {
   const header = markdownHeaderCells(grid, options.baselineLabel);
-  const lines: string[] = [
-    `### ${options.title}`,
-    "",
-    options.environmentLine,
-    "",
-    row(header),
-    row(header.map(() => "---")),
-  ];
+  const lines: string[] = [`### ${options.title}`, "", options.environmentLine, ""];
+  if (options.suiteLine !== undefined) {
+    lines.push(options.suiteLine, "");
+  }
+  lines.push(row(header), row(header.map(() => "---")));
   for (const gridRow of grid.rows) {
     lines.push(row(bodyRowCells(grid, gridRow.id, gridRow.label)));
+  }
+  const details = detailLines(grid);
+  if (details.length > 0) {
+    lines.push("", "#### Detail", "", ...details);
   }
   return `${lines.join("\n")}\n`;
 }
