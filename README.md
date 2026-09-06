@@ -26,6 +26,51 @@ column against the `PGlite Memory` baseline and a "Copy as Markdown" button per 
 Times are milliseconds; lower is better — except one Concurrency row that reports a rate and says so
 in its own label.
 
+## Quick start from a clone
+
+Five commands. No sibling checkouts, no Rust toolchain, no pgxsinkit checkout:
+
+```sh
+mise install                              # Bun and Node at the versions this repo pins
+bun install
+bun run sync:pgrust --release latest      # the pgrust wasm and the store bundle, ~30 MB
+bunx playwright install chromium firefox  # only for the headless lane
+bun run dev                               # http://localhost:5580, then press Start
+```
+
+`bun run bench --suite rtt --iterations 3` runs the same page headlessly instead and prints the
+tables; `bun run bench` on its own runs all three Suites (see [the headless lane](#headless-lane)).
+
+Only `bun install` and the sync need a network. The sync downloads the newest `pgrust-assets/*`
+[release](#pgrust-assets) of this repo — ~30 MB gzipped, ~135 MB unpacked into `public/pgrust/`,
+which is gitignored — verifies every file against the release's `SHA256SUMS` **and** the unpacked
+sizes and digests in its `manifest.json`, and writes nothing at all if any of that disagrees. It is
+the only step that is not instant, and it is the only one that ever has to be repeated: run it again
+when a newer release is published.
+
+Without it the app still builds and runs; the eight pgrust columns report their own missing asset in
+their own headers and the six others are unaffected.
+
+What each column needs beyond that, all of it satisfied by a current Chromium, Firefox or Safari:
+
+| Column                                                  | Needs                                                                            |
+| ------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| the two `PGlite Memory` and two `wa-sqlite Memory` ones | nothing beyond `bun install`                                                     |
+| `PGlite OPFS repacked`, relaxed and strict              | an OPFS synchronous access handle in a dedicated worker                          |
+| `pgrust Memory` and `pgrust Memory (unlogged)`          | the synced assets **and JSPI** — the only two columns that need it               |
+| every `pgrust Threads` and `pgrust Postmaster` one      | the synced assets and [cross-origin isolation](#cross-origin-isolation); no JSPI |
+| the three of those whose store is on OPFS               | the above, plus a synchronous access handle in a dedicated worker                |
+
+Cross-origin isolation is not something you have to arrange: `vite.config.ts` sends both headers for
+`bun run dev` and `bun run preview`, and the bench lane's own static server sends them too, so a
+`cross-origin isolated no` in the header is a browser withholding them rather than a missing config.
+The four broker and postmaster columns additionally load a pre-release build of the OPFS store, which
+[ships with the release](#download-a-published-build) — nothing else to fetch.
+
+`PGLITE_V_PGRUST_RELEASE_BASE_URL` points the sync at a directory of release assets instead of
+GitHub (a local static server, say). That directory has no release list, so pass the tag:
+`PGLITE_V_PGRUST_RELEASE_BASE_URL=http://127.0.0.1:8791 bun run sync:pgrust --release pgrust-assets/08a30644`.
+
 ## The Reference Engine
 
 PGlite and pgrust are the subjects of the comparison. wa-sqlite is not: it is the **Reference
@@ -366,6 +411,9 @@ bun install
 bun run dev      # http://localhost:5580
 ```
 
+The pgrust columns need one more step before they can run — `bun run sync:pgrust --release latest`;
+the [quick start](#quick-start-from-a-clone) is the whole sequence in order.
+
 To build and serve the production bundle:
 
 ```sh
@@ -387,12 +435,16 @@ export carry `RTT iterations: N (non-standard)`, so a shortened Run cannot be mi
 ## pgrust assets
 
 PGlite installs from npm; pgrust does not. Its host JavaScript is vendored into this repo and
-committed; its ~131 MB of wasm build assets are not, so the four pgrust columns need one setup step.
+committed; its ~131 MB of wasm build assets are not, so the eight pgrust columns need one setup
+step — the one in the [quick start](#quick-start-from-a-clone).
 
 There are **two wasm modules from one pgrust commit**: `postgres.wasm` (`wasm32-wasip1`) for the two
-`pgrust` columns and `postgres-threads.wasm` (`wasm32-wasip1-threads`) for the two `pgrust Threads`
-columns. They share `vfs.img`/`vfs.json`, because the packed image is `initdb` output and carries no
-pgrust code and no target.
+`pgrust` columns and `postgres-threads.wasm` (`wasm32-wasip1-threads`) for the four `pgrust Threads`
+and two `pgrust Postmaster` columns. They share `vfs.img`/`vfs.json`, because the packed image is
+`initdb` output and carries no pgrust code and no target. Beside them travels one thing that is not
+pgrust at all: the **pre-release store bundle** the four broker and postmaster columns load, MIT
+licensed, from a pgxsinkit checkout that a cloner has no reason to have — so it is published with
+the assets rather than left as a second thing to arrange.
 
 > **Which pgrust?** The committed results are built from the pgrust branch
 > [`spike/wasip1-threads`](https://github.com/pgxsinkit/pgrust/tree/spike/wasip1-threads)
@@ -409,17 +461,23 @@ bun run sync:pgrust --release latest                     # newest published buil
 bun run sync:pgrust --release pgrust-assets/dab0f929     # a specific one
 ```
 
-That needs no pgrust checkout and no Rust toolchain. The assets are published as **GitHub Release
-assets of this repo**, one release per pgrust commit, tagged `pgrust-assets/<short-commit>` — the tag
-names the exact pgrust the binaries were built from. The download is ~27 MB gzipped and unpacks to
-~134 MB in `public/pgrust/`; every file is verified against the release's `SHA256SUMS` **and**
-against the unpacked sizes and digests in its `manifest.json` before anything is written, and a
-release that fails to verify leaves `public/pgrust/` untouched.
+That needs no pgrust checkout, no Rust toolchain and no pgxsinkit checkout. The assets are published
+as **GitHub Release assets of this repo**, one release per pgrust commit, tagged
+`pgrust-assets/<short-commit>` — the tag names the exact pgrust the binaries were built from. The
+download is ~30 MB gzipped and unpacks to ~135 MB in `public/pgrust/`; every file is verified against
+the release's `SHA256SUMS` **and** against the unpacked sizes and digests in its `manifest.json`
+before anything is written, and a release that fails to verify leaves `public/pgrust/` untouched.
 
-`postgres-threads.wasm` is the one **optional** asset: a release published before the threads build
-existed is still a complete, verifiable set for the columns that existed then, so downloading one
-succeeds, removes any stale threads module rather than leaving two commits side by side, and says
-that the two Threads columns will report the asset missing.
+Five assets: `postgres.wasm.gz`, `postgres-threads.wasm.gz`, `vfs.img.gz`, `vfs.json` and
+`pglite-opfs-repacked.js.gz` — the pre-release store bundle, which the sync installs at
+`public/pgrust/host/vendor/pglite-opfs-repacked.js`, where the vendored `broker-fs.js` looks for it.
+
+Two of the five are **optional**, both because they arrived after the first releases were published:
+`postgres-threads.wasm` and the store bundle. A release from before either is still a complete,
+verifiable set for the columns that existed then, so downloading one succeeds, removes any stale copy
+rather than leaving two commits side by side, and says which columns will report the asset missing —
+for the store bundle, that it is the four broker and postmaster ones and that a pgxsinkit checkout
+can supply it instead.
 
 The release also updates `src/vendor/pgrust/VERSION` and the assets section of
 `src/vendor/pgrust/SOURCE.md`, but deliberately **not** the vendored host JavaScript — releases carry
@@ -428,7 +486,11 @@ so loudly rather than letting the column measure one commit's JS against another
 
 pgrust is AGPL-3.0. Each release names the complete corresponding source — repository, branch,
 commit, upstream base and the exact build recipe — in its notes and in `manifest.json`, and
-`SOURCE.md` keeps that record in the tree.
+`SOURCE.md` keeps that record in the tree. The store bundle gets its own record beside it, MIT and
+its own repository, rather than being folded into pgrust's statement: package, manifest version,
+pgxsinkit commit, branch and the one command that rebuilds it. That record is written identically
+whether the bundle came from a release or from a checkout, so a clone's `SOURCE.md` and a
+maintainer's can be compared line for line.
 
 `PGLITE_V_PGRUST_RELEASE_REPO` reads the releases of a different repo;
 `PGLITE_V_PGRUST_RELEASE_BASE_URL` fetches the assets from a directory URL instead of GitHub (the
@@ -469,9 +531,11 @@ The script does four things:
    (gitignored, ~134 MB).
 3. Lays the threads host out again under `public/pgrust/host/`, served verbatim — see
    [the vendored threads host](#the-vendored-threads-host).
-4. Copies the **pre-release** `@pgxsinkit/pglite-opfs-repacked` bundle the broker column loads out of
+4. Copies the **pre-release** `@pgxsinkit/pglite-opfs-repacked` bundle the broker columns load out of
    a pgxsinkit checkout into `public/pgrust/host/vendor/`, and records its commit in `SOURCE.md`. If
-   that checkout is not there the script says so and carries on: only the broker column needs it.
+   that checkout is not there the script says so and carries on: only those four columns need it, and
+   `--release` brings the same bundle down from the release instead — a release that carries it is
+   never overwritten from a checkout.
 
 Run it again after every pgrust rebuild. This is also the only way to update the vendored host JS:
 `--release` never touches it.
@@ -566,9 +630,14 @@ bun run pgrust:bundle          # --help lists every field of the source statemen
 
 It reads the pgrust commit from `src/vendor/pgrust/VERSION` and `SOURCE.md` (and refuses a `-dirty`
 one — a build from a working tree no one can check out has no publishable source), gzips
-`postgres.wasm`, `postgres-threads.wasm` and `vfs.img` at level 9, and writes
-`tmp/pgrust-assets/<tag with the slash flattened>/`: the four assets, `SHA256SUMS`, `manifest.json`
+`postgres.wasm`, `postgres-threads.wasm`, `vfs.img` and the store bundle at level 9, and writes
+`tmp/pgrust-assets/<tag with the slash flattened>/`: the five assets, `SHA256SUMS`, `manifest.json`
 and `NOTES.md`. The tag is `pgrust-assets/<first 8 of the commit>`.
+
+The store bundle's own source statement is read back out of `SOURCE.md`'s store block, which the sync
+wrote when it installed the bundle — a published provenance nobody checked is a provenance nobody
+should trust — and a bundle copied from a dirty pgxsinkit tree is refused exactly as a dirty pgrust
+one is. `--store-branch`, `--store-commit`, `--store-version` and `--store-repo` override it.
 
 The rest of the source statement — branch, upstream base, cargo profile, **both** targets,
 toolchain, the `initdb` that minted `vfs.img` — cannot be read off the built files, so it comes from
@@ -579,7 +648,7 @@ claimed only when the threads module is really in the bundle, and `NOTES.md` the
 recipes.
 
 Nothing is uploaded. The script prints the `gh release create` line — tag, title, `--notes-file
-NOTES.md`, the six files — for a human to read `NOTES.md` and then run.
+NOTES.md`, the seven files — for a human to read `NOTES.md` and then run.
 
 ### Headless lane
 
@@ -712,10 +781,12 @@ Run — is defined in [CONTEXT.md](CONTEXT.md).
   [`pgxsinkit/pgrust@spike/wasip1-threads`](https://github.com/pgxsinkit/pgrust/tree/spike/wasip1-threads),
   and each release names its exact commit, upstream base and both build recipes as the complete
   corresponding source.
-- The `pgrust Threads Memory (broker, pre-release store)` column additionally loads a **pre-release**
-  build of `@pgxsinkit/pglite-opfs-repacked` — the sync broker and WASI adapter are in no published
-  version — copied out of a pgxsinkit checkout by `bun run sync:pgrust` and recorded, with its
-  commit, in `src/vendor/pgrust/SOURCE.md`. It is MIT licensed like the published package.
+- The four broker and postmaster columns additionally load a **pre-release** build of
+  `@pgxsinkit/pglite-opfs-repacked` — the sync broker and WASI adapter are in no published version —
+  published as an asset of this repo's `pgrust-assets/*` releases and, when you are building one,
+  copied out of a pgxsinkit checkout by `bun run sync:pgrust`. Either way its commit, branch and
+  build recipe are recorded in `src/vendor/pgrust/SOURCE.md` and in the release's `manifest.json`. It
+  is MIT licensed like the published package.
 
 ## License
 
