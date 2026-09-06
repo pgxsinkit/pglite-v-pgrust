@@ -17,8 +17,12 @@ Twelve single-statement CRUD queries each executed 100 times; reports the per-st
 _Avoid_: latency suite, CRUD suite
 
 **Engine**:
-One of the WebAssembly databases under comparison: PGlite, pgrust, or wa-sqlite. PGlite and pgrust are the subjects; wa-sqlite is the Reference Engine.
+One of the WebAssembly databases under comparison: PGlite, pgrust, pgrust Threads, or wa-sqlite. PGlite and the two pgrust builds are the subjects; wa-sqlite is the Reference Engine.
 _Avoid_: database, backend, target, implementation
+
+**pgrust Threads**:
+pgrust built for `wasm32-wasip1-threads` rather than `wasm32-wasip1`, from the same commit as the pgrust Engine. Its session runs on a real thread spawned through the guest's own `wasi` `thread-spawn` import over one shared `WebAssembly.Memory`, so its blocking stdin read blocks a Worker in `Atomics.wait` instead of suspending with JSPI — which is why it needs cross-origin isolation and no JSPI, and pgrust needs JSPI and no isolation. A separate Engine, never a mode of pgrust.
+_Avoid_: threaded pgrust, pgrust MT, the SAB build
 
 **Reference Engine**:
 An Engine included only so results can be calibrated against numbers published elsewhere (wa-sqlite's and PGlite's own benchmark pages); never the Baseline of a ratio.
@@ -29,7 +33,7 @@ The Configuration every ratio is computed against: PGlite Memory.
 _Avoid_: reference, control column
 
 **Configuration**:
-An Engine plus the storage and durability settings it is opened with; one Configuration is one column of results. Phase 1 has exactly eight: PGlite Memory, PGlite Memory (unlogged), PGlite OPFS repacked (relaxed), PGlite OPFS repacked (strict), pgrust Memory, pgrust Memory (unlogged), wa-sqlite Memory, wa-sqlite Memory (journal off).
+An Engine plus the storage and durability settings it is opened with; one Configuration is one column of results. Phase 1 has exactly ten: PGlite Memory, PGlite Memory (unlogged), PGlite OPFS repacked (relaxed), PGlite OPFS repacked (strict), pgrust Memory, pgrust Memory (unlogged), pgrust Threads Memory, pgrust Threads Memory (broker, pre-release store), wa-sqlite Memory, wa-sqlite Memory (journal off).
 _Avoid_: setup, mode, variant, column
 
 **Memory Configuration**:
@@ -41,8 +45,16 @@ A Configuration whose data directory lives in a Store rather than the worker's h
 _Avoid_: persistent mode, OPFS mode, disk configuration
 
 **Store**:
-The package a Storage Configuration opens its data directory through, and the durability it is opened with. Phase 1 has one: `@pgxsinkit/pglite-opfs-repacked`, which packs a whole Postgres data directory into four exclusively owned OPFS files, in either its relaxed or its strict durability.
+The package a Storage Configuration opens its data directory through, and the durability it is opened with. Phase 1 has one: `@pgxsinkit/pglite-opfs-repacked`, which packs a whole Postgres data directory into four exclusively owned OPFS files, in either its relaxed or its strict durability. The pgrust Threads broker column runs the same package's Broker on its memory port, which is a filesystem seam rather than a Store: nothing leaves the worker's heap, so that column is a Memory Configuration.
 _Avoid_: VFS, filesystem, backend, persistence layer
+
+**Broker**:
+The pgrust Threads filesystem seam in which one repacked store lives alone in a dedicated coordinator worker and every guest instance reaches it over a SharedArrayBuffer channel, blocking in `Atomics.wait`. Its alternative is the copy seam, where every worker builds its own filesystem from its own copy of the packed image. A property of two columns' Configurations, never of the Engine.
+_Avoid_: shared FS, coordinator mode, broker store
+
+**Pre-release store**:
+A build of the Store package taken from a pgxsinkit checkout rather than from npm, because the code a column needs exists in no published version. Phase 1 has one, loaded by the broker column alone; it is named in that column's own label and its commit is recorded in `src/vendor/pgrust/SOURCE.md`. The two OPFS repacked columns never use one.
+_Avoid_: dev build, unreleased store, local store
 
 **Unlogged Configuration**:
 A Postgres Memory Configuration whose tables are created UNLOGGED, so the Engine writes no WAL for them; it pays for no durability the Memory Configuration could not deliver anyway. wa-sqlite's twin is the journal-off Configuration (`PRAGMA journal_mode = OFF`).

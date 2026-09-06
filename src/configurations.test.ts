@@ -11,7 +11,7 @@ import { applyModSql } from "./engines/contract";
 import { OPFS_DIRECTORY_PREFIX, opfsPathSegments } from "./opfs";
 
 describe("phase-1 Configurations", () => {
-  test("are the eight Configurations, in column order", () => {
+  test("are the ten Configurations, in column order", () => {
     expect(CONFIGURATIONS.map((config) => config.id)).toEqual([
       "pglite-memory",
       "pglite-memory-unlogged",
@@ -19,6 +19,8 @@ describe("phase-1 Configurations", () => {
       "pglite-opfs-repacked-strict",
       "pgrust-memory",
       "pgrust-memory-unlogged",
+      "pgrust-threads-memory",
+      "pgrust-threads-memory-broker",
       "wasqlite-memory",
       "wasqlite-memory-journal-off",
     ]);
@@ -32,9 +34,37 @@ describe("phase-1 Configurations", () => {
       "PGlite OPFS repacked (strict)",
       "pgrust Memory",
       "pgrust Memory (unlogged)",
+      "pgrust Threads Memory",
+      "pgrust Threads Memory (broker, pre-release store)",
       "wa-sqlite Memory",
       "wa-sqlite Memory (journal off)",
     ]);
+  });
+
+  // A reader must never take the broker column for the published package: the store it loads is a
+  // pre-release build out of a pgxsinkit checkout, and no npm version corresponds to it.
+  test("say in the broker column's own label that its store is a pre-release build", () => {
+    expect(findConfiguration("pgrust-threads-memory-broker")?.label).toContain("pre-release store");
+  });
+
+  test("put the two threads columns after the two pgrust columns and before the Reference Engine", () => {
+    const ids = CONFIGURATIONS.map((config) => config.id);
+    expect(ids.indexOf("pgrust-threads-memory")).toBe(ids.indexOf("pgrust-memory-unlogged") + 1);
+    expect(ids.indexOf("wasqlite-memory")).toBe(ids.indexOf("pgrust-threads-memory-broker") + 1);
+  });
+
+  test("give both threads columns one Engine and differ in nothing but the filesystem seam", () => {
+    const copy = findConfiguration("pgrust-threads-memory");
+    const broker = findConfiguration("pgrust-threads-memory-broker");
+    expect(copy?.engine).toBe("pgrust-threads");
+    expect(broker?.engine).toBe("pgrust-threads");
+    expect(copy?.options).toEqual({ pgrustThreads: { fs: "copy" } });
+    expect(broker?.options).toEqual({ pgrustThreads: { fs: "broker" } });
+    // Both are Memory Configurations, and neither rewrites a byte of SQL.
+    expect(copy?.dataDir).toBe("");
+    expect(broker?.dataDir).toBe("");
+    expect(copy?.modSql).toBeUndefined();
+    expect(broker?.modSql).toBeUndefined();
   });
 
   test("give a data directory to the Storage Configurations and to nothing else", () => {

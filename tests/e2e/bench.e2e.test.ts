@@ -20,8 +20,8 @@ import { RTT_STATEMENTS } from "../../src/suites/rtt/statements";
 import { SPEEDTEST_BENCHMARK_IDS } from "../../src/suites/speedtest/benchmarks";
 import type { SuiteId } from "../../src/suites/types";
 
-/** Build plus two Suites against eight Configurations; generous, because it is a real browser. */
-const LANE_TIMEOUT_MS = 1_200_000;
+/** Build plus two Suites against ten Configurations; generous, because it is a real browser. */
+const LANE_TIMEOUT_MS = 1_500_000;
 
 const RTT_ITERATIONS = 3;
 
@@ -49,14 +49,18 @@ const COLUMNS = {
   pgrustRatio: 9,
   pgrustUnlogged: 10,
   pgrustUnloggedRatio: 11,
-  wasqlite: 12,
-  wasqliteRatio: 13,
-  wasqliteJournalOff: 14,
-  wasqliteJournalOffRatio: 15,
+  pgrustThreads: 12,
+  pgrustThreadsRatio: 13,
+  pgrustThreadsBroker: 14,
+  pgrustThreadsBrokerRatio: 15,
+  wasqlite: 16,
+  wasqliteRatio: 17,
+  wasqliteJournalOff: 18,
+  wasqliteJournalOffRatio: 19,
 } as const;
 
-/** Benchmark label, eight Configurations, and a ratio for each of the seven non-Baseline ones. */
-const EXPECTED_CELLS_PER_ROW = 16;
+/** Benchmark label, ten Configurations, and a ratio for each of the nine non-Baseline ones. */
+const EXPECTED_CELLS_PER_ROW = 20;
 
 interface ColumnPair {
   readonly label: string;
@@ -77,10 +81,22 @@ const OPFS_COLUMNS: readonly ColumnPair[] = [
   { label: "PGlite OPFS repacked (strict)", value: COLUMNS.pgliteOpfsStrict, ratio: COLUMNS.pgliteOpfsStrictRatio },
 ];
 
-/** The two pgrust columns, held to the same rule: a number with a ratio, or an honest non-number. */
+/**
+ * The four pgrust columns, held to the same rule: a number with a ratio, or an honest non-number.
+ *
+ * The two single-session ones need JSPI; the two Threads ones need cross-origin isolation and the
+ * second wasm module instead, and the broker one also needs the pre-release store bundle. Every one
+ * of those can be absent in a legitimate environment, so `skipped` and `failed` are honest cells.
+ */
 const PGRUST_COLUMNS: readonly ColumnPair[] = [
   { label: "pgrust Memory", value: COLUMNS.pgrust, ratio: COLUMNS.pgrustRatio },
   { label: "pgrust Memory (unlogged)", value: COLUMNS.pgrustUnlogged, ratio: COLUMNS.pgrustUnloggedRatio },
+  { label: "pgrust Threads Memory", value: COLUMNS.pgrustThreads, ratio: COLUMNS.pgrustThreadsRatio },
+  {
+    label: "pgrust Threads Memory (broker, pre-release store)",
+    value: COLUMNS.pgrustThreadsBroker,
+    ratio: COLUMNS.pgrustThreadsBrokerRatio,
+  },
 ];
 
 /** The two wa-sqlite columns, held to the stricter rule below. */
@@ -101,6 +117,9 @@ const EXPECTED_ROW_COUNTS: Readonly<Record<SuiteId, number>> = {
 
 const SUITE_IDS: readonly SuiteId[] = ["speedtest", "rtt"];
 
+/** The Baseline's own label, which every ratio header names. */
+const BASELINE_LABEL = "PGlite Memory";
+
 /** The body rows of the single GFM table in a Suite's export, split into trimmed cells. */
 function tableRows(markdown: string): readonly (readonly string[])[] {
   return markdown
@@ -113,6 +132,23 @@ function tableRows(markdown: string): readonly (readonly string[])[] {
         .split("|")
         .map((cell) => cell.trim()),
     );
+}
+
+/** The header row of that same table, split the same way. */
+function tableHeader(markdown: string): readonly string[] {
+  const header = markdown.split("\n").filter((line) => line.startsWith("|"))[0] ?? "";
+  return header
+    .slice(1, -1)
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function headerFor(suiteId: SuiteId): readonly string[] {
+  const suite = report.suites.find((candidate) => candidate.suiteId === suiteId);
+  if (suite === undefined) {
+    throw new Error(`The bench report has no ${suiteId} Suite`);
+  }
+  return tableHeader(suite.markdown);
 }
 
 function rowsFor(suiteId: SuiteId): readonly (readonly string[])[] {
@@ -147,7 +183,8 @@ describe("bench lane", () => {
     expect(report.environmentLine).toContain("wa-sqlite");
     expect(report.environmentLine).toContain("JSPI");
     // Not merely "present": the lane's own static server sends COOP + COEP, so a run that reported
-    // `no` here would be a lane serving the page without isolation.
+    // `no` here would be a lane serving the page without isolation — and the two pgrust Threads
+    // columns would be skipped for a reason that has nothing to do with the browser.
     expect(report.environmentLine).toContain("cross-origin isolated yes");
     expect(report.environmentLine).toContain("OPFS sync access");
     expect(report.environmentLine).toContain(describeRttIterations(RTT_ITERATIONS));
@@ -171,6 +208,19 @@ describe("bench lane", () => {
       expect(rows).toHaveLength(EXPECTED_ROW_COUNTS[suiteId]);
       const offenders = rows.filter((row) => row.length !== EXPECTED_CELLS_PER_ROW).map(describeRow);
       expect(offenders).toEqual([]);
+    });
+
+    // Every assertion below indexes cells by position, so the positions have to be pinned to the
+    // labels they are supposed to name: a Configuration inserted in the middle would otherwise move
+    // every column after it and the tests would quietly assert about the wrong one.
+    test(`${suiteId}: names its columns in Configuration order, so the cell positions mean what they say`, () => {
+      const header = headerFor(suiteId);
+      for (const column of [...OPFS_COLUMNS, ...PGRUST_COLUMNS, ...WASQLITE_COLUMNS]) {
+        expect(header[column.value]).toBe(`${column.label} (ms)`);
+        expect(header[column.ratio]).toBe(`vs ${BASELINE_LABEL}`);
+      }
+      expect(header[COLUMNS.baseline]).toBe(`${BASELINE_LABEL} (ms)`);
+      expect(header).toHaveLength(EXPECTED_CELLS_PER_ROW);
     });
 
     test(`${suiteId}: both PGlite Configurations report milliseconds and a ratio in every row`, () => {

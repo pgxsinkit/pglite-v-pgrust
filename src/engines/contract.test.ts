@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { CONFIGURATIONS, findConfiguration } from "../configurations";
 import type { Configuration, EngineId } from "./contract";
-import { configurationDialect, engineDialect, pgliteOpenOptions, pgliteStore } from "./contract";
+import { configurationDialect, engineDialect, pgliteOpenOptions, pgliteStore, pgrustThreadsOptions } from "./contract";
 
 function configuration(id: string): Configuration {
   const found = findConfiguration(id);
@@ -13,9 +13,10 @@ function configuration(id: string): Configuration {
 }
 
 describe("engineDialect", () => {
-  test("puts both Postgres builds in the postgres dialect and wa-sqlite in the sqlite one", () => {
+  test("puts all three Postgres builds in the postgres dialect and wa-sqlite in the sqlite one", () => {
     expect(engineDialect("pglite")).toBe("postgres");
     expect(engineDialect("pgrust")).toBe("postgres");
+    expect(engineDialect("pgrust-threads")).toBe("postgres");
     expect(engineDialect("wasqlite")).toBe("sqlite");
   });
 
@@ -35,6 +36,8 @@ describe("configurationDialect", () => {
     expect(configurationDialect(configuration("pglite-opfs-repacked-strict"))).toBe("postgres");
     expect(configurationDialect(configuration("pgrust-memory"))).toBe("postgres");
     expect(configurationDialect(configuration("pgrust-memory-unlogged"))).toBe("postgres");
+    expect(configurationDialect(configuration("pgrust-threads-memory"))).toBe("postgres");
+    expect(configurationDialect(configuration("pgrust-threads-memory-broker"))).toBe("postgres");
     expect(configurationDialect(configuration("wasqlite-memory"))).toBe("sqlite");
     expect(configurationDialect(configuration("wasqlite-memory-journal-off"))).toBe("sqlite");
   });
@@ -46,7 +49,23 @@ describe("pgliteOpenOptions", () => {
     // Another Engine's key must not reach the PGlite constructor, nor turn into an empty object.
     expect(pgliteOpenOptions({ wasqlite: { journalMode: "off" } })).toBeUndefined();
     expect(pgliteOpenOptions({ pglite: { store: "opfs-repacked", durability: "strict" } })).toBeUndefined();
+    expect(pgliteOpenOptions({ pgrustThreads: { fs: "broker" } })).toBeUndefined();
     expect(pgliteOpenOptions(undefined)).toBeUndefined();
+  });
+});
+
+describe("pgrustThreadsOptions", () => {
+  test("reads the filesystem seam of the two threads Configurations", () => {
+    expect(pgrustThreadsOptions(configuration("pgrust-threads-memory").options)).toEqual({ fs: "copy" });
+    expect(pgrustThreadsOptions(configuration("pgrust-threads-memory-broker").options)).toEqual({ fs: "broker" });
+  });
+
+  test("is undefined for every Configuration on another Engine, and for another Engine's key", () => {
+    for (const id of ["pglite-memory", "pgrust-memory", "pglite-opfs-repacked-strict", "wasqlite-memory"]) {
+      expect(pgrustThreadsOptions(configuration(id).options)).toBeUndefined();
+    }
+    expect(pgrustThreadsOptions(undefined)).toBeUndefined();
+    expect(pgrustThreadsOptions({ wasqlite: { journalMode: "off" } })).toBeUndefined();
   });
 });
 
@@ -63,7 +82,14 @@ describe("pgliteStore", () => {
   });
 
   test("is undefined for every Configuration that opens no store", () => {
-    for (const id of ["pglite-memory", "pglite-memory-unlogged", "pgrust-memory", "wasqlite-memory-journal-off"]) {
+    for (const id of [
+      "pglite-memory",
+      "pglite-memory-unlogged",
+      "pgrust-memory",
+      "pgrust-threads-memory",
+      "pgrust-threads-memory-broker",
+      "wasqlite-memory-journal-off",
+    ]) {
       expect(pgliteStore(configuration(id).options)).toBeUndefined();
     }
     expect(pgliteStore(undefined)).toBeUndefined();

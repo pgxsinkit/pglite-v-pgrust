@@ -38,6 +38,7 @@ import {
   releaseTagForCommit,
 } from "./pgrust-assets/manifest";
 import { ghReleaseCommand, releaseNotesMarkdown, releaseTitle } from "./pgrust-assets/notes";
+import type { ReleaseAssetSpec } from "./pgrust-assets/release";
 import { DEFAULT_RELEASE_REPOSITORY, RELEASE_ASSETS } from "./pgrust-assets/release";
 import { readVendorCommit } from "./pgrust-assets/source-md";
 
@@ -60,12 +61,13 @@ const GZIP_LEVEL = 9;
  * — bundling what is in tree — is `bun run pgrust:bundle` with nothing after it.
  */
 const DEFAULTS = {
-  branch: "bench/parse-source-text-borrow",
+  branch: "spike/wasip1-threads",
   upstreamCommit: "438c8c420b96b23ca61927ba57e608839f86e935",
   upstreamRepository: PGRUST_UPSTREAM_REPOSITORY,
   repository: PGRUST_REPOSITORY,
   profile: "wasm-release",
   target: "wasm32-wasip1",
+  threadsTarget: "wasm32-wasip1-threads",
   toolchain: "nightly-2026-07-17",
   initdb: "PostgreSQL 18",
 } as const;
@@ -74,6 +76,8 @@ const DEFAULTS = {
 const ASSET_BUILD_HINT = [
   "PGRUST_WASM_PROFILE=wasm-release wasm/wasm-build.sh   # compiles postgres.wasm",
   "wasm/build.sh                                         # packs vfs.img + vfs.json beside it",
+  "PGRUST_WASM_TARGET=wasm32-wasip1-threads \\",
+  "  PGRUST_WASM_PROFILE=wasm-release wasm/wasm-build.sh # compiles postgres-threads.wasm",
   "bun run sync:pgrust                                   # copies them into public/pgrust/",
 ];
 
@@ -86,6 +90,7 @@ interface Options {
   readonly releaseRepository: string;
   readonly profile: string;
   readonly target: string;
+  readonly threadsTarget: string;
   readonly toolchain: string;
   readonly initdb: string;
   readonly builtAt: string | null;
@@ -105,7 +110,8 @@ const USAGE = [
   `  --repo <url>               pgrust repository (default ${DEFAULTS.repository})`,
   `  --release-repo <owner/name>  repo the release is published to (default ${DEFAULT_RELEASE_REPOSITORY})`,
   `  --profile <name>           cargo profile (default ${DEFAULTS.profile})`,
-  `  --target <triple>          rust target (default ${DEFAULTS.target})`,
+  `  --target <triple>          rust target for postgres.wasm (default ${DEFAULTS.target})`,
+  `  --threads-target <triple>  rust target for postgres-threads.wasm (default ${DEFAULTS.threadsTarget})`,
   `  --toolchain <name>         rust toolchain (default ${DEFAULTS.toolchain})`,
   `  --initdb <version>         the initdb that minted vfs.img (default ${DEFAULTS.initdb})`,
   "  --built-at <iso>           when vfs.img was built (default: its mtime)",
@@ -130,6 +136,7 @@ function parseOptions(argv: readonly string[]): Options {
     "--release-repo",
     "--profile",
     "--target",
+    "--threads-target",
     "--toolchain",
     "--initdb",
     "--built-at",
@@ -162,6 +169,7 @@ function parseOptions(argv: readonly string[]): Options {
     releaseRepository: values.get("--release-repo") ?? DEFAULT_RELEASE_REPOSITORY,
     profile: values.get("--profile") ?? DEFAULTS.profile,
     target: values.get("--target") ?? DEFAULTS.target,
+    threadsTarget: values.get("--threads-target") ?? DEFAULTS.threadsTarget,
     toolchain: values.get("--toolchain") ?? DEFAULTS.toolchain,
     initdb: values.get("--initdb") ?? DEFAULTS.initdb,
     builtAt: values.get("--built-at") ?? null,
@@ -202,11 +210,17 @@ function resolveCommit(options: Options, shortCommit: string): string {
 }
 
 /** The bytes of one asset, or a clear failure naming what still has to be built. */
-function readAsset(name: string): Uint8Array<ArrayBuffer> {
+function readAsset(name: string, optional: boolean): Uint8Array<ArrayBuffer> | null {
   const path = join(PUBLIC_DIR, name);
   try {
     return new Uint8Array(readFileSync(path));
   } catch {
+    if (optional) {
+      // The threads module is the one asset a release may legitimately not carry, so a bundle
+      // without it is publishable — it simply describes one target instead of two.
+      console.log(`  ${name} is not in public/pgrust/ — packaging without the threads artifact`);
+      return null;
+    }
     console.error(`pgrust:bundle: ${relativeToRepo(path)} is missing.`);
     console.error("");
     console.error("There is nothing to package until the pgrust wasm build is in public/pgrust/:");
@@ -218,11 +232,11 @@ function readAsset(name: string): Uint8Array<ArrayBuffer> {
 }
 
 /** Compress and write one asset, returning what the manifest should say about it. */
-function packageAsset(
-  spec: { readonly name: string; readonly target: string; readonly gzipped: boolean },
-  bundleDir: string,
-): ManifestFileRecord {
-  const raw = readAsset(spec.target);
+function packageAsset(spec: ReleaseAssetSpec, bundleDir: string): ManifestFileRecord | null {
+  const raw = readAsset(spec.target, spec.optional === true);
+  if (raw === null) {
+    return null;
+  }
   const rawSha = sha256Hex(raw);
   if (!spec.gzipped) {
     writeFileSync(join(bundleDir, spec.name), raw);
@@ -273,7 +287,9 @@ function main(): void {
   console.log(`  pgrust ${commit} on ${options.branch}`);
   console.log("");
 
-  const files = RELEASE_ASSETS.map((spec) => packageAsset(spec, bundleDir));
+  const files = RELEASE_ASSETS.map((spec) => packageAsset(spec, bundleDir)).filter(
+    (file): file is ManifestFileRecord => file !== null,
+  );
   const manifest = buildManifest({
     tag,
     commit,
@@ -284,6 +300,11 @@ function main(): void {
     upstreamCommit: options.upstreamCommit,
     profile: options.profile,
     target: options.target,
+    // Only claimed when the threads module is actually in the bundle: the source statement has to
+    // describe what was uploaded, not what the flags default to.
+    ...(files.some((file) => file.name.startsWith("postgres-threads."))
+      ? { threadsTarget: options.threadsTarget }
+      : {}),
     toolchain: options.toolchain,
     initdb: options.initdb,
     builtAt: options.builtAt ?? defaultBuiltAt(),

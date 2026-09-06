@@ -6,18 +6,31 @@ import {
   configurationAvailability,
   configurationRequiresOpfsSyncAccess,
   engineRequiresJspi,
+  engineRequiresSharedMemory,
   JSPI_REQUIREMENT_MESSAGE,
   OPFS_SYNC_ACCESS_REQUIREMENT_MESSAGE,
+  SHARED_MEMORY_REQUIREMENT_MESSAGE,
 } from "./availability";
 import type { Configuration } from "./contract";
 
-/** The four corners of the capability space; every gate has to be right in all of them. */
-const EVERYTHING: AvailabilityEnvironment = { jspiAvailable: true, opfsSyncAccessAvailable: true };
-const WITHOUT_JSPI: AvailabilityEnvironment = { jspiAvailable: false, opfsSyncAccessAvailable: true };
-const WITHOUT_OPFS: AvailabilityEnvironment = { jspiAvailable: true, opfsSyncAccessAvailable: false };
-const NOTHING: AvailabilityEnvironment = { jspiAvailable: false, opfsSyncAccessAvailable: false };
+/** The corners of the capability space; every gate has to be right in all of them. */
+const EVERYTHING: AvailabilityEnvironment = {
+  jspiAvailable: true,
+  crossOriginIsolated: true,
+  opfsSyncAccessAvailable: true,
+};
+const WITHOUT_JSPI: AvailabilityEnvironment = { ...EVERYTHING, jspiAvailable: false };
+const WITHOUT_ISOLATION: AvailabilityEnvironment = { ...EVERYTHING, crossOriginIsolated: false };
+const WITHOUT_OPFS: AvailabilityEnvironment = { ...EVERYTHING, opfsSyncAccessAvailable: false };
+const NOTHING: AvailabilityEnvironment = {
+  jspiAvailable: false,
+  crossOriginIsolated: false,
+  opfsSyncAccessAvailable: false,
+};
 
 const OPFS_CONFIGURATION_IDS: readonly string[] = ["pglite-opfs-repacked-relaxed", "pglite-opfs-repacked-strict"];
+
+const PGRUST_THREADS_CONFIGURATION_IDS: readonly string[] = ["pgrust-threads-memory", "pgrust-threads-memory-broker"];
 
 function configuration(id: string): Configuration {
   const found = findConfiguration(id);
@@ -32,6 +45,28 @@ describe("engineRequiresJspi", () => {
     expect(engineRequiresJspi("pgrust")).toBe(true);
     expect(engineRequiresJspi("pglite")).toBe(false);
     expect(engineRequiresJspi("wasqlite")).toBe(false);
+  });
+
+  // The whole point of the threads build: the guest's blocking read blocks a Worker instead of
+  // suspending, so a browser without JSPI can still run it.
+  test("is false for the threads build, which needs no JSPI at all", () => {
+    expect(engineRequiresJspi("pgrust-threads")).toBe(false);
+  });
+});
+
+describe("engineRequiresSharedMemory", () => {
+  test("is true for the threads build and false for every other Engine", () => {
+    expect(engineRequiresSharedMemory("pgrust-threads")).toBe(true);
+    expect(engineRequiresSharedMemory("pgrust")).toBe(false);
+    expect(engineRequiresSharedMemory("pglite")).toBe(false);
+    expect(engineRequiresSharedMemory("wasqlite")).toBe(false);
+  });
+
+  test("gates no Engine on both capabilities: the two pgrust builds want opposite things", () => {
+    const both = CONFIGURATIONS.filter(
+      (config) => engineRequiresJspi(config.engine) && engineRequiresSharedMemory(config.engine),
+    );
+    expect(both).toEqual([]);
   });
 });
 
@@ -78,6 +113,25 @@ describe("configurationAvailability", () => {
     }
   });
 
+  test("reports both pgrust Threads Configurations unavailable without isolation, naming both headers", () => {
+    for (const id of PGRUST_THREADS_CONFIGURATION_IDS) {
+      const availability = configurationAvailability(configuration(id), WITHOUT_ISOLATION);
+      expect(availability.available).toBe(false);
+      expect(availability.reason).toBe(SHARED_MEMORY_REQUIREMENT_MESSAGE);
+      expect(availability.reason).toContain("Cross-Origin-Opener-Policy: same-origin");
+      expect(availability.reason).toContain("Cross-Origin-Embedder-Policy: require-corp");
+    }
+  });
+
+  test("leaves the pgrust Threads Configurations alone without JSPI, and the pgrust ones without isolation", () => {
+    for (const id of PGRUST_THREADS_CONFIGURATION_IDS) {
+      expect(configurationAvailability(configuration(id), WITHOUT_JSPI)).toEqual({ available: true });
+    }
+    for (const id of ["pgrust-memory", "pgrust-memory-unlogged"]) {
+      expect(configurationAvailability(configuration(id), WITHOUT_ISOLATION)).toEqual({ available: true });
+    }
+  });
+
   test("reports both OPFS Configurations unavailable without a synchronous access handle", () => {
     for (const id of OPFS_CONFIGURATION_IDS) {
       const availability = configurationAvailability(configuration(id), WITHOUT_OPFS);
@@ -91,7 +145,7 @@ describe("configurationAvailability", () => {
     for (const id of OPFS_CONFIGURATION_IDS) {
       expect(configurationAvailability(configuration(id), WITHOUT_JSPI)).toEqual({ available: true });
     }
-    for (const id of ["pgrust-memory", "pgrust-memory-unlogged"]) {
+    for (const id of ["pgrust-memory", "pgrust-memory-unlogged", ...PGRUST_THREADS_CONFIGURATION_IDS]) {
       expect(configurationAvailability(configuration(id), WITHOUT_OPFS)).toEqual({ available: true });
     }
   });

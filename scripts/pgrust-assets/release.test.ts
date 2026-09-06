@@ -27,12 +27,24 @@ async function unreachable(): Promise<never> {
 }
 
 describe("RELEASE_ASSETS", () => {
-  test("gzips the two large binaries and uploads vfs.json as-is", () => {
+  test("gzips the three large binaries and uploads vfs.json as-is", () => {
     expect(RELEASE_ASSETS.map((asset) => [asset.name, asset.target, asset.gzipped])).toEqual([
       ["postgres.wasm.gz", "postgres.wasm", true],
+      ["postgres-threads.wasm.gz", "postgres-threads.wasm", true],
       ["vfs.img.gz", "vfs.img", true],
       ["vfs.json", "vfs.json", false],
     ]);
+  });
+
+  test("makes exactly the threads module optional, so a release published before it still verifies", () => {
+    expect(RELEASE_ASSETS.filter((asset) => asset.optional === true).map((asset) => asset.name)).toEqual([
+      "postgres-threads.wasm.gz",
+    ]);
+  });
+
+  test("shares one packed image between the two modules: it is initdb output, not a build target", () => {
+    const targets = RELEASE_ASSETS.map((asset) => asset.target);
+    expect(targets.filter((target) => target.startsWith("vfs."))).toEqual(["vfs.img", "vfs.json"]);
   });
 });
 

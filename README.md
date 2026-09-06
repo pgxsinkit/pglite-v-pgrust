@@ -67,12 +67,14 @@ rule lives beside wa-sqlite's git-tag rule in `src/dependency-version.ts` and is
 
 ## The columns
 
-Eight Configurations. Six are **Memory Configurations**, two per Engine — its default settings, and
-the least durable settings it offers: `PGlite Memory`, `PGlite Memory (unlogged)`, `pgrust Memory`,
-`pgrust Memory (unlogged)`, `wa-sqlite Memory`, `wa-sqlite Memory (journal off)`. Two are **Storage
-Configurations** on the OPFS repacked store: `PGlite OPFS repacked (relaxed)` and
-`PGlite OPFS repacked (strict)`. Every ratio is against `PGlite Memory`, which is the only column
-without one.
+Ten Configurations. Eight are **Memory Configurations**, two per Engine. For PGlite, pgrust and
+wa-sqlite the pair is the Engine's default settings and the least durable settings it offers:
+`PGlite Memory`, `PGlite Memory (unlogged)`, `pgrust Memory`, `pgrust Memory (unlogged)`,
+`wa-sqlite Memory`, `wa-sqlite Memory (journal off)`. For the pgrust threads build the pair is its
+two filesystem seams instead: `pgrust Threads Memory` and
+`pgrust Threads Memory (broker, pre-release store)`. Two are **Storage Configurations** on the OPFS
+repacked store: `PGlite OPFS repacked (relaxed)` and `PGlite OPFS repacked (strict)`. Every ratio is
+against `PGlite Memory`, which is the only column without one.
 
 The two unlogged columns rewrite `CREATE TABLE` to `CREATE UNLOGGED TABLE` — PGlite's own benchmark
 page does this, and pgrust accepts the same syntax — so the Engine writes no WAL for the Suite's
@@ -89,6 +91,41 @@ then cannot roll a statement or a transaction back. The pragma is verified rathe
 answers a refused journal change with the mode still in force, not with an error), and the Run fails
 loudly if the read-back is not `off`. The default `wa-sqlite Memory` column keeps SQLite's own default
 journal mode.
+
+### The pgrust Threads columns
+
+The two `pgrust Threads` columns are the **same pgrust commit as the two `pgrust` columns**, built
+for `wasm32-wasip1-threads` instead of `wasm32-wasip1`. That is one source tree, two targets, one
+packed data directory image — the environment header names a single pgrust commit because there is
+only one.
+
+What changes is how the guest waits. The `pgrust` columns run a `postgres --stdio-wire` session that
+suspends on its blocking stdin read, which needs JSPI. The threads build runs
+`postgres --stdio-wire-threaded`: the session runs on a **real thread**, spawned through the guest's
+own `wasi` `thread-spawn` import out of a prewarmed pool of workers, over one shared
+`WebAssembly.Memory` — so the same blocking `read(0)` simply blocks that worker in `Atomics.wait`,
+the way it blocks under a native host's pipe. **No JSPI anywhere.** What it needs instead is
+`SharedArrayBuffer` and a shared memory, and therefore [cross-origin
+isolation](#cross-origin-isolation); where a browser withholds those the two columns are greyed out
+with that reason, exactly as the pgrust columns are without JSPI, and every other column runs.
+
+The two differ in one thing: where the guest's files live.
+
+| Column                                              | `--fs`   | The data directory                                                                                                    |
+| --------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------- |
+| `pgrust Threads Memory`                             | `copy`   | Every worker builds its own VFS from its own copy of the packed image — the host's own default                        |
+| `pgrust Threads Memory (broker, pre-release store)` | `broker` | One repacked store in a dedicated coordinator worker, which every instance reaches over a `SharedArrayBuffer` channel |
+
+Both keep the data directory in memory and both die with their workers, so both are Memory
+Configurations: nothing survives a Run, and the broker column's store is on the memory port
+precisely so that stays true.
+
+**`pre-release store` is not decoration.** The broker column loads a build of
+`@pgxsinkit/pglite-opfs-repacked` whose sync broker and WASI filesystem adapter are in **no
+published version** of that package: `bun run sync:pgrust` copies it out of a pgxsinkit checkout and
+records the exact commit in `src/vendor/pgrust/SOURCE.md`. The two `PGlite OPFS repacked` columns
+are a different thing entirely — they run the published package this repo depends on. Without that
+bundle the broker column reports it missing and everything else runs.
 
 ### The OPFS repacked columns
 
@@ -175,15 +212,20 @@ export carry `RTT iterations: N (non-standard)`, so a shortened Run cannot be mi
 ## pgrust assets
 
 PGlite installs from npm; pgrust does not. Its host JavaScript is vendored into this repo and
-committed; its ~87 MB of wasm build assets are not, so the `pgrust Memory` column needs one setup
-step.
+committed; its ~131 MB of wasm build assets are not, so the four pgrust columns need one setup step.
+
+There are **two wasm modules from one pgrust commit**: `postgres.wasm` (`wasm32-wasip1`) for the two
+`pgrust` columns and `postgres-threads.wasm` (`wasm32-wasip1-threads`) for the two `pgrust Threads`
+columns. They share `vfs.img`/`vfs.json`, because the packed image is `initdb` output and carries no
+pgrust code and no target.
 
 > **Which pgrust?** The committed results are built from the pgrust branch
-> [`bench/parse-source-text-borrow`](https://github.com/pgxsinkit/pgrust/tree/bench/parse-source-text-borrow)
-> (commit `dab0f929`, on top of upstream `438c8c42`), which carries the fix from
-> [finding 0001](docs/findings/0001-pgrust-multi-statement-memory.md); stock pgrust cannot finish the
-> Speedtest Suite on wasm32. `src/vendor/pgrust/VERSION` and the environment header always name the
-> exact commit a run used.
+> [`spike/wasip1-threads`](https://github.com/pgxsinkit/pgrust/tree/spike/wasip1-threads)
+> (commit `08a30644`, on top of upstream `438c8c42`), which carries both the fix from
+> [finding 0001](docs/findings/0001-pgrust-multi-statement-memory.md) — stock pgrust cannot finish
+> the Speedtest Suite on wasm32 — and the `wasm32-wasip1-threads` host the two Threads columns run
+> on. `src/vendor/pgrust/VERSION` and the environment header always name the exact commit a run
+> used, and it is one commit for all four columns.
 
 ### Download a published build
 
@@ -194,10 +236,15 @@ bun run sync:pgrust --release pgrust-assets/dab0f929     # a specific one
 
 That needs no pgrust checkout and no Rust toolchain. The assets are published as **GitHub Release
 assets of this repo**, one release per pgrust commit, tagged `pgrust-assets/<short-commit>` — the tag
-names the exact pgrust the binaries were built from. The download is ~18 MB gzipped and unpacks to
-~87 MB in `public/pgrust/`; every file is verified against the release's `SHA256SUMS` **and** against
-the unpacked sizes and digests in its `manifest.json` before anything is written, and a release that
-fails to verify leaves `public/pgrust/` untouched.
+names the exact pgrust the binaries were built from. The download is ~27 MB gzipped and unpacks to
+~134 MB in `public/pgrust/`; every file is verified against the release's `SHA256SUMS` **and**
+against the unpacked sizes and digests in its `manifest.json` before anything is written, and a
+release that fails to verify leaves `public/pgrust/` untouched.
+
+`postgres-threads.wasm` is the one **optional** asset: a release published before the threads build
+existed is still a complete, verifiable set for the columns that existed then, so downloading one
+succeeds, removes any stale threads module rather than leaving two commits side by side, and says
+that the two Threads columns will report the asset missing.
 
 The release also updates `src/vendor/pgrust/VERSION` and the assets section of
 `src/vendor/pgrust/SOURCE.md`, but deliberately **not** the vendored host JavaScript — releases carry
@@ -218,26 +265,44 @@ Build the assets in a pgrust checkout:
 
 ```sh
 cd ../pgrust
-PGRUST_WASM_PROFILE=wasm-release wasm/wasm-build.sh   # compiles postgres.wasm
-wasm/build.sh                                         # packs vfs.img + vfs.json beside it
+PGRUST_WASM_PROFILE=wasm-release wasm/wasm-build.sh    # postgres.wasm (wasm32-wasip1)
+wasm/build.sh                                          # packs vfs.img + vfs.json beside it
+PGRUST_WASM_TARGET=wasm32-wasip1-threads \
+  PGRUST_WASM_PROFILE=wasm-release wasm/wasm-build.sh  # postgres-threads.wasm, into target/
 ```
+
+The threads module is taken straight out of `target/wasm32-wasip1-threads/wasm-release/`: it is the
+same source tree built for a second target, and `wasm/build.sh` packs only the default target's
+module.
 
 Then sync them into this repo:
 
 ```sh
-bun run sync:pgrust                 # vendored host JS + public/pgrust/ assets
-bun run sync:pgrust --vendor-only   # host JS only; skips the assets
-PGRUST_DIR=/path/to/pgrust bun run sync:pgrust   # non-sibling checkout
+bun run sync:pgrust                 # vendored host JS + public/pgrust/ assets + host runtime
+bun run sync:pgrust --vendor-only   # host JS only; skips everything under public/
+PGRUST_DIR=/path/to/pgrust bun run sync:pgrust      # non-sibling checkout
+PGXSINKIT_DIR=/path/to/pgxsinkit bun run sync:pgrust  # non-sibling store-bundle checkout
 ```
 
-The script copies `pgrust-wasi.js`, `wiresession.js`, `wire.js`, `LICENSE` and `NOTICE` into
-`src/vendor/pgrust/` (committed), writes the synced commit to `src/vendor/pgrust/VERSION` — which the
-environment header reports — and copies `postgres.wasm`, `vfs.img` and `vfs.json` into `public/pgrust/`
-(gitignored, ~87 MB). Run it again after every pgrust rebuild. This is also the only way to update the
-vendored host JS: `--release` never touches it.
+The script does four things:
 
-Without the assets the app still builds and the PGlite columns still run; the pgrust column reports
-the fetch failure in its header.
+1. Copies the vendored host JS — `pgrust-wasi.js`, `wiresession.js`, `wire.js`, the five files of the
+   threads host (`threads-host.js`, `thread-worker.js`, `sab-pipe.js`, `broker-fs.js`,
+   `storage-worker.js`), `LICENSE` and `NOTICE` — into `src/vendor/pgrust/` (committed), and writes
+   the synced commit to `src/vendor/pgrust/VERSION`, which the environment header reports.
+2. Copies `postgres.wasm`, `postgres-threads.wasm`, `vfs.img` and `vfs.json` into `public/pgrust/`
+   (gitignored, ~134 MB).
+3. Lays the threads host out again under `public/pgrust/host/`, served verbatim — see
+   [the vendored threads host](#the-vendored-threads-host).
+4. Copies the **pre-release** `@pgxsinkit/pglite-opfs-repacked` bundle the broker column loads out of
+   a pgxsinkit checkout into `public/pgrust/host/vendor/`, and records its commit in `SOURCE.md`. If
+   that checkout is not there the script says so and carries on: only the broker column needs it.
+
+Run it again after every pgrust rebuild. This is also the only way to update the vendored host JS:
+`--release` never touches it.
+
+Without the assets the app still builds and the PGlite columns still run; each pgrust column reports
+its own fetch failure in its header.
 
 ### Browser requirements
 
@@ -255,6 +320,19 @@ blocking stdin read, which needs **JS Promise Integration** (`WebAssembly.Suspen
 The header shows whether JSPI was detected. Where it is missing the pgrust column is greyed out with
 that reason and the PGlite columns run as normal — no Run is aborted for it.
 
+The two `pgrust Threads` columns need the opposite thing. Their build spawns real threads and blocks
+on `Atomics.wait`, so they need **no JSPI at all** — what they need is `SharedArrayBuffer` and a
+shared `WebAssembly.Memory`, which every browser gates on
+[cross-origin isolation](#cross-origin-isolation):
+
+| Browser                        | `crossOriginIsolated` under COOP+COEP | pgrust Threads columns |
+| ------------------------------ | ------------------------------------- | ---------------------- |
+| Chrome / Edge, Firefox, Safari | yes                                   | run                    |
+| Anything that withholds it     | no                                    | reported skipped       |
+
+The header shows the answer as `cross-origin isolated yes|no`. Because this repo serves both headers
+from every server it owns, a `no` there is a browser withholding them, not a missing server config.
+
 ## Cross-origin isolation
 
 Every server that serves this page sends both isolation headers:
@@ -269,14 +347,10 @@ server sets the same pair, because the headless lane serves `dist/` itself rathe
 The page reports the result — `cross-origin isolated yes|no` — in the environment header and in every
 Markdown export, so a run that silently lost isolation cannot be mistaken for one that had it.
 
-Isolation is what makes `SharedArrayBuffer` and a shared `WebAssembly.Memory` available at all, which
-is what a WebAssembly build with real threads needs. Nothing here uses them yet; the headers land
-first because turning them on changes every server this repo owns and changes what `require-corp` will
-let the page load, and that is worth proving on its own against the eight Configurations that already
-exist.
-
-It costs those eight nothing: `require-corp` only constrains **cross-origin** subresources, and this
-page loads none — PGlite's `pglite.wasm` and `pglite.data`, wa-sqlite's `wa-sqlite.wasm`, the pgrust
+Isolation is what makes `SharedArrayBuffer` and a shared `WebAssembly.Memory` available at all, and
+they are the whole of the pgrust threads build (see [the columns](#the-columns)). It costs the other
+Configurations nothing: `require-corp` only constrains **cross-origin** subresources, and this page
+loads none — PGlite's `pglite.wasm` and `pglite.data`, wa-sqlite's `wa-sqlite.wasm`, the pgrust
 assets and every worker are all served from this origin. There is no CDN script, no hosted font and
 no remote image anywhere in `index.html` or in the built `dist/`.
 
@@ -316,17 +390,20 @@ bun run pgrust:bundle          # --help lists every field of the source statemen
 
 It reads the pgrust commit from `src/vendor/pgrust/VERSION` and `SOURCE.md` (and refuses a `-dirty`
 one — a build from a working tree no one can check out has no publishable source), gzips
-`postgres.wasm` and `vfs.img` at level 9, and writes `tmp/pgrust-assets/<tag with the slash
-flattened>/`: the three assets, `SHA256SUMS`, `manifest.json` and `NOTES.md`. The tag is
-`pgrust-assets/<first 8 of the commit>`.
+`postgres.wasm`, `postgres-threads.wasm` and `vfs.img` at level 9, and writes
+`tmp/pgrust-assets/<tag with the slash flattened>/`: the four assets, `SHA256SUMS`, `manifest.json`
+and `NOTES.md`. The tag is `pgrust-assets/<first 8 of the commit>`.
 
-The rest of the source statement — branch, upstream base, cargo profile, target, toolchain, the
-`initdb` that minted `vfs.img` — cannot be read off the built files, so it comes from flags whose
-defaults describe the assets currently in tree. Anything rebuilt differently must say so on the
-command line; a guess in an AGPL source statement is worse than no statement.
+The rest of the source statement — branch, upstream base, cargo profile, **both** targets,
+toolchain, the `initdb` that minted `vfs.img` — cannot be read off the built files, so it comes from
+flags whose defaults describe the assets currently in tree (`--target` for `postgres.wasm`,
+`--threads-target` for `postgres-threads.wasm`). Anything rebuilt differently must say so on the
+command line; a guess in an AGPL source statement is worse than no statement. The threads target is
+claimed only when the threads module is really in the bundle, and `NOTES.md` then carries both build
+recipes.
 
 Nothing is uploaded. The script prints the `gh release create` line — tag, title, `--notes-file
-NOTES.md`, the five files — for a human to read `NOTES.md` and then run.
+NOTES.md`, the six files — for a human to read `NOTES.md` and then run.
 
 ### Headless lane
 
@@ -366,14 +443,16 @@ revisions it will look for — floating it would silently ask for builds that ar
 
 | Browser in the lane           | Behaviour                                                                                                                                                                                                                                                   |
 | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Chromium (default)            | JSPI on by default and synchronous access handles granted in dedicated workers, so all eight Configurations run                                                                                                                                             |
+| Chromium (default)            | JSPI on by default, cross-origin isolation from the lane's own server and synchronous access handles granted in dedicated workers, so all ten Configurations run                                                                                            |
 | Firefox (`--browser firefox`) | The lane sets `javascript.options.wasm_js_promise_integration`; where JSPI is still missing the pgrust column reports `skipped` and the Run continues. Firefox's reduced timer precision quantises Measurements, so its numbers are coarser than Chromium's |
 | WebKit (`--browser webkit`)   | Exits 0 with `WebKit skipped: Playwright's WebKit build has no JSPI yet`, without launching. That build also refuses synchronous access handles in both worker kinds, so it could contribute neither the pgrust nor the OPFS columns                        |
 
 `bun run test:e2e` drives the same lane from `bun test` (Chromium, both Suites, RTT at three
-iterations) and asserts the shape of the result rather than any timing: an environment line, a
-millisecond figure and a ratio in every PGlite Memory and wa-sqlite cell, and `skipped`, `failed` or a
-millisecond figure in every pgrust and OPFS cell. The Reference Engine is held to the stricter rule on
+iterations) and asserts the shape of the result rather than any timing: an environment line that says
+`cross-origin isolated yes` — the lane serves both headers, so anything else is a lane bug — column
+headers in Configuration order so the positional assertions cannot drift, a millisecond figure and a
+ratio in every PGlite Memory and wa-sqlite cell, and `skipped`, `failed` or a millisecond figure in
+every pgrust, pgrust Threads and OPFS cell. The Reference Engine is held to the stricter rule on
 purpose — it needs no JSPI, no synchronous access handle and no asset that can be missing, so a cell
 without a number in it is a harness bug rather than a browser or a build state. It is deliberately outside `test`, `check` and `validate` — `bun run
 validate:full` is `validate` plus this lane.
@@ -384,6 +463,26 @@ Everything in `src/` is TypeScript with one sanctioned exception: `src/vendor/pg
 is upstream, and any change would silently fork the thing being benchmarked — so `src/vendor/` is in
 the `ignorePatterns` of both `.oxlintrc.jsonc` and `.oxfmtrc.jsonc`. The `.d.ts` files beside them are
 ours, hand-written, and are what makes the vendored JavaScript type-check under `allowJs: false`.
+
+### The vendored threads host
+
+The three single-session host files are imported statically and bundled by Vite. The five threads
+host files cannot be, and are **served instead of bundled**:
+
+- `threads-host.js` builds its workers from URLs it computes at run time — `threadWorkerUrl(base)`
+  and `storageWorkerUrl(base)`, both `new URL("./x", base)` where `base` is whatever asked. Vite only
+  rewrites the literal `new Worker(new URL("./x", import.meta.url), { type: "module" })` form, so a
+  bundled `threads-host.js` would resolve `./thread-worker.js` against a hashed chunk name and 404.
+- Making it fit that form means editing a vendored file, which is the one thing that must not happen:
+  those bytes are what is being benchmarked.
+
+So `bun run sync:pgrust` copies them (plus `pgrust-wasi.js`, which `threads-host.js` imports) from
+`src/vendor/pgrust/` into `public/pgrust/host/`, where Vite serves them verbatim in `dev` and copies
+them into `dist/` for `preview` and the bench lane. `pgrust-threads.worker.ts` loads them with a
+single `import(/* @vite-ignore */ url)` of a run-time URL, and their own relative imports then
+resolve inside that directory exactly as they do in pgrust's `wasm/` tree. The committed copy under
+`src/vendor/pgrust/` stays the source of truth: `public/pgrust/host/` is generated from it, and the
+`.d.ts` files are what `import()` is typed against.
 
 Adding an Engine is additive: write `src/engines/<engine>/<engine>.worker.ts` against the message
 protocol in `src/engines/protocol.ts`, register its worker factory in `src/engines/registry.ts`, give
@@ -422,13 +521,18 @@ Run — is defined in [CONTEXT.md](CONTEXT.md).
   MIT licensed, is the OPFS store the two Storage Configurations run on, installed from npm and used
   unmodified. It declares a peer dependency on `@electric-sql/pglite`, which is why PGlite is
   installed here under that name (see [PGlite, once](#pglite-once)).
-- [pgrust](https://github.com/malisper/pgrust) is AGPL-3.0 licensed. Its browser host JavaScript is
-  vendored byte-verbatim under `src/vendor/pgrust/`, together with its `LICENSE` and `NOTICE`; the
-  synced commit is recorded in `src/vendor/pgrust/SOURCE.md`. The wasm binaries published from this
-  repo's `pgrust-assets/*` releases are built from
-  [`pgxsinkit/pgrust@bench/parse-source-text-borrow`](https://github.com/pgxsinkit/pgrust/tree/bench/parse-source-text-borrow),
-  and each release names its exact commit, upstream base and build recipe as the complete
+- [pgrust](https://github.com/malisper/pgrust) is AGPL-3.0 licensed. Its browser host JavaScript —
+  both the single-session host and the `wasm32-wasip1-threads` host — is vendored byte-verbatim under
+  `src/vendor/pgrust/`, together with its `LICENSE` and `NOTICE`; the synced commit is recorded in
+  `src/vendor/pgrust/SOURCE.md`. The wasm binaries published from this repo's `pgrust-assets/*`
+  releases are built from
+  [`pgxsinkit/pgrust@spike/wasip1-threads`](https://github.com/pgxsinkit/pgrust/tree/spike/wasip1-threads),
+  and each release names its exact commit, upstream base and both build recipes as the complete
   corresponding source.
+- The `pgrust Threads Memory (broker, pre-release store)` column additionally loads a **pre-release**
+  build of `@pgxsinkit/pglite-opfs-repacked` — the sync broker and WASI adapter are in no published
+  version — copied out of a pgxsinkit checkout by `bun run sync:pgrust` and recorded, with its
+  commit, in `src/vendor/pgrust/SOURCE.md`. It is MIT licensed like the published package.
 
 ## License
 

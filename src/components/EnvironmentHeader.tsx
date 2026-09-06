@@ -34,8 +34,10 @@ export function EnvironmentHeader({ environment }: EnvironmentHeaderProps): JSX.
           <dd>{environment.opfsRepackedVersion}</dd>
         </div>
         <div>
+          {/* One commit, two wasm modules: the pgrust columns and the pgrust Threads columns are the
+              same source tree built for two targets, so there is only ever one commit to name. */}
           <dt>pgrust</dt>
-          <dd>{environment.pgrustVersion}</dd>
+          <dd>{`${environment.pgrustVersion} (postgres.wasm + postgres-threads.wasm)`}</dd>
         </div>
         <div>
           <dt>wa-sqlite</dt>

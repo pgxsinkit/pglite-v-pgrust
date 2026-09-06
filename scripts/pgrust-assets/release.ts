@@ -24,18 +24,29 @@ export interface ReleaseAssetSpec {
   readonly target: string;
   /** Whether the uploaded file is a gzip of `target`. */
   readonly gzipped: boolean;
+  /**
+   * Whether a release may legitimately not carry this file.
+   *
+   * Exactly one is: `postgres-threads.wasm` arrived after the first releases were published, and a
+   * release from before it is still a complete, verifiable set for the six columns that existed
+   * then. Downloading one leaves the two pgrust Threads columns reporting the asset missing, which
+   * is what they already report on a clone that has never synced — not a failed download.
+   */
+  readonly optional?: boolean;
 }
 
 /**
- * The three assets, in upload order.
+ * The four assets, in upload order.
  *
- * `postgres.wasm` and `vfs.img` are gzipped: together they are ~87 MB raw and ~18 MB compressed,
- * which is the difference between a download a contributor will do and one they will not.
- * `vfs.json` is 139 KB of JSON and is uploaded plain so it can be read straight from the release
- * page.
+ * The two wasm modules and `vfs.img` are gzipped: together they are ~131 MB raw and ~27 MB
+ * compressed, which is the difference between a download a contributor will do and one they will
+ * not. `vfs.json` is 139 KB of JSON and is uploaded plain so it can be read straight from the
+ * release page — and it is shared by both modules, because the packed image is `initdb` output and
+ * has no target in it.
  */
 export const RELEASE_ASSETS: readonly ReleaseAssetSpec[] = [
   { name: "postgres.wasm.gz", target: "postgres.wasm", gzipped: true },
+  { name: "postgres-threads.wasm.gz", target: "postgres-threads.wasm", gzipped: true, optional: true },
   { name: "vfs.img.gz", target: "vfs.img", gzipped: true },
   { name: "vfs.json", target: "vfs.json", gzipped: false },
 ];

@@ -63,10 +63,19 @@ export interface PgrustSourceRecord {
   readonly upstream: { readonly repository: string; readonly commit: string };
 }
 
-/** How the binary was built. */
+/** How the binaries were built. */
 export interface BuildRecord {
   readonly profile: string;
+  /** The target `postgres.wasm` was built for. */
   readonly target: string;
+  /**
+   * The target `postgres-threads.wasm` was built for, when the release carries one.
+   *
+   * Optional because a release published before the threads artifact existed describes one target
+   * and is still a complete source statement for what it contains. One profile and one toolchain
+   * cover both: only the target differs.
+   */
+  readonly threadsTarget?: string;
   readonly toolchain: string;
 }
 
@@ -98,6 +107,8 @@ export interface ManifestInput {
   readonly upstreamCommit: string;
   readonly profile: string;
   readonly target: string;
+  /** Omitted for a release with no threads artifact in it. */
+  readonly threadsTarget?: string;
   readonly toolchain: string;
   readonly initdb: string;
   readonly builtAt: string;
@@ -202,6 +213,9 @@ export function buildManifest(input: ManifestInput): AssetManifest {
     build: {
       profile: requireNonEmpty(input.profile, "profile"),
       target: requireNonEmpty(input.target, "target"),
+      ...(input.threadsTarget === undefined
+        ? {}
+        : { threadsTarget: requireNonEmpty(input.threadsTarget, "threadsTarget") }),
       toolchain: requireNonEmpty(input.toolchain, "toolchain"),
     },
     vfs: {
@@ -291,6 +305,9 @@ export function parseManifest(value: unknown): AssetManifest {
     upstreamCommit: asString(upstream["commit"], "manifest.pgrust.upstream.commit"),
     profile: asString(build["profile"], "manifest.build.profile"),
     target: asString(build["target"], "manifest.build.target"),
+    ...(build["threadsTarget"] === undefined
+      ? {}
+      : { threadsTarget: asString(build["threadsTarget"], "manifest.build.threadsTarget") }),
     toolchain: asString(build["toolchain"], "manifest.build.toolchain"),
     initdb: asString(vfs["initdb"], "manifest.vfs.initdb"),
     builtAt: asString(vfs["builtAt"], "manifest.vfs.builtAt"),

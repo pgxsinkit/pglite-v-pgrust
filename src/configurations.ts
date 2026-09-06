@@ -1,12 +1,14 @@
 /**
  * The phase-1 Configurations, in the order they appear as result columns.
  *
- * A Configuration is an Engine plus the storage and durability settings it is opened with. Six are
+ * A Configuration is an Engine plus the storage and durability settings it is opened with. Eight are
  * Memory Configurations — the data directory lives in the worker's heap and is discarded when the
- * worker ends — and each of the three Engines gets two of them: its default settings, and the least
- * durable settings it offers (unlogged tables for the two Postgres builds, journal mode `off` for
- * SQLite). The last two Memory columns are the Reference Engine, wa-sqlite: it is there so the
- * harness can be calibrated against published numbers, and it is never the Baseline of a ratio.
+ * worker ends — and each of the four Engines gets two of them. For PGlite, pgrust and wa-sqlite the
+ * pair is the Engine's default settings and the least durable settings it offers (unlogged tables
+ * for the two single-session Postgres builds, journal mode `off` for SQLite); for the pgrust threads
+ * build the pair is its two filesystem seams instead, because that is the choice that build makes.
+ * Two of those Memory columns are the Reference Engine, wa-sqlite: it is there so the harness can be
+ * calibrated against published numbers, and it is never the Baseline of a ratio.
  *
  * The other two are Storage Configurations: PGlite on the `opfs-repacked` store, in each of that
  * store's two durability modes. They are the first columns whose data directory is real storage
@@ -80,6 +82,36 @@ export const CONFIGURATIONS: readonly Configuration[] = [
     engine: "pgrust",
     dataDir: "",
     modSql: UNLOGGED_TABLES,
+  },
+  {
+    // The same pgrust commit, built for wasm32-wasip1-threads instead. Real threads, no JSPI, and a
+    // cross-origin isolated page — the guest's blocking stdin read blocks a Worker in
+    // `Atomics.wait` rather than suspending. `copy` is the host's own default: this instance's
+    // filesystem is its own copy of the packed image, which is what a single session on a single
+    // spawned thread needs.
+    id: "pgrust-threads-memory",
+    label: "pgrust Threads Memory",
+    engine: "pgrust-threads",
+    dataDir: "",
+    options: { pgrustThreads: { fs: "copy" } },
+  },
+  {
+    // The same threads Engine with its filesystem moved: one repacked store in a dedicated
+    // coordinator worker that every instance reaches over a SharedArrayBuffer channel, instead of a
+    // private copy of the image per worker. The store is still in memory and still dies with its
+    // worker, so this is a Memory Configuration too — the pair measures the broker seam and nothing
+    // else.
+    //
+    // The label says `pre-release store` because it is: the broker and the WASI adapter this column
+    // loads exist in no published `@pgxsinkit/pglite-opfs-repacked`, so the bundle is copied out of
+    // a pgxsinkit checkout by `bun run sync:pgrust` and recorded in `src/vendor/pgrust/SOURCE.md`.
+    // The two `PGlite OPFS repacked` columns are a different thing entirely: they run the published
+    // package this repo depends on.
+    id: "pgrust-threads-memory-broker",
+    label: "pgrust Threads Memory (broker, pre-release store)",
+    engine: "pgrust-threads",
+    dataDir: "",
+    options: { pgrustThreads: { fs: "broker" } },
   },
   {
     id: "wasqlite-memory",

@@ -27,6 +27,9 @@
 //   - poll_oneoff reports clock subscriptions as immediately fired (no
 //     blocking primitive in a COEP-less browser worker); --single never
 //     sleeps on the boot/battery path. sock_recv/sock_send return NOTSUP.
+//     (The cross-origin-isolated threads host OVERRIDES poll_oneoff with a
+//     real timed wait — wasm/threads-host.js — because a backend that must
+//     honour statement_timeout does sleep.)
 
 // WASI preview1 errno values.
 const E = {
@@ -43,6 +46,24 @@ const FDFLAG = { APPEND: 1 };
 
 class GuestExit extends Error {
   constructor(code) { super(`guest exited with code ${code}`); this.code = code; }
+}
+
+// CLOCK_MONOTONIC in nanoseconds. `performance.now()` alone is NOT usable on
+// the threads target: it is relative to the calling agent's `timeOrigin`, and
+// every Worker in a browser gets its OWN time origin — so the backend thread's
+// deadline and the pg-timeout-timer thread's "is it expired yet" reading would
+// be minutes apart, in different directions, on different workers. Anchoring
+// with `timeOrigin` puts every agent on the one Unix-epoch-based timeline
+// while keeping the sub-millisecond resolution (`performance.now()` is
+// monotonic within an agent, and `timeOrigin` is a constant). Node happens to
+// share one process-wide `timeOrigin` across worker_threads, so this is a
+// no-op there.
+export function monotonicNs() {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    const origin = typeof performance.timeOrigin === 'number' ? performance.timeOrigin : 0;
+    return BigInt(Math.round((origin + performance.now()) * 1e6));
+  }
+  return BigInt(Date.now()) * 1000000n;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,7 +191,7 @@ function nowSec() { return Math.floor(Date.now() / 1000); }
 const PREOPEN_FD = 3;
 const ALL_RIGHTS = 0xFFFFFFFFFFFFFFFFn;
 
-export function makeWasi({ image, manifest, vfs: existingVfs, stdinBytes, stdinStream, onStdout, onStderr, argv: argvOverride, env: envOverride }) {
+export function makeWasi({ image, manifest, vfs: existingVfs, stdinBytes, stdinStream, onStdout, onStderr, argv: argvOverride, env: envOverride, fdBase }) {
   const vfs = existingVfs || new Vfs(image, manifest);
 
   const argv = argvOverride || [
@@ -206,7 +227,13 @@ export function makeWasi({ image, manifest, vfs: existingVfs, stdinBytes, stdinS
   fds.set(1, { kind: 'stdout' });
   fds.set(2, { kind: 'stderr' });
   fds.set(PREOPEN_FD, { kind: 'dir', path: '/', node: vfs.get('/') });
-  let nextFd = PREOPEN_FD + 1;
+  // Where this instance's OPEN FILES start. Default PREOPEN_FD+1, unchanged
+  // for every single-instance caller. The threads target passes a per-agent
+  // base instead: the guest's fd table is process-global (one shared linear
+  // memory, N instances) while this Map is private to one instance, so two
+  // agents allocating from 4 would hand the SAME fd number to two different
+  // files. See "PIPE FDS, AND THE FD NUMBER PLAN" in wasm/threads-host.js.
+  let nextFd = Number.isSafeInteger(fdBase) && fdBase > PREOPEN_FD ? fdBase : PREOPEN_FD + 1;
 
   let memory = null;
   const u8 = () => new Uint8Array(memory.buffer);
@@ -214,7 +241,13 @@ export function makeWasi({ image, manifest, vfs: existingVfs, stdinBytes, stdinS
   const num = (x) => (typeof x === 'bigint' ? Number(x) : x);
 
   function readStr(ptr, len) {
-    return dec.decode(u8().subarray(ptr, ptr + len));
+    // .slice(), not .subarray(): with the wasm32-wasip1-threads build the
+    // memory is a SharedArrayBuffer, and TextDecoder.decode() REFUSES a
+    // shared-backed view in Chrome ("The provided ArrayBufferView value must
+    // not be shared" — the same [AllowShared] rule that bites
+    // crypto.getRandomValues). slice() hands it a private copy; paths are
+    // short, so the copy is free, and the single-threaded arm is unaffected.
+    return dec.decode(u8().slice(ptr, ptr + len));
   }
   // Resolve a WASI (dirfd, path) pair. Guest paths arrive preopen-relative;
   // wasi-libc maps absolute paths onto the "/" preopen for us, but be liberal
@@ -312,14 +345,7 @@ export function makeWasi({ image, manifest, vfs: existingVfs, stdinBytes, stdinS
       return E.SUCCESS;
     },
     clock_time_get(id, _precision, outPtr) {
-      let ns;
-      if (id === 1) {
-        const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
-        ns = BigInt(Math.round(now * 1e6));
-      } else {
-        ns = BigInt(Date.now()) * 1000000n;
-      }
-      dv().setBigUint64(outPtr, ns, true);
+      dv().setBigUint64(outPtr, id === 1 ? monotonicNs() : BigInt(Date.now()) * 1000000n, true);
       return E.SUCCESS;
     },
     random_get(ptr, len) {

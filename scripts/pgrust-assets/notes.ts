@@ -32,8 +32,25 @@ export function releaseNotesMarkdown(manifest: AssetManifest): string {
     const unpackedCell = unpacked === undefined ? "—" : `${unpacked.name} (${formatBytes(unpacked.bytes)})`;
     return `| \`${file.name}\` | ${formatBytes(file.bytes)} | ${unpackedCell} |`;
   });
+  const threadsTarget = manifest.build.threadsTarget;
+  const columns =
+    threadsTarget === undefined
+      ? "the `pgrust Memory` columns"
+      : "the `pgrust Memory` and `pgrust Threads Memory` columns";
+  const recipe =
+    threadsTarget === undefined
+      ? [
+          `PGRUST_WASM_PROFILE=${manifest.build.profile} wasm/wasm-build.sh   # compiles postgres.wasm`,
+          "wasm/build.sh                                         # packs vfs.img + vfs.json beside it",
+        ]
+      : [
+          `PGRUST_WASM_PROFILE=${manifest.build.profile} wasm/wasm-build.sh   # postgres.wasm (${manifest.build.target})`,
+          "wasm/build.sh                                         # packs vfs.img + vfs.json beside it",
+          `PGRUST_WASM_TARGET=${threadsTarget} \\`,
+          `  PGRUST_WASM_PROFILE=${manifest.build.profile} wasm/wasm-build.sh # postgres-threads.wasm`,
+        ];
   return [
-    `Prebuilt pgrust WebAssembly assets for the \`pgrust Memory\` column of this benchmark, so a clean`,
+    `Prebuilt pgrust WebAssembly assets for ${columns} of this benchmark, so a clean`,
     "clone needs no pgrust checkout and no Rust toolchain:",
     "",
     "```sh",
@@ -54,15 +71,22 @@ export function releaseNotesMarkdown(manifest: AssetManifest): string {
     "## Build recipe",
     "",
     `- Profile: \`${manifest.build.profile}\``,
-    `- Target: \`${manifest.build.target}\``,
+    `- Target: \`${manifest.build.target}\` (\`postgres.wasm\`)`,
+    ...(threadsTarget === undefined ? [] : [`- Target: \`${threadsTarget}\` (\`postgres-threads.wasm\`)`]),
     `- Toolchain: \`${manifest.build.toolchain}\``,
     `- VFS: \`initdb\` from ${manifest.vfs.initdb}, built ${manifest.vfs.builtAt}`,
+    ...(threadsTarget === undefined
+      ? []
+      : [
+          "",
+          "One commit, two targets, one packed image: `vfs.img` is `initdb` output and carries no",
+          "pgrust code, so both modules boot the same data directory.",
+        ]),
     "",
     "```sh",
     `git clone ${manifest.pgrust.repository} && cd pgrust`,
     `git checkout ${manifest.pgrust.commit}`,
-    `PGRUST_WASM_PROFILE=${manifest.build.profile} wasm/wasm-build.sh   # compiles postgres.wasm`,
-    "wasm/build.sh                                         # packs vfs.img + vfs.json beside it",
+    ...recipe,
     "```",
     "",
     "## Files",

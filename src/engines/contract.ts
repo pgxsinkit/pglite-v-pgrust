@@ -8,10 +8,17 @@
  */
 
 /**
- * The WebAssembly databases under comparison. `pglite` and `pgrust` are the subjects; `wasqlite` is
- * the Reference Engine, present only so the numbers can be calibrated against published ones.
+ * The WebAssembly databases under comparison. `pglite` and the two pgrust builds are the subjects;
+ * `wasqlite` is the Reference Engine, present only so the numbers can be calibrated against
+ * published ones.
+ *
+ * `pgrust` and `pgrust-threads` are one pgrust commit built for two targets, and they are separate
+ * Engines rather than one Engine with an option because nothing they share survives the boundary:
+ * different wasm module, different host JS, different blocking primitive (JSPI versus
+ * `Atomics.wait`), different browser requirement. A Configuration picks one of them, and the
+ * availability gate asks each a different question.
  */
-export type EngineId = "pglite" | "pgrust" | "wasqlite";
+export type EngineId = "pglite" | "pgrust" | "pgrust-threads" | "wasqlite";
 
 /**
  * The SQL dialect an Engine speaks. The Benchmarks themselves are dialect-neutral; only a Suite's
@@ -23,6 +30,7 @@ export type SqlDialect = "postgres" | "sqlite";
 const ENGINE_DIALECTS: Readonly<Record<EngineId, SqlDialect>> = {
   pglite: "postgres",
   pgrust: "postgres",
+  "pgrust-threads": "postgres",
   wasqlite: "sqlite",
 };
 
@@ -48,6 +56,28 @@ export interface PgliteOpenOptions {
  */
 export interface WasqliteOpenOptions {
   readonly journalMode: "off";
+}
+
+/**
+ * Where the pgrust threads guest's data directory lives.
+ *
+ * `copy` is the host's own default: every worker builds its own VFS from its own copy of the packed
+ * image, which is enough for one session on one thread. `broker` puts a single
+ * `@pgxsinkit/pglite-opfs-repacked` store in a dedicated coordinator worker that every instance
+ * reaches over a `SharedArrayBuffer` channel, so all of them see one filesystem. Both keep the data
+ * directory in memory and both die with their workers, so both are Memory Configurations.
+ */
+export type PgrustThreadsFs = "copy" | "broker";
+
+/**
+ * pgrust's threads-build settings, applied by its worker when it starts the guest.
+ *
+ * One knob, because one is what distinguishes the two threads columns: everything else — the same
+ * wasm module, the same argv, the same pool size — is held identical so the pair measures the
+ * filesystem seam and nothing else.
+ */
+export interface PgrustThreadsOpenOptions {
+  readonly fs: PgrustThreadsFs;
 }
 
 /**
@@ -89,6 +119,7 @@ export interface PgliteStoreSettings {
 export interface EngineOpenOptions {
   readonly relaxedDurability?: boolean;
   readonly pglite?: PgliteStoreSettings;
+  readonly pgrustThreads?: PgrustThreadsOpenOptions;
   readonly wasqlite?: WasqliteOpenOptions;
 }
 
@@ -106,6 +137,14 @@ export function pgliteOpenOptions(options: EngineOpenOptions | undefined): Pglit
  */
 export function pgliteStore(options: EngineOpenOptions | undefined): PgliteStoreSettings | undefined {
   return options?.pglite;
+}
+
+/**
+ * The threads-build settings this Configuration opens pgrust with, or `undefined` for the host's
+ * own default (`copy`). Read only by the `pgrust-threads` worker.
+ */
+export function pgrustThreadsOptions(options: EngineOpenOptions | undefined): PgrustThreadsOpenOptions | undefined {
+  return options?.pgrustThreads;
 }
 
 /** An Engine plus the storage and durability settings it is opened with. One column of results. */
