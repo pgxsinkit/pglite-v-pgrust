@@ -59,6 +59,23 @@ function readPgrustVersion(): string {
   return version === "" ? "not synced" : version;
 }
 
+/**
+ * Cross-origin isolation, on every server that serves this page.
+ *
+ * `SharedArrayBuffer` and a shared `WebAssembly.Memory` are gated on `crossOriginIsolated`, and the
+ * pgrust threads build is nothing but those two: its guest threads block in `Atomics.wait` on
+ * SharedArrayBuffer ring pipes over one shared memory. Without both headers the browser withholds
+ * `SharedArrayBuffer` entirely and the two threads columns can only report themselves skipped.
+ *
+ * Nothing this page loads is cross-origin — PGlite, wa-sqlite and the pgrust assets are all served
+ * from here — so `require-corp` costs the other eight columns nothing. The same pair is set by
+ * `scripts/bench.ts`'s static server, because the headless lane serves `dist/` itself.
+ */
+const CROSS_ORIGIN_ISOLATION_HEADERS: Readonly<Record<string, string>> = {
+  "Cross-Origin-Opener-Policy": "same-origin",
+  "Cross-Origin-Embedder-Policy": "require-corp",
+};
+
 export default defineConfig({
   plugins: [react()],
   define: {
@@ -91,8 +108,10 @@ export default defineConfig({
   },
   server: {
     port: 5580,
+    headers: CROSS_ORIGIN_ISOLATION_HEADERS,
   },
   preview: {
     port: 5580,
+    headers: CROSS_ORIGIN_ISOLATION_HEADERS,
   },
 });

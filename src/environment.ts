@@ -28,6 +28,15 @@ export interface EnvironmentInfo {
   readonly wasqliteVersion: string;
   /** Whether the JavaScript Promise Integration proposal is available (pgrust's wasm build wants it). */
   readonly jspiAvailable: boolean;
+  /**
+   * Whether this page is cross-origin isolated, i.e. whether both COOP and COEP arrived.
+   *
+   * `SharedArrayBuffer` and a shared `WebAssembly.Memory` are gated on it, and those two are the
+   * whole of the pgrust threads build — so this is reported on its own line rather than folded into
+   * a capability check, because a run that lost isolation would otherwise look like a run whose
+   * browser lacks threads.
+   */
+  readonly crossOriginIsolated: boolean;
   /** Whether a real OPFS synchronous access handle opened in a dedicated worker (the store needs one). */
   readonly opfsSyncAccessAvailable: boolean;
   /** Why the probe was refused, when it was; null when the handle opened. */
@@ -37,6 +46,18 @@ export interface EnvironmentInfo {
    * defined 100. Reported everywhere the environment is, because it changes what the numbers mean.
    */
   readonly rttIterationsOverride: number | null;
+}
+
+/**
+ * Whether the page really got both isolation headers.
+ *
+ * `crossOriginIsolated` is the browser's own answer, not ours: it is true only when COOP
+ * `same-origin` and COEP `require-corp` both arrived, which is exactly the condition
+ * `SharedArrayBuffer` is gated on. Probed together with the constructor because a browser could in
+ * principle have one without the other, and the threads Engine needs both.
+ */
+export function detectCrossOriginIsolation(): boolean {
+  return typeof SharedArrayBuffer === "function" && globalThis.crossOriginIsolated === true;
 }
 
 /**
@@ -70,6 +91,7 @@ export async function readEnvironment(): Promise<EnvironmentInfo> {
     pgrustVersion: PGRUST_VERSION,
     wasqliteVersion: WASQLITE_VERSION,
     jspiAvailable: detectJspi(),
+    crossOriginIsolated: detectCrossOriginIsolation(),
     opfsSyncAccessAvailable: opfsSyncAccess.available,
     opfsSyncAccessReason: opfsSyncAccess.reason ?? null,
     rttIterationsOverride: readRttIterationsOverride(),
@@ -84,6 +106,7 @@ export function formatEnvironmentLine(environment: EnvironmentInfo): string {
     `pgrust ${environment.pgrustVersion}`,
     `wa-sqlite ${environment.wasqliteVersion}`,
     `JSPI ${environment.jspiAvailable ? "available" : "unavailable"}`,
+    `cross-origin isolated ${environment.crossOriginIsolated ? "yes" : "no"}`,
     `OPFS sync access ${environment.opfsSyncAccessAvailable ? "available" : "unavailable"}`,
     environment.userAgent,
   ];

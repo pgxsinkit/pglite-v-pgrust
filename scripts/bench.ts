@@ -64,6 +64,18 @@ const MIME_TYPES: Readonly<Record<string, string>> = {
   ".wasm": "application/wasm",
 };
 
+/**
+ * Cross-origin isolation, exactly as `vite.config.ts` sets it for `dev` and `preview`.
+ *
+ * The lane serves `dist/` from its own Bun server, so the headers Vite sends never reach it: without
+ * this pair the browser withholds `SharedArrayBuffer` and the two pgrust Threads columns report
+ * themselves skipped in every headless run while the hand-run page shows numbers.
+ */
+const CROSS_ORIGIN_ISOLATION_HEADERS: Readonly<Record<string, string>> = {
+  "cross-origin-opener-policy": "same-origin",
+  "cross-origin-embedder-policy": "require-corp",
+};
+
 export interface BenchOptions {
   readonly browser: BenchBrowser;
   /** Which Suites to run, in order. */
@@ -135,14 +147,18 @@ function serveDist(distDir: string, port: number): StaticServer {
       const requested = decodeURIComponent(pathname === "/" ? "/index.html" : pathname);
       const target = resolve(distDir, `.${requested}`);
       if (target !== distDir && !target.startsWith(`${distDir}/`)) {
-        return new Response("Forbidden", { status: 403 });
+        return new Response("Forbidden", { status: 403, headers: CROSS_ORIGIN_ISOLATION_HEADERS });
       }
       const file = Bun.file(target);
       if (!(await file.exists())) {
-        return new Response("Not found", { status: 404 });
+        return new Response("Not found", { status: 404, headers: CROSS_ORIGIN_ISOLATION_HEADERS });
       }
       return new Response(file, {
-        headers: { "content-type": contentTypeFor(target), "cache-control": "no-store" },
+        headers: {
+          "content-type": contentTypeFor(target),
+          "cache-control": "no-store",
+          ...CROSS_ORIGIN_ISOLATION_HEADERS,
+        },
       });
     },
   });

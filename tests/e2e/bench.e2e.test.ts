@@ -146,6 +146,9 @@ describe("bench lane", () => {
     expect(report.environmentLine).toContain("pgrust");
     expect(report.environmentLine).toContain("wa-sqlite");
     expect(report.environmentLine).toContain("JSPI");
+    // Not merely "present": the lane's own static server sends COOP + COEP, so a run that reported
+    // `no` here would be a lane serving the page without isolation.
+    expect(report.environmentLine).toContain("cross-origin isolated yes");
     expect(report.environmentLine).toContain("OPFS sync access");
     expect(report.environmentLine).toContain(describeRttIterations(RTT_ITERATIONS));
   });

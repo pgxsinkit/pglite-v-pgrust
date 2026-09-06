@@ -46,6 +46,11 @@ export function EnvironmentHeader({ environment }: EnvironmentHeaderProps): JSX.
           <dd>{environment.jspiAvailable ? "available" : "unavailable"}</dd>
         </div>
         <div>
+          {/* The browser's own answer: true only when COOP and COEP both arrived. */}
+          <dt>Cross-origin isolated</dt>
+          <dd>{environment.crossOriginIsolated ? "yes" : "no"}</dd>
+        </div>
+        <div>
           <dt>OPFS sync access</dt>
           {/* The probe's own words when it was refused: what the store hit, not what we assumed. */}
           <dd>{describeOpfsSyncAccess(environment)}</dd>

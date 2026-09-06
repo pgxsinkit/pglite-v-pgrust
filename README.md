@@ -255,6 +255,31 @@ blocking stdin read, which needs **JS Promise Integration** (`WebAssembly.Suspen
 The header shows whether JSPI was detected. Where it is missing the pgrust column is greyed out with
 that reason and the PGlite columns run as normal — no Run is aborted for it.
 
+## Cross-origin isolation
+
+Every server that serves this page sends both isolation headers:
+
+```
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+`vite.config.ts` sets them for `bun run dev` and `bun run preview`; `scripts/bench.ts`'s own static
+server sets the same pair, because the headless lane serves `dist/` itself rather than through Vite.
+The page reports the result — `cross-origin isolated yes|no` — in the environment header and in every
+Markdown export, so a run that silently lost isolation cannot be mistaken for one that had it.
+
+Isolation is what makes `SharedArrayBuffer` and a shared `WebAssembly.Memory` available at all, which
+is what a WebAssembly build with real threads needs. Nothing here uses them yet; the headers land
+first because turning them on changes every server this repo owns and changes what `require-corp` will
+let the page load, and that is worth proving on its own against the eight Configurations that already
+exist.
+
+It costs those eight nothing: `require-corp` only constrains **cross-origin** subresources, and this
+page loads none — PGlite's `pglite.wasm` and `pglite.data`, wa-sqlite's `wa-sqlite.wasm`, the pgrust
+assets and every worker are all served from this origin. There is no CDN script, no hosted font and
+no remote image anywhere in `index.html` or in the built `dist/`.
+
 ## Development & contributing
 
 Scripts are check-default: a bare verb never mutates files.
