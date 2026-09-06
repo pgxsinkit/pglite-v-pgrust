@@ -126,9 +126,11 @@ header, and every other column runs as normal — exactly as the pgrust column b
 ## Results
 
 Committed runs live in [`docs/results/`](docs/results/) — the page's own Markdown export, one file per
-browser and date, produced by `bun run bench`. The first run
-([2026-08-29, Chromium 152, Linux, six columns](docs/results/2026-08-29-chromium-152-linux-six-columns.md)) is the phase-1
-baseline for all six Configurations.
+browser and date, produced by `bun run bench`. The current run
+([2026-09-06, Chromium 152, Linux, eight columns](docs/results/2026-09-06-chromium-152-linux-eight-columns.md))
+covers all eight Configurations, the two OPFS repacked columns included; the run before it
+([2026-08-29, Chromium 152, Linux, six columns](docs/results/2026-08-29-chromium-152-linux-six-columns.md))
+is the memory-only baseline it extends, on the same browser and the same machine.
 
 Things the harness turned up along the way are written up in [`docs/findings/`](docs/findings/).
 The first — [pgrust needs (statements × message size) memory for multi-statement
