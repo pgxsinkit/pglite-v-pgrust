@@ -16,8 +16,16 @@
  * Pure string handling; the callers do the file I/O.
  */
 
-import type { AssetManifest } from "./manifest";
-import { pgrustCommitUrl, pgrustSourceUrl } from "./manifest";
+import type { AssetManifest, StoreSourceRecord } from "./manifest";
+import {
+  pgrustCommitUrl,
+  pgrustSourceUrl,
+  STORE_BUILD_COMMAND,
+  STORE_BUILD_OUTPUT,
+  STORE_LICENSE,
+  STORE_PACKAGE_NAME,
+  STORE_REPOSITORY,
+} from "./manifest";
 
 /** Fences the assets half of `SOURCE.md`; everything outside them describes the vendored host JS. */
 export const ASSETS_BEGIN = "<!-- pgrust-assets:begin -->";
@@ -149,18 +157,19 @@ export function checkoutAssetsSection(checkoutDir: string, version: string, sync
 
 /** Where the pre-release store bundle came from, in the detail a reader needs to reproduce it. */
 export interface StoreBundleProvenance {
-  /** The pgxsinkit checkout it was copied out of. */
-  readonly checkoutDir: string;
   /** The pgxsinkit commit that built it. */
   readonly commit: string;
-  /** Whether that checkout had uncommitted changes when the copy was made. */
+  /** The branch that commit is on. */
+  readonly branch: string;
+  /** The repository both of those live in. */
+  readonly repository: string;
+  /** Whether the checkout it was copied out of had uncommitted changes; false for a release. */
   readonly dirty: boolean;
   /** The version in the package's own manifest — a placeholder in that repo, hence "pre-release". */
   readonly packageVersion: string;
   /** Where it landed, relative to the repo root. */
   readonly target: string;
   readonly bytes: number;
-  readonly syncedAt: string;
 }
 
 /**
@@ -171,28 +180,84 @@ export interface StoreBundleProvenance {
  * instead. That is a materially different claim from "the package on npm", and the two must never
  * be read as one: each of those Configurations' labels says `pre-release store`, and this block is
  * where the exact commit behind that label is written down.
+ *
+ * Deliberately says nothing about *how* the bytes arrived — no local path, no timestamp. The same
+ * commit reached through a release download and through a pgxsinkit checkout is the same bundle, and
+ * the two syncs leave this block byte-identical, so a cloner's `SOURCE.md` and a maintainer's can be
+ * compared directly. Which path was taken is a line of console output; which bytes ran is this.
  */
 export function storeBundleSection(provenance: StoreBundleProvenance): string {
   return [
     "## Pre-release store bundle in `public/pgrust/host/`",
     "",
-    "Copied by `bun run sync:pgrust` from a **pgxsinkit checkout**, not from npm. The three",
-    "`pgrust Threads` broker columns are the only things that load it — the Memory one on the store's",
-    "memory port, the two OPFS repacked ones on its OPFS port — and it is a gitignored build output;",
-    "only this record of it is committed.",
+    "Written by `bun run sync:pgrust`, from a published release of this repo or from a **pgxsinkit",
+    "checkout** — not from npm. The four `pgrust Threads` and `pgrust Postmaster` broker columns are",
+    "the only things that load it — the Memory ones on the store's memory port, the OPFS repacked",
+    "ones on its OPFS port — and it is a gitignored build output; only this record of it is",
+    "committed.",
     "",
-    `- Package: \`@pgxsinkit/pglite-opfs-repacked\` (manifest version \`${provenance.packageVersion}\`)`,
-    `- Commit: \`${provenance.commit}\``,
-    `- Source: \`${provenance.checkoutDir}\``,
-    `- Working tree: ${provenance.dirty ? "dirty at sync time" : "clean"}`,
-    `- Copied to: \`${provenance.target}\` (${provenance.bytes} bytes)`,
-    `- Copied: ${provenance.syncedAt}`,
+    `- Package: \`${STORE_PACKAGE_NAME}\` (manifest version \`${provenance.packageVersion}\`)`,
+    `- Repository: [\`${provenance.branch}\`](${provenance.repository}/tree/${provenance.branch})`,
+    `- Commit: [\`${provenance.commit}\`](${provenance.repository}/commit/${provenance.commit})${
+      provenance.dirty ? " — **built from a dirty working tree**, which no one else can check out" : ""
+    }`,
+    `- Licence: ${STORE_LICENSE}`,
+    `- Built with: \`${STORE_BUILD_COMMAND}\` -> \`${STORE_BUILD_OUTPUT}\``,
+    `- Installed at: \`${provenance.target}\` (${provenance.bytes} bytes)`,
     "",
     "The `RepackedSyncBroker` + `createWasiPreview1Fs` pair those columns need is **not** in any",
     "published version of the package, so no npm release corresponds to these bytes. The two",
     "`PGlite OPFS repacked` columns are unaffected: they run the published dependency in",
     "`package.json`.",
   ].join("\n");
+}
+
+/**
+ * The provenance a release's `store` record states, for the block a `--release` sync writes.
+ *
+ * The same shape the checkout path fills in from git, so the two produce the same block for the same
+ * commit: this is where "a release sync and a checkout sync leave `SOURCE.md` identical" is made
+ * true rather than asserted.
+ */
+export function storeProvenanceFromManifest(
+  store: StoreSourceRecord,
+  target: string,
+  bytes: number,
+): StoreBundleProvenance {
+  return {
+    commit: store.commit,
+    branch: store.branch,
+    repository: store.repository,
+    // A release is only ever built from a committed tree; `pgrust:bundle` refuses a dirty one.
+    dirty: false,
+    packageVersion: store.version,
+    target,
+    bytes,
+  };
+}
+
+/** The store provenance a `SOURCE.md` records, or null when it has no store block. */
+export function readStoreProvenance(markdown: string): StoreBundleProvenance | null {
+  const block = extractStoreBundleSection(markdown);
+  if (block === null) {
+    return null;
+  }
+  const commit = /^- Commit: \[`([0-9a-f]{40})`\]\(([^)]+)\/commit\//m.exec(block);
+  const branch = /^- Repository: \[`([^`]+)`\]/m.exec(block);
+  const version = /\(manifest version `([^`]+)`\)/.exec(block);
+  const target = /^- Installed at: `([^`]+)` \((\d+) bytes\)/m.exec(block);
+  if (commit?.[1] === undefined || branch?.[1] === undefined) {
+    return null;
+  }
+  return {
+    commit: commit[1],
+    branch: branch[1],
+    repository: commit[2] ?? STORE_REPOSITORY,
+    dirty: block.includes("dirty working tree"),
+    packageVersion: version?.[1] ?? "unknown",
+    target: target?.[1] ?? "",
+    bytes: Number(target?.[2] ?? "0"),
+  };
 }
 
 /**

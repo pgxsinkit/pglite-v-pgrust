@@ -27,19 +27,38 @@ async function unreachable(): Promise<never> {
 }
 
 describe("RELEASE_ASSETS", () => {
-  test("gzips the three large binaries and uploads vfs.json as-is", () => {
+  test("gzips everything large and uploads vfs.json as-is", () => {
     expect(RELEASE_ASSETS.map((asset) => [asset.name, asset.target, asset.gzipped])).toEqual([
       ["postgres.wasm.gz", "postgres.wasm", true],
       ["postgres-threads.wasm.gz", "postgres-threads.wasm", true],
       ["vfs.img.gz", "vfs.img", true],
       ["vfs.json", "vfs.json", false],
+      ["pglite-opfs-repacked.js.gz", "host/vendor/pglite-opfs-repacked.js", true],
     ]);
   });
 
-  test("makes exactly the threads module optional, so a release published before it still verifies", () => {
+  test("carries the store bundle to where the vendored broker-fs.js looks for it", () => {
+    const store = RELEASE_ASSETS.find((asset) => asset.name === "pglite-opfs-repacked.js.gz");
+    // `broker-fs.js` imports `./vendor/pglite-opfs-repacked.js` relative to the host directory, so
+    // the target is nested and the release is the only thing that puts it there on a clone.
+    expect(store?.target).toBe("host/vendor/pglite-opfs-repacked.js");
+    expect(store?.optional).toBe(true);
+  });
+
+  test("makes the threads module and the store bundle optional, so an older release still verifies", () => {
     expect(RELEASE_ASSETS.filter((asset) => asset.optional === true).map((asset) => asset.name)).toEqual([
       "postgres-threads.wasm.gz",
+      "pglite-opfs-repacked.js.gz",
     ]);
+  });
+
+  test("tells a sync what an absent optional asset costs, in that asset's own words", () => {
+    for (const asset of RELEASE_ASSETS) {
+      expect(asset.absentNote === undefined).toBe(asset.optional !== true);
+    }
+    const store = RELEASE_ASSETS.find((asset) => asset.name === "pglite-opfs-repacked.js.gz");
+    expect((store?.absentNote ?? []).join(" ")).toContain("broker and postmaster columns");
+    expect((store?.absentNote ?? []).join(" ")).toContain("build:public-packages");
   });
 
   test("shares one packed image between the two modules: it is initdb output, not a build target", () => {

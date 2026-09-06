@@ -8,7 +8,7 @@ they stay identical to their source.
 - Version: `08a306441f`
 - Source: `/home/anton/dev/tmp/pgrust`
 - Working tree: clean
-- Synced: 2026-09-06T11:30:28.672Z
+- Synced: 2026-09-06T14:19:23.918Z
 
 ## Files
 
@@ -27,17 +27,18 @@ pgrust is AGPL-3.0-only; its `LICENSE` and `NOTICE` are vendored alongside the s
 <!-- store-bundle:begin -->
 ## Pre-release store bundle in `public/pgrust/host/`
 
-Copied by `bun run sync:pgrust` from a **pgxsinkit checkout**, not from npm. The three
-`pgrust Threads` broker columns are the only things that load it — the Memory one on the store's
-memory port, the two OPFS repacked ones on its OPFS port — and it is a gitignored build output;
-only this record of it is committed.
+Written by `bun run sync:pgrust`, from a published release of this repo or from a **pgxsinkit
+checkout** — not from npm. The four `pgrust Threads` and `pgrust Postmaster` broker columns are
+the only things that load it — the Memory ones on the store's memory port, the OPFS repacked
+ones on its OPFS port — and it is a gitignored build output; only this record of it is
+committed.
 
 - Package: `@pgxsinkit/pglite-opfs-repacked` (manifest version `0.0.0`)
-- Commit: `5e5d168a991546655b09ce7638c36c5bb5c4408e`
-- Source: `/home/anton/dev/pgxsinkit/pgxsinkit`
-- Working tree: clean
-- Copied to: `public/pgrust/host/vendor/pglite-opfs-repacked.js` (987191 bytes)
-- Copied: 2026-09-06T11:30:28.697Z
+- Repository: [`feat/repacked-sync-broker`](https://github.com/pgxsinkit/pgxsinkit/tree/feat/repacked-sync-broker)
+- Commit: [`5e5d168a991546655b09ce7638c36c5bb5c4408e`](https://github.com/pgxsinkit/pgxsinkit/commit/5e5d168a991546655b09ce7638c36c5bb5c4408e)
+- Licence: MIT
+- Built with: `bun run build:public-packages` -> `packages/pglite-opfs-repacked/dist/browser-bundle.js`
+- Installed at: `public/pgrust/host/vendor/pglite-opfs-repacked.js` (987191 bytes)
 
 The `RepackedSyncBroker` + `createWasiPreview1Fs` pair those columns need is **not** in any
 published version of the package, so no npm release corresponds to these bytes. The two
@@ -53,7 +54,7 @@ outputs; only this record of them is committed.
 
 - Source: `/home/anton/dev/tmp/pgrust`
 - Version: `08a306441f`
-- Copied: 2026-09-06T11:30:28.689Z
+- Copied: 2026-09-06T14:19:23.953Z
 
 pgrust is AGPL-3.0-only; these binaries were built locally from the checkout named above.
 <!-- pgrust-assets:end -->

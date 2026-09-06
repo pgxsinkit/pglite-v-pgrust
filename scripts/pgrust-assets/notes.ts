@@ -7,8 +7,15 @@
  * and uploaded with `--notes-file`, so what a release says can never drift from what it contains.
  */
 
-import type { AssetManifest } from "./manifest";
-import { CHECKSUMS_FILE_NAME, MANIFEST_FILE_NAME, pgrustCommitUrl, pgrustSourceUrl } from "./manifest";
+import type { AssetManifest, StoreSourceRecord } from "./manifest";
+import {
+  CHECKSUMS_FILE_NAME,
+  MANIFEST_FILE_NAME,
+  pgrustCommitUrl,
+  pgrustSourceUrl,
+  storeCommitUrl,
+  storeSourceUrl,
+} from "./manifest";
 
 /** Every file uploaded to a release, in upload order: the assets, then the two records. */
 export function releaseUploadNames(manifest: AssetManifest): readonly string[] {
@@ -23,6 +30,43 @@ export function releaseTitle(manifest: AssetManifest): string {
 function formatBytes(bytes: number): string {
   const mib = bytes / 1024 / 1024;
   return mib >= 1 ? `${mib.toFixed(1)} MiB` : `${(bytes / 1024).toFixed(0)} KiB`;
+}
+
+/**
+ * The store bundle's own source statement.
+ *
+ * A separate section from the AGPL one on purpose: this file is MIT, from a different repository,
+ * under a different licence, and folding it into pgrust's statement would misdescribe both. It is
+ * also the one asset here that corresponds to no published package, so the commit is the only thing
+ * a reader can go back to.
+ */
+function storeSection(store: StoreSourceRecord): readonly string[] {
+  return [
+    `## Store bundle (${store.license})`,
+    "",
+    `\`pglite-opfs-repacked.js.gz\` is a **pre-release** build of [\`${store.package}\`](${store.repository}),`,
+    "the store the four broker and postmaster columns run on. The `RepackedSyncBroker` +",
+    "`createWasiPreview1Fs` pair they need is in no published version of the package, so this bundle",
+    "corresponds to no npm release and is published here instead — otherwise those columns need a",
+    "pgxsinkit checkout to run at all.",
+    "",
+    `- **Package:** \`${store.package}\` (manifest version \`${store.version}\`, a placeholder in that repo)`,
+    `- **Branch:** ${storeSourceUrl(store)}`,
+    `- **Commit:** [\`${store.commit}\`](${storeCommitUrl(store)})`,
+    `- **Licence:** ${store.license}`,
+    "",
+    "Built in a checkout of that commit with:",
+    "",
+    "```sh",
+    store.build.command,
+    `# -> ${store.build.output}`,
+    "```",
+    "",
+    "The sync installs it at `public/pgrust/host/vendor/pglite-opfs-repacked.js`, which is where the",
+    "vendored `broker-fs.js` looks for it. The two `PGlite OPFS repacked` columns do not use it: they",
+    "run the published package from npm.",
+    "",
+  ];
 }
 
 /** `NOTES.md`: what the release is, where its source is, and how to consume it. */
@@ -51,7 +95,12 @@ export function releaseNotesMarkdown(manifest: AssetManifest): string {
         ];
   return [
     `Prebuilt pgrust WebAssembly assets for ${columns} of this benchmark, so a clean`,
-    "clone needs no pgrust checkout and no Rust toolchain:",
+    ...(manifest.store === undefined
+      ? ["clone needs no pgrust checkout and no Rust toolchain:"]
+      : [
+          "clone needs no pgrust checkout and no Rust toolchain — and, because the pre-release store",
+          "bundle the broker columns load is in here too, no pgxsinkit checkout either:",
+        ]),
     "",
     "```sh",
     `bun run sync:pgrust --release ${manifest.tag}`,
@@ -89,6 +138,7 @@ export function releaseNotesMarkdown(manifest: AssetManifest): string {
     ...recipe,
     "```",
     "",
+    ...(manifest.store === undefined ? [] : storeSection(manifest.store)),
     "## Files",
     "",
     "| Asset | Uploaded | Unpacks to |",

@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 
 import { formatSha256Sums, sha256Hex } from "./pgrust-assets/checksums";
 import type { AssetManifest, ManifestFileRecord } from "./pgrust-assets/manifest";
+import type { StoreSourceRecord } from "./pgrust-assets/manifest";
 import {
   bundleDirectoryName,
   buildManifest,
@@ -36,11 +37,17 @@ import {
   PGRUST_UPSTREAM_REPOSITORY,
   parseVersionFile,
   releaseTagForCommit,
+  STORE_BUILD_COMMAND,
+  STORE_BUILD_OUTPUT,
+  STORE_DEFAULT_BRANCH,
+  STORE_LICENSE,
+  STORE_PACKAGE_NAME,
+  STORE_REPOSITORY,
 } from "./pgrust-assets/manifest";
 import { ghReleaseCommand, releaseNotesMarkdown, releaseTitle } from "./pgrust-assets/notes";
 import type { ReleaseAssetSpec } from "./pgrust-assets/release";
 import { DEFAULT_RELEASE_REPOSITORY, RELEASE_ASSETS } from "./pgrust-assets/release";
-import { readVendorCommit } from "./pgrust-assets/source-md";
+import { readStoreProvenance, readVendorCommit } from "./pgrust-assets/source-md";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PUBLIC_DIR = resolve(REPO_ROOT, "public/pgrust");
@@ -70,6 +77,8 @@ const DEFAULTS = {
   threadsTarget: "wasm32-wasip1-threads",
   toolchain: "nightly-2026-07-17",
   initdb: "PostgreSQL 18",
+  storeBranch: STORE_DEFAULT_BRANCH,
+  storeRepository: STORE_REPOSITORY,
 } as const;
 
 /** What to run in the pgrust checkout when `public/pgrust/` is empty. */
@@ -94,6 +103,10 @@ interface Options {
   readonly toolchain: string;
   readonly initdb: string;
   readonly builtAt: string | null;
+  readonly storeBranch: string;
+  readonly storeCommit: string | null;
+  readonly storeVersion: string | null;
+  readonly storeRepository: string;
   readonly tag: string | null;
   readonly outRoot: string;
 }
@@ -115,6 +128,10 @@ const USAGE = [
   `  --toolchain <name>         rust toolchain (default ${DEFAULTS.toolchain})`,
   `  --initdb <version>         the initdb that minted vfs.img (default ${DEFAULTS.initdb})`,
   "  --built-at <iso>           when vfs.img was built (default: its mtime)",
+  `  --store-branch <name>      pgxsinkit branch of the store bundle (default ${DEFAULTS.storeBranch})`,
+  "  --store-commit <sha>       full pgxsinkit commit (default: from src/vendor/pgrust/SOURCE.md)",
+  "  --store-version <version>  the store package's manifest version (default: from SOURCE.md)",
+  `  --store-repo <url>         pgxsinkit repository (default ${DEFAULTS.storeRepository})`,
   "  --tag <tag>                release tag (default pgrust-assets/<first 8 of the commit>)",
   "  --out <dir>                where to write the bundle (default tmp/pgrust-assets)",
   "  --help                     this text",
@@ -140,6 +157,10 @@ function parseOptions(argv: readonly string[]): Options {
     "--toolchain",
     "--initdb",
     "--built-at",
+    "--store-branch",
+    "--store-commit",
+    "--store-version",
+    "--store-repo",
     "--tag",
     "--out",
   ]);
@@ -173,6 +194,10 @@ function parseOptions(argv: readonly string[]): Options {
     toolchain: values.get("--toolchain") ?? DEFAULTS.toolchain,
     initdb: values.get("--initdb") ?? DEFAULTS.initdb,
     builtAt: values.get("--built-at") ?? null,
+    storeBranch: values.get("--store-branch") ?? DEFAULTS.storeBranch,
+    storeCommit: values.get("--store-commit") ?? null,
+    storeVersion: values.get("--store-version") ?? null,
+    storeRepository: values.get("--store-repo") ?? DEFAULTS.storeRepository,
     tag: values.get("--tag") ?? null,
     outRoot: outRaw === undefined ? DEFAULT_OUT_ROOT : resolve(REPO_ROOT, outRaw),
   };
@@ -209,6 +234,40 @@ function resolveCommit(options: Options, shortCommit: string): string {
   return commit;
 }
 
+/**
+ * The store bundle's source statement: `--store-*` flags over what `SOURCE.md` recorded.
+ *
+ * The sync wrote that block when it installed the bundle, so it already names the commit these bytes
+ * came from — reading it back is the same move `resolveCommit` makes for pgrust, and for the same
+ * reason: a published provenance that was typed in by hand is a provenance nobody checked. A bundle
+ * built from a dirty pgxsinkit tree is refused outright, exactly as a dirty pgrust one is.
+ */
+function resolveStore(options: Options): StoreSourceRecord {
+  const recorded = readStoreProvenance(readText(join(VENDOR_DIR, "SOURCE.md"), "src/vendor/pgrust/SOURCE.md"));
+  const commit = options.storeCommit ?? recorded?.commit ?? null;
+  if (commit === null) {
+    fail(
+      "src/vendor/pgrust/SOURCE.md records no store-bundle commit, so the bundle in public/pgrust/ " +
+        "cannot be attributed; re-run `bun run sync:pgrust` or pass --store-commit <sha>",
+    );
+  }
+  if (options.storeCommit === null && recorded?.dirty === true) {
+    fail(
+      `the store bundle was copied from a dirty pgxsinkit working tree at ${commit.slice(0, 10)}, which ` +
+        "no one can check out. Commit and push that branch, re-run `bun run sync:pgrust`, and bundle again.",
+    );
+  }
+  return {
+    package: STORE_PACKAGE_NAME,
+    version: options.storeVersion ?? recorded?.packageVersion ?? "unknown",
+    repository: options.storeRepository,
+    commit,
+    branch: options.storeBranch,
+    license: STORE_LICENSE,
+    build: { command: STORE_BUILD_COMMAND, output: STORE_BUILD_OUTPUT },
+  };
+}
+
 /** The bytes of one asset, or a clear failure naming what still has to be built. */
 function readAsset(name: string, optional: boolean): Uint8Array<ArrayBuffer> | null {
   const path = join(PUBLIC_DIR, name);
@@ -216,9 +275,9 @@ function readAsset(name: string, optional: boolean): Uint8Array<ArrayBuffer> | n
     return new Uint8Array(readFileSync(path));
   } catch {
     if (optional) {
-      // The threads module is the one asset a release may legitimately not carry, so a bundle
-      // without it is publishable — it simply describes one target instead of two.
-      console.log(`  ${name} is not in public/pgrust/ — packaging without the threads artifact`);
+      // The threads module and the store bundle are the assets a release may legitimately not
+      // carry, so a bundle without one is publishable — it simply describes less.
+      console.log(`  ${name} is not in public/pgrust/ — packaging without it`);
       return null;
     }
     console.error(`pgrust:bundle: ${relativeToRepo(path)} is missing.`);
@@ -290,6 +349,9 @@ function main(): void {
   const files = RELEASE_ASSETS.map((spec) => packageAsset(spec, bundleDir)).filter(
     (file): file is ManifestFileRecord => file !== null,
   );
+  // Claimed only when the bundle is really in the release, like the threads target: the record has
+  // to describe what was uploaded, not what the flags default to.
+  const store = files.some((file) => file.name.startsWith("pglite-opfs-repacked.")) ? resolveStore(options) : null;
   const manifest = buildManifest({
     tag,
     commit,
@@ -308,9 +370,14 @@ function main(): void {
     toolchain: options.toolchain,
     initdb: options.initdb,
     builtAt: options.builtAt ?? defaultBuiltAt(),
+    ...(store === null ? {} : { store }),
     files,
   });
   writeBundle(manifest, bundleDir);
+  if (store !== null) {
+    console.log("");
+    console.log(`  store bundle: ${store.package} @ ${store.commit.slice(0, 10)} (${store.branch}, ${store.license})`);
+  }
 
   const uploaded = manifest.files.reduce((total, file) => total + file.bytes, 0);
   console.log(`  ${CHECKSUMS_FILE_NAME}, ${MANIFEST_FILE_NAME}, ${NOTES_FILE_NAME}`);

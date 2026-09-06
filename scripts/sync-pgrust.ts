@@ -16,9 +16,12 @@
  *    verbatim, because it builds its workers from URLs it computes at run time and therefore cannot
  *    be bundled without editing it. Copied from the committed vendored copy, not from a checkout.
  * 4. **Store bundle** — the **pre-release** `@pgxsinkit/pglite-opfs-repacked` build the broker
- *    column loads, copied out of a **pgxsinkit checkout**. No published version of that package
- *    carries the sync broker, so this is the one thing here that no npm release corresponds to; it
- *    is recorded in `SOURCE.md` with its own commit and the column's own label says so.
+ *    columns load, which arrives with the release (`--release`, so a clone needs no pgxsinkit
+ *    checkout either) or is copied out of a **pgxsinkit checkout** when the release predates it or
+ *    when you are building the release. No published version of that package carries the sync
+ *    broker, so this is the one thing here that no npm release corresponds to; it is recorded in
+ *    `SOURCE.md` with its own commit — identically from either path — and the columns' own labels
+ *    say so.
  *
  * `--release` deliberately never touches the vendored host JS: releases carry binaries, not source,
  * and the JS is committed here. When the two end up on different pgrust commits that is reported
@@ -38,35 +41,17 @@
  *   PGLITE_V_PGRUST_RELEASE_BASE_URL  fetch the assets from this directory URL instead of GitHub
  */
 
-import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import {
-  checkChecksumCoverage,
-  checkDownloadedFile,
-  checkUnpackedFile,
-  parseSha256Sums,
-  sha256Hex,
-} from "./pgrust-assets/checksums";
-import type { AssetManifest, ManifestFileRecord } from "./pgrust-assets/manifest";
-import {
-  bundleDirectoryName,
-  CHECKSUMS_FILE_NAME,
-  MANIFEST_FILE_NAME,
-  parseManifest,
-  RELEASE_TAG_PREFIX,
-} from "./pgrust-assets/manifest";
-import type { ReleaseAssetSpec, ReleaseSummary } from "./pgrust-assets/release";
+import { fetchReleaseBundle, fetchReleaseList } from "./pgrust-assets/download";
+import type { AssetManifest } from "./pgrust-assets/manifest";
+import { bundleDirectoryName, STORE_DEFAULT_BRANCH, STORE_REPOSITORY } from "./pgrust-assets/manifest";
 import {
   DEFAULT_RELEASE_REPOSITORY,
   LATEST_RELEASE,
-  parseReleases,
-  RELEASE_ASSETS,
-  releaseAssetUrl,
   releaseDownloadBase,
-  releasesApiUrl,
   resolveReleaseTag,
 } from "./pgrust-assets/release";
 import {
@@ -78,6 +63,7 @@ import {
   replaceAssetsSection,
   replaceStoreBundleSection,
   storeBundleSection,
+  storeProvenanceFromManifest,
   vendorMismatchWarning,
 } from "./pgrust-assets/source-md";
 
@@ -168,6 +154,14 @@ const STORE_BUNDLE_SOURCE = "packages/pglite-opfs-repacked/dist/browser-bundle.j
 const STORE_BUNDLE_TARGET = "host/vendor/pglite-opfs-repacked.js";
 const STORE_BUNDLE_MANIFEST = "packages/pglite-opfs-repacked/package.json";
 
+/**
+ * The same path from the repo root, which is how `SOURCE.md` names it.
+ *
+ * Written out rather than derived on the release path so both paths record the identical string: the
+ * point of that block is that a cloner's copy and a maintainer's can be compared line for line.
+ */
+const STORE_BUNDLE_TARGET_RECORD = `public/pgrust/${STORE_BUNDLE_TARGET}`;
+
 /** How to produce that bundle in a pgxsinkit checkout. */
 const STORE_BUNDLE_BUILD_HINT = "bun run build:public-packages";
 
@@ -178,12 +172,6 @@ const SOURCE_MD = join(VENDOR_DIR, "SOURCE.md");
 
 /** Downloads land here first and are only promoted to `public/pgrust/` once they verify. */
 const STAGING_ROOT = resolve(REPO_ROOT, "tmp/pgrust-release");
-
-/** How often a download reports progress, as a fraction of the total. */
-const PROGRESS_STEP = 0.1;
-
-/** Below this, a download is over before a progress line would be read; only the total is printed. */
-const PROGRESS_FLOOR = 4 * 1024 * 1024;
 
 interface Options {
   readonly vendorOnly: boolean;
@@ -375,13 +363,15 @@ function syncHostRuntime(): void {
 }
 
 /**
- * Copy the **pre-release** `@pgxsinkit/pglite-opfs-repacked` bundle the broker column loads.
+ * Copy the **pre-release** `@pgxsinkit/pglite-opfs-repacked` bundle the broker columns load out of a
+ * pgxsinkit checkout.
  *
  * Not vendored and not a dependency: the sync broker and the WASI adapter those columns need exist
- * in no published version of the package, so the bytes come out of a pgxsinkit checkout and are
- * recorded — commit and all — in `SOURCE.md`. Missing is not fatal: every other column, the two
- * published-package OPFS columns included, runs without it, and each broker column reports the
- * missing bundle in its own header.
+ * in no published version of the package, so the bytes come out of a checkout — or, since it became
+ * a release asset, out of the release itself, which is the path a cloner takes. This is the other
+ * one: the path that produces the bundle a release is built from. Missing is not fatal: every other
+ * column, the two published-package OPFS columns included, runs without it, and each broker column
+ * reports the missing bundle in its own header.
  */
 function syncStoreBundle(): boolean {
   const configured = process.env["PGXSINKIT_DIR"];
@@ -394,8 +384,10 @@ function syncStoreBundle(): boolean {
   if (!existsSync(source)) {
     console.warn("");
     console.warn(`sync:pgrust: the pre-release store bundle is not at ${source}.`);
-    console.warn("  The three `pgrust Threads` broker columns will report it missing;");
-    console.warn("  every other column is unaffected. Build it in a pgxsinkit checkout:");
+    console.warn("  The four `pgrust Threads` and `pgrust Postmaster` broker columns will report it");
+    console.warn("  missing; every other column is unaffected. Either sync a release that carries it:");
+    console.warn("    bun run sync:pgrust --release latest");
+    console.warn("  or build it in a pgxsinkit checkout:");
     console.warn(`    ${STORE_BUNDLE_BUILD_HINT}`);
     console.warn("  and point PGXSINKIT_DIR at that checkout if it is not a sibling of this repo.");
     return false;
@@ -403,6 +395,7 @@ function syncStoreBundle(): boolean {
 
   const sha = git(checkoutDir, ["rev-parse", "HEAD"]);
   const porcelain = git(checkoutDir, ["status", "--porcelain"]);
+  const branch = git(checkoutDir, ["rev-parse", "--abbrev-ref", "HEAD"]);
   mkdirSync(dirname(target), { recursive: true });
   copyFileSync(source, target);
   const bytes = statSync(target).size;
@@ -412,13 +405,15 @@ function syncStoreBundle(): boolean {
   writeSourceMarkdown(
     previous,
     storeBundleSection({
-      checkoutDir,
       commit: sha ?? "unknown",
+      // A detached HEAD says `HEAD`, which names no branch anyone can fetch; the default branch is
+      // the honest answer there, and the commit — which is the record that matters — is exact.
+      branch: branch === null || branch === "HEAD" ? STORE_DEFAULT_BRANCH : branch,
+      repository: STORE_REPOSITORY,
       dirty: porcelain === null || porcelain !== "",
       packageVersion: readManifestVersion(join(checkoutDir, STORE_BUNDLE_MANIFEST)),
       target: relativeToRepo(target),
       bytes,
-      syncedAt: new Date().toISOString(),
     }),
     extractAssetsSection(previous),
   );
@@ -466,127 +461,36 @@ function syncAssets(checkout: Checkout): boolean {
   return false;
 }
 
-function megabytes(bytes: number): string {
-  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
-}
-
-async function fetchOrFail(url: string, what: string, headers?: Readonly<Record<string, string>>): Promise<Response> {
-  let response: Response;
-  try {
-    response = await fetch(url, headers === undefined ? undefined : { headers });
-  } catch (error) {
-    return fail(`could not fetch ${what} from ${url}: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  if (!response.ok) {
-    return fail(`could not fetch ${what} from ${url}: HTTP ${response.status} ${response.statusText}`);
-  }
-  return response;
-}
-
-/** Stream a URL to `destination`, printing progress; returns the size and digest of what landed. */
-async function download(url: string, destination: string, label: string): Promise<{ bytes: number; sha256: string }> {
-  const response = await fetchOrFail(url, label);
-  const declared = Number(response.headers.get("content-length") ?? "0");
-  const body = response.body;
-  if (body === null) {
-    fail(`${url} returned no body`);
-  }
-  const hasher = createHash("sha256");
-  const writer = Bun.file(destination).writer();
-  let written = 0;
-  let nextReport = declared > PROGRESS_FLOOR ? declared * PROGRESS_STEP : Number.POSITIVE_INFINITY;
-  for await (const chunk of body) {
-    const bytes = chunk as Uint8Array;
-    hasher.update(bytes);
-    // FileSink.write returns a promise only when it has to flush; awaiting it is the backpressure.
-    const flushed = writer.write(bytes);
-    if (typeof flushed !== "number") {
-      await flushed;
-    }
-    written += bytes.length;
-    if (written >= nextReport) {
-      console.log(`    ${label}: ${megabytes(written)} / ${megabytes(declared)}`);
-      nextReport += declared * PROGRESS_STEP;
-    }
-  }
-  await writer.end();
-  console.log(`    ${label}: ${megabytes(written)} downloaded`);
-  return { bytes: written, sha256: hasher.digest("hex") };
-}
-
-async function fetchText(url: string, what: string): Promise<string> {
-  const response = await fetchOrFail(url, what);
-  return await response.text();
-}
-
-/** The releases of the configured repo, for `--release latest`. */
-async function fetchReleases(repository: string): Promise<readonly ReleaseSummary[]> {
-  const url = releasesApiUrl(repository);
-  console.log(`Resolving the newest ${RELEASE_TAG_PREFIX}* release from ${url}`);
-  const response = await fetchOrFail(url, "the release list", {
-    accept: "application/vnd.github+json",
-    "user-agent": "pglite-v-pgrust sync:pgrust",
-  });
-  return parseReleases(await response.json());
-}
-
-/** Fail with every integrity problem at once: a partial list invites a second wasted download. */
-function requireNoProblems(problems: readonly string[], what: string): void {
-  if (problems.length === 0) {
-    return;
-  }
-  console.error(`sync:pgrust: ${what}`);
-  for (const problem of problems) {
-    console.error(`  ${problem}`);
-  }
-  fail("the download does not match what the release says it is — nothing was written to public/pgrust/");
-}
-
-/** The manifest entry for one expected asset; null for an optional one this release predates. */
-function manifestFileFor(manifest: AssetManifest, spec: ReleaseAssetSpec): ManifestFileRecord | null {
-  const file = manifest.files.find((candidate) => candidate.name === spec.name);
-  if (file === undefined) {
-    if (spec.optional === true) {
-      return null;
-    }
-    return fail(`release ${manifest.tag} has no "${spec.name}" — it was not built by \`bun run pgrust:bundle\``);
-  }
-  if (spec.gzipped && file.unpacked === undefined) {
-    return fail(`release ${manifest.tag} describes "${spec.name}" without the bytes it unpacks to`);
-  }
-  return file;
-}
-
 /**
- * Verify a staged download, unpack it if it is a gzip, and leave it beside its gzip in staging.
+ * Record the release in `SOURCE.md` without disturbing what it says about the vendored host JS.
  *
- * Nothing reaches `public/pgrust/` until every asset has cleared this, so a release that goes wrong
- * on its second file cannot leave the directory holding one commit's `postgres.wasm` next to
- * another's `vfs.img` — a state that would run, and would measure the wrong thing.
+ * The store block is rewritten from the release's own `store` record when the release carried the
+ * bundle, and removed when it did not: a block left behind would claim a commit whose bytes are no
+ * longer on disk. When it is removed the caller falls back to a pgxsinkit checkout, which writes the
+ * block again — with the same text, for the same commit.
  */
-function unpackStaged(file: ManifestFileRecord, spec: ReleaseAssetSpec, stagedPath: string, staging: string): string {
-  const staged = new Uint8Array(readFileSync(stagedPath));
-  const unpacked = spec.gzipped ? Bun.gunzipSync(staged) : staged;
-  requireNoProblems(
-    checkUnpackedFile(file, { bytes: unpacked.length, sha256: sha256Hex(unpacked) }),
-    `${spec.target} is not the file the manifest describes`,
-  );
-  const unpackedPath = join(staging, spec.target);
-  writeFileSync(unpackedPath, unpacked);
-  console.log(`    ${spec.target}: ${megabytes(unpacked.length)} verified`);
-  return unpackedPath;
-}
-
-/** Record the release in `SOURCE.md` without disturbing what it says about the vendored host JS. */
-function recordRelease(manifest: AssetManifest, releaseUrl: string, fetchedFrom: string | null): void {
+function recordRelease(
+  manifest: AssetManifest,
+  releaseUrl: string,
+  fetchedFrom: string | null,
+  storeBytes: number | null,
+): void {
   const existing = readSourceMarkdown();
   const section = releaseAssetsSection(manifest, releaseUrl, new Date().toISOString(), fetchedFrom);
   const base =
     existing ?? "# Vendored from pgrust\n\nThe host JS has not been vendored from a checkout in this clone.\n";
-  writeSourceMarkdown(base, extractStoreBundleSection(base), section);
+  const store = manifest.store;
+  const storeSection =
+    store === undefined || storeBytes === null
+      ? null
+      : storeBundleSection(storeProvenanceFromManifest(store, STORE_BUNDLE_TARGET_RECORD, storeBytes));
+  writeSourceMarkdown(base, storeSection, section);
   writeFileSync(join(VENDOR_DIR, "VERSION"), `${manifest.pgrust.shortCommit}\n`, "utf8");
   console.log(`  VERSION -> ${manifest.pgrust.shortCommit}`);
   console.log(`  ${relativeToRepo(SOURCE_MD)} -> assets from ${manifest.tag}`);
+  if (storeSection !== null) {
+    console.log(`  ${relativeToRepo(SOURCE_MD)} -> store bundle from ${store?.commit.slice(0, 10) ?? ""}`);
+  }
 
   const warning = vendorMismatchWarning(readVendorCommit(existing ?? ""), manifest);
   if (warning.length === 0) {
@@ -601,7 +505,13 @@ function recordRelease(manifest: AssetManifest, releaseUrl: string, fetchedFrom:
   console.warn("!".repeat(96));
 }
 
-async function syncFromRelease(requested: string): Promise<void> {
+/**
+ * Download one release into `public/pgrust/`.
+ *
+ * Returns whether the release carried the store bundle: when it did not, the caller falls back to a
+ * pgxsinkit checkout for it, exactly as a sync from a checkout does.
+ */
+async function syncFromRelease(requested: string): Promise<boolean> {
   const repository = environment("PGLITE_V_PGRUST_RELEASE_REPO") ?? DEFAULT_RELEASE_REPOSITORY;
   const baseOverride = environment("PGLITE_V_PGRUST_RELEASE_BASE_URL");
   if (baseOverride !== null && requested === LATEST_RELEASE) {
@@ -610,73 +520,61 @@ async function syncFromRelease(requested: string): Promise<void> {
         "resolve `latest` from — pass an explicit --release <tag>",
     );
   }
-  const tag = await resolveReleaseTag(requested, async () => await fetchReleases(repository));
+  const tag = await resolveReleaseTag(requested, async () => await fetchReleaseList(repository, console.log));
   const base = baseOverride ?? releaseDownloadBase(repository, tag);
   const releaseUrl = `https://github.com/${repository}/releases/tag/${tag}`;
   console.log(`Downloading pgrust assets from ${tag}`);
   console.log(`  ${base}`);
 
-  const manifest = parseManifest(
-    JSON.parse(await fetchText(releaseAssetUrl(base, MANIFEST_FILE_NAME), MANIFEST_FILE_NAME)) as unknown,
-  );
-  const checksums = parseSha256Sums(await fetchText(releaseAssetUrl(base, CHECKSUMS_FILE_NAME), CHECKSUMS_FILE_NAME));
-  requireNoProblems(
-    checkChecksumCoverage(manifest, checksums),
-    `${MANIFEST_FILE_NAME} and ${CHECKSUMS_FILE_NAME} disagree`,
-  );
-  if (manifest.tag !== tag) {
-    console.warn(`sync:pgrust: the manifest names ${manifest.tag}, not ${tag} — using the manifest's provenance`);
+  const bundle = await fetchReleaseBundle({
+    base,
+    tag,
+    publicDir: PUBLIC_DIR,
+    stagingDir: join(STAGING_ROOT, bundleDirectoryName(tag)),
+    log: console.log,
+  });
+  for (const warning of bundle.warnings) {
+    console.warn(`sync:pgrust: ${warning}`);
   }
-  console.log(`  pgrust ${manifest.pgrust.commit} on ${manifest.pgrust.branch}`);
-
-  const staging = join(STAGING_ROOT, bundleDirectoryName(tag));
-  rmSync(staging, { recursive: true, force: true });
-  mkdirSync(staging, { recursive: true });
-
-  const verified: { readonly from: string; readonly to: string }[] = [];
-  for (const spec of RELEASE_ASSETS) {
-    const file = manifestFileFor(manifest, spec);
-    if (file === null) {
-      console.log(`  ${spec.name} is not in this release — it predates the wasm32-wasip1-threads build`);
-      console.log("    the two pgrust Threads columns will report the missing asset; nothing else changes");
-      // An earlier sync's copy would otherwise stay behind and run one commit's threads module
-      // beside another commit's single-session one, which is the exact state SOURCE.md exists to
-      // rule out.
-      rmSync(join(PUBLIC_DIR, spec.target), { force: true });
-      continue;
+  for (const spec of bundle.absent) {
+    const note = spec.absentNote ?? [];
+    console.log(`  ${spec.name} is not in this release — ${note[0] ?? "it is optional"}`);
+    for (const line of note.slice(1)) {
+      console.log(`    ${line}`);
     }
-    const stagedPath = join(staging, spec.name);
-    console.log(`  ${spec.name} (${megabytes(file.bytes)})`);
-    const landed = await download(releaseAssetUrl(base, spec.name), stagedPath, spec.name);
-    requireNoProblems(checkDownloadedFile(file, checksums, landed), `${spec.name} failed verification`);
-    verified.push({ from: unpackStaged(file, spec, stagedPath, staging), to: join(PUBLIC_DIR, spec.target) });
   }
 
   console.log("");
-  mkdirSync(PUBLIC_DIR, { recursive: true });
-  for (const { from, to } of verified) {
-    copyFileSync(from, to);
-    console.log(`  ${relativeToRepo(to)} (${statSync(to).size} bytes)`);
+  for (const asset of bundle.installed) {
+    console.log(`  ${relativeToRepo(join(PUBLIC_DIR, asset.target))} (${asset.bytes} bytes)`);
   }
-  rmSync(staging, { recursive: true, force: true });
 
+  const store = bundle.installed.find((asset) => asset.target === STORE_BUNDLE_TARGET);
   console.log("");
-  recordRelease(manifest, releaseUrl, baseOverride);
+  recordRelease(bundle.manifest, releaseUrl, baseOverride, store?.bytes ?? null);
   console.log("");
-  console.log(`Done: pgrust ${manifest.pgrust.shortCommit} assets from ${tag} in ${relativeToRepo(PUBLIC_DIR)}/.`);
+  console.log(
+    `Done: pgrust ${bundle.manifest.pgrust.shortCommit} assets from ${tag} in ${relativeToRepo(PUBLIC_DIR)}/.`,
+  );
+  return store !== undefined;
 }
 
 async function main(): Promise<void> {
   const options = parseOptions(process.argv.slice(2));
 
   if (options.release !== null) {
-    await syncFromRelease(options.release);
+    const storeFromRelease = await syncFromRelease(options.release);
     // The release carries binaries only, so the runtime copy of the threads host comes from the
     // committed vendored JS in this clone — the same bytes either way.
     console.log("");
     syncHostRuntime();
-    console.log("");
-    syncStoreBundle();
+    // A release that carried the store bundle has already installed it, and a pgxsinkit checkout
+    // sitting beside this clone must not silently replace a verified download with whatever that
+    // checkout happens to have built.
+    if (!storeFromRelease) {
+      console.log("");
+      syncStoreBundle();
+    }
     return;
   }
 

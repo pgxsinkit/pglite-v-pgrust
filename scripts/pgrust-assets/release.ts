@@ -27,28 +27,59 @@ export interface ReleaseAssetSpec {
   /**
    * Whether a release may legitimately not carry this file.
    *
-   * Exactly one is: `postgres-threads.wasm` arrived after the first releases were published, and a
-   * release from before it is still a complete, verifiable set for the six columns that existed
-   * then. Downloading one leaves the two pgrust Threads columns reporting the asset missing, which
-   * is what they already report on a clone that has never synced — not a failed download.
+   * Two are, both because they arrived after the first releases were published:
+   * `postgres-threads.wasm` and the pre-release store bundle. A release from before either is still
+   * a complete, verifiable set for the columns that existed then. Downloading one leaves those
+   * columns reporting the asset missing, which is what they already report on a clone that has never
+   * synced — not a failed download.
    */
   readonly optional?: boolean;
+  /** What a sync should say when a release does not carry this (optional) file. */
+  readonly absentNote?: readonly string[];
 }
 
 /**
- * The four assets, in upload order.
+ * The five assets, in upload order.
  *
- * The two wasm modules and `vfs.img` are gzipped: together they are ~131 MB raw and ~27 MB
- * compressed, which is the difference between a download a contributor will do and one they will
- * not. `vfs.json` is 139 KB of JSON and is uploaded plain so it can be read straight from the
- * release page — and it is shared by both modules, because the packed image is `initdb` output and
- * has no target in it.
+ * The two wasm modules, `vfs.img` and the store bundle are gzipped: the first three are ~131 MB raw
+ * and ~27 MB compressed, which is the difference between a download a contributor will do and one
+ * they will not, and the bundle is ~1 MB of JavaScript that gzips to a fifth of that. `vfs.json` is
+ * 139 KB of JSON and is uploaded plain so it can be read straight from the release page — and it is
+ * shared by both modules, because the packed image is `initdb` output and has no target in it.
+ *
+ * The store bundle is the one asset that is not pgrust: it is the **pre-release**
+ * `@pgxsinkit/pglite-opfs-repacked` build the four broker and postmaster columns load, MIT licensed,
+ * and it is published here because it exists in no npm release and would otherwise need a pgxsinkit
+ * checkout that a cloner has no reason to have. Its target is nested, because that is where the
+ * vendored `broker-fs.js` looks for it: `./vendor/pglite-opfs-repacked.js`, relative to the host
+ * files.
  */
 export const RELEASE_ASSETS: readonly ReleaseAssetSpec[] = [
   { name: "postgres.wasm.gz", target: "postgres.wasm", gzipped: true },
-  { name: "postgres-threads.wasm.gz", target: "postgres-threads.wasm", gzipped: true, optional: true },
+  {
+    name: "postgres-threads.wasm.gz",
+    target: "postgres-threads.wasm",
+    gzipped: true,
+    optional: true,
+    absentNote: [
+      "it predates the wasm32-wasip1-threads build",
+      "the pgrust Threads and Postmaster columns will report the missing asset; nothing else changes",
+    ],
+  },
   { name: "vfs.img.gz", target: "vfs.img", gzipped: true },
   { name: "vfs.json", target: "vfs.json", gzipped: false },
+  {
+    name: "pglite-opfs-repacked.js.gz",
+    target: "host/vendor/pglite-opfs-repacked.js",
+    gzipped: true,
+    optional: true,
+    absentNote: [
+      "it predates the pre-release store bundle being published",
+      "the four broker and postmaster columns need it and will report it missing; build it in a",
+      "pgxsinkit checkout with `bun run build:public-packages` and re-run `bun run sync:pgrust`",
+      "with PGXSINKIT_DIR pointing at it, or sync a release that carries the bundle",
+    ],
+  },
 ];
 
 /** A release as much of the GitHub API response as this repo cares about. */
