@@ -165,10 +165,18 @@ header, and every other column runs as normal — exactly as the pgrust column b
 
 Committed runs live in [`docs/results/`](docs/results/) — the page's own Markdown export, one file per
 browser and date, produced by `bun run bench`. The current run
+([2026-09-06, Chromium 152, Linux, ten columns](docs/results/2026-09-06-chromium-152-linux-ten-columns.md))
+covers all ten Configurations, the two pgrust Threads columns included; the run before it
 ([2026-09-06, Chromium 152, Linux, eight columns](docs/results/2026-09-06-chromium-152-linux-eight-columns.md))
-covers all eight Configurations, the two OPFS repacked columns included; the run before it
+is the run it extends, on the same browser and the same machine, and
 ([2026-08-29, Chromium 152, Linux, six columns](docs/results/2026-08-29-chromium-152-linux-six-columns.md))
-is the memory-only baseline it extends, on the same browser and the same machine.
+is the memory-only baseline before that.
+
+Two things to read off the ten-column run. `pgrust Threads Memory` lands on top of `pgrust Memory`
+throughout both Suites — the two builds of one commit measure the same database, which is what says
+the threads transport costs the Engine nothing. And the broker column's RTT figures split cleanly in
+two: the statements that write settle at ~25 ms apiece while every other statement stays under a
+millisecond, so what that column measures is the broker seam and not the Engine behind it.
 
 Things the harness turned up along the way are written up in [`docs/findings/`](docs/findings/).
 The first — [pgrust needs (statements × message size) memory for multi-statement
