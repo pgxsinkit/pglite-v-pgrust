@@ -188,18 +188,37 @@ is what decides whether that Engine can exist at all.
 
 Committed runs live in [`docs/results/`](docs/results/) — the page's own Markdown export, one file per
 browser and date, produced by `bun run bench`. The current run
+([2026-09-06, Chromium 152, Linux, twelve columns](docs/results/2026-09-06-chromium-152-linux-twelve-columns.md))
+covers all twelve Configurations, the two pgrust Threads OPFS repacked columns included; the run
+before it
 ([2026-09-06, Chromium 152, Linux, ten columns](docs/results/2026-09-06-chromium-152-linux-ten-columns.md))
-covers all ten Configurations, the two pgrust Threads columns included; the run before it
+is the run it extends, on the same browser and the same machine,
 ([2026-09-06, Chromium 152, Linux, eight columns](docs/results/2026-09-06-chromium-152-linux-eight-columns.md))
-is the run it extends, on the same browser and the same machine, and
+is the one before that, and
 ([2026-08-29, Chromium 152, Linux, six columns](docs/results/2026-08-29-chromium-152-linux-six-columns.md))
-is the memory-only baseline before that.
+is the memory-only baseline it all started from.
 
-Two things to read off the ten-column run. `pgrust Threads Memory` lands on top of `pgrust Memory`
-throughout both Suites — the two builds of one commit measure the same database, which is what says
-the threads transport costs the Engine nothing. And the broker column's RTT figures split cleanly in
-two: the statements that write settle at ~25 ms apiece while every other statement stays under a
-millisecond, so what that column measures is the broker seam and not the Engine behind it.
+Three things to read off the twelve-column run. `pgrust Threads Memory` still lands on top of
+`pgrust Memory` throughout both Suites — the two builds of one commit measure the same database,
+which is what says the threads transport costs the Engine nothing.
+
+The broker column's ~25 ms RTT floor is gone: every writing statement in it used to settle at ~25 ms
+while every reading one stayed under a millisecond, and it now reports 0.27–0.84 ms across the whole
+RTT Suite. That floor was never the broker seam — it was the store's memory port cloning its whole
+~43 MiB arena on every flush, and the broker turns every guest `fd_sync` into one. The pre-release
+bundle these columns load was re-synced after that was fixed upstream (`SOURCE.md` names the
+commit), so the ten-column run and this one differ in the store as well as in the columns.
+
+And the new pair says where the broker seam actually costs something. Per **statement** it is nearly
+free: on the RTT Suite `pgrust Threads OPFS repacked (relaxed)` sits within a hair of
+`PGlite OPFS repacked (relaxed)` on every one of the twelve statements (0.72 against 0.70 ms on
+`insert small row`, 0.26 against 0.30 on `select small row`), which is the same store answering the
+same question through two entirely different filesystems. Per **script** it is not: the Speedtest
+rows that write a lot in one statement pay for the round trip per file operation — `INSERTs from a
+SELECT` is 1935 ms relaxed and 2634 ms strict against PGlite's 1308 ms, `25000 INSERTs into an
+indexed table in single statement` 586/702 against 322 — and strict costs the threads path
+noticeably more than it costs PGlite's, because there strict means a store-wide sync after every
+mutating broker request rather than after every awaited host sync.
 
 Things the harness turned up along the way are written up in [`docs/findings/`](docs/findings/).
 The first — [pgrust needs (statements × message size) memory for multi-statement
