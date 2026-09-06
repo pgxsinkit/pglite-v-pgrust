@@ -3,9 +3,10 @@
  *
  * Two things need OPFS: the `opfs-repacked` store the two Storage Configurations run on, and the
  * capability probe that decides whether those Configurations can run here at all. Both go through
- * the helpers below so that every directory this app has ever created sits under one owned prefix
- * and is removed again — an origin's OPFS outlives the page, and a benchmark has no business
- * leaving a data directory behind, let alone reading one back into a later Run.
+ * the helpers below, so everything this app creates sits under one owned prefix and is taken away
+ * again — an origin's OPFS outlives the page, and a benchmark has no business leaving a data
+ * directory behind, let alone reading one back into a later Run. The prefix directory itself stays,
+ * empty: removing it would race any other tab of this app that is mid-Run.
  *
  * The path helpers are pure and unit-tested; the directory helpers need a real OPFS and are
  * exercised by the Runs themselves.

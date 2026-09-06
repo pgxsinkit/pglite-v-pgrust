@@ -107,7 +107,8 @@ Same Engine, same SQL, same store, one option.
 opening it and removes the directory again when it closes, so what these columns measure is what OPFS
 costs a cold data directory per statement — not what a warm one reads back. That is the same rule the
 Memory Configurations get for free by dying with their worker, and it is the reason a repeated Run
-gives repeatable numbers. Nothing this app writes to OPFS outlives a Run.
+gives repeatable numbers. All that outlives a Run is an empty `pglite-v-pgrust/` directory: no page
+this app has ever loaded can read a byte of an earlier Run's database back.
 
 The store needs a `createSyncAccessHandle()` that really opens, in the dedicated worker the Engine
 already runs in. That is probed at page load — a real handle on a real file, because the method's
