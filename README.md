@@ -293,26 +293,45 @@ own line under the environment: `Concurrency clients: 4`.
 
 Committed runs live in [`docs/results/`](docs/results/) — the page's own Markdown export, one file per
 browser and date, produced by `bun run bench`. The current run
+([2026-09-06, Chromium 152, Linux, fourteen columns](docs/results/2026-09-06-chromium-152-linux-fourteen-columns.md))
+covers all fourteen Configurations and all three Suites, the two pgrust Postmaster columns and the
+Concurrency Suite included; the run before it
 ([2026-09-06, Chromium 152, Linux, twelve columns](docs/results/2026-09-06-chromium-152-linux-twelve-columns.md))
-covers all twelve Configurations, the two pgrust Threads OPFS repacked columns included; the run
-before it
+is the two-Suite run it extends, on the same browser and the same machine, and before that
 ([2026-09-06, Chromium 152, Linux, ten columns](docs/results/2026-09-06-chromium-152-linux-ten-columns.md))
-is the run it extends, on the same browser and the same machine,
+and
 ([2026-09-06, Chromium 152, Linux, eight columns](docs/results/2026-09-06-chromium-152-linux-eight-columns.md))
-is the one before that, and
+extend it backwards, and
 ([2026-08-29, Chromium 152, Linux, six columns](docs/results/2026-08-29-chromium-152-linux-six-columns.md))
 is the memory-only baseline it all started from.
 
-Three things to read off the twelve-column run. `pgrust Threads Memory` still lands on top of
-`pgrust Memory` throughout both Suites — the two builds of one commit measure the same database,
-which is what says the threads transport costs the Engine nothing.
+Two things to read off the fourteen-column run before anything else.
+
+**A postmaster backend measures like a session.** `pgrust Postmaster Memory (broker)` lands on top of
+`pgrust Threads Memory (broker)` throughout the two single-statement Suites — 4602 against 4589 ms on
+`25000 INSERTs in a transaction`, 216.7 against 219.9 on `25000 INSERTs in single statement`, 0.253
+against 0.265 ms on `select small row` — which is what says a whole server, its auxiliary processes
+and a host-pipe transport cost the Engine nothing per statement. The same holds on the OPFS port
+against `pgrust Threads OPFS repacked (relaxed)`.
+
+**And a backend is a different thing when something else is running.** On the Concurrency Suite a
+reader under a 25 000-row bulk write reports p95 **672.860 ms** on `PGlite Memory` and **0.395 ms** on
+the postmaster: PGlite's queue is held for the writer's whole transaction, so its readers complete 3
+statements while four real backends complete 60 000. Short queries beside a full scan are 273.015
+against 0.495 ms; writers on disjoint rows are 2005 against 5670 transactions/s. Writers on the _same_
+row are the row where they meet — 2.415 against 2.165 ms p95, no lock timeouts either side — because
+one contended row is a queue however you reach it.
+
+`pgrust Threads Memory` still lands on top of
+`pgrust Memory` throughout both single-statement Suites — the two builds of one commit measure the
+same database, which is what says the threads transport costs the Engine nothing.
 
 The broker column's ~25 ms RTT floor is gone: every writing statement in it used to settle at ~25 ms
 while every reading one stayed under a millisecond, and it now reports 0.27–0.84 ms across the whole
 RTT Suite. That floor was never the broker seam — it was the store's memory port cloning its whole
 ~43 MiB arena on every flush, and the broker turns every guest `fd_sync` into one. The pre-release
 bundle these columns load was re-synced after that was fixed upstream (`SOURCE.md` names the
-commit), so the ten-column run and this one differ in the store as well as in the columns.
+commit), so the ten-column run and the runs after it differ in the store as well as in the columns.
 
 And the new pair says where the broker seam actually costs something. Per **statement** it is nearly
 free: on the RTT Suite `pgrust Threads OPFS repacked (relaxed)` sits within a hair of
