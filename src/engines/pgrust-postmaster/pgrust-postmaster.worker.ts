@@ -12,12 +12,16 @@
  *
  * **The host side of the fd contract** (`crates/backend/libpq/pqcomm_hostpipes`, and the vendored
  * `threads-host.js` that mirrors it). Fd numbering is the host's: the wake channel is fd 999, the
- * listener fd 1000, and session `k` reads 1001+2k and writes 1002+2k. Every one of those pipes is
- * created **before the guest starts**, because the registry is handed to the pool workers at prewarm
- * and there is no attaching a ring afterwards — which is why `open` takes the session count rather
- * than growing sessions on demand. A session is announced by writing a 16-byte `HPGP` record (magic,
- * in_fd, out_fd, reserved; little-endian) to the listener and one token byte to the wake fd; the
- * postmaster wakes, accepts, spawns the backend, and the backend answers the startup packet.
+ * listener fd 1000, session `k` reads 1001+2k and writes 1002+2k, and its own wake ring is fd 900+k.
+ * Every one of those pipes is created **before the guest starts**, because the registry is handed to
+ * the pool workers at prewarm and there is no attaching a ring afterwards — which is why `open` takes
+ * the session count rather than growing sessions on demand. A session is announced by writing a
+ * 16-byte `HPGP` record (magic, in_fd, out_fd, wake_fd; little-endian) to the listener and one token
+ * byte to the wake fd; the postmaster wakes, accepts, spawns the backend, and the backend answers the
+ * startup packet. The session's three rings share one **gate** — a futex word every one of them bumps
+ * — so a blocked backend parks its `poll` over its in fd and its wake fd on a single `Atomics.wait`,
+ * and another backend's `SetLatch` (an async NOTIFY, say) ends that park at once rather than at the
+ * end of the guest's 100 ms interrupt poll.
  *
  * **The filesystem is the broker's, always.** With a private copy of the packed image per worker the
  * checkpointer could not see a relation file a backend had just created, and the shutdown checkpoint
@@ -107,6 +111,8 @@ const STDOUT_CAPACITY = 1 << 16;
 const LISTENER_CAPACITY = 1 << 12;
 /** The wake ring: sized far past anything that can queue, because a full one would block a SetLatch. */
 const WAKE_CAPACITY = 1 << 16;
+/** One session's own wake ring, sized for the same reason as the postmaster's. */
+const SESSION_WAKE_CAPACITY = 1 << 16;
 /** Per session, client to backend: 1 MiB, the size the guest's own stdin ring uses. */
 const SESSION_TO_GUEST_CAPACITY = 1 << 20;
 /** Per session, backend to client: 4 MiB, because result sets are the large direction. */
@@ -219,6 +225,8 @@ class PipeSession {
   readonly index: number;
   readonly inFd: number;
   readonly outFd: number;
+  /** This session's wake fd, which travels in its connection record; 0 would mean "none". */
+  readonly wakeFd: number;
   readonly #toGuest: SabPipe;
   readonly #fromGuest: SabPipe;
   readonly #reader = new WireReader();
@@ -228,10 +236,11 @@ class PipeSession {
   #onFirstByte: (() => void) | null = null;
   readonly pump: Promise<void>;
 
-  constructor(index: number, inFd: number, outFd: number, toGuest: SabPipe, fromGuest: SabPipe) {
+  constructor(index: number, inFd: number, outFd: number, wakeFd: number, toGuest: SabPipe, fromGuest: SabPipe) {
     this.index = index;
     this.inFd = inFd;
     this.outFd = outFd;
+    this.wakeFd = wakeFd;
     this.#toGuest = toGuest;
     this.#fromGuest = fromGuest;
     this.pump = this.#drain();
@@ -635,14 +644,20 @@ async function startStorageCoordinator(
   return { worker, doorbell, channels, bundleUrl };
 }
 
-/** The connection record `pqcomm_hostpipes` accepts: magic, in fd, out fd, reserved. */
-function connectionRecord(inFd: number, outFd: number): Uint8Array {
+/**
+ * The connection record `pqcomm_hostpipes` accepts: magic, in fd, out fd, wake fd.
+ *
+ * The fourth word was `reserved` until pgrust `d2da198f48`; it now carries the session's own wake
+ * fd. A backend whose record says 0 blocks with its interrupt poll alone, which is a 100 ms floor on
+ * anything another backend has to tell it — an async NOTIFY above all.
+ */
+function connectionRecord(inFd: number, outFd: number, wakeFd: number): Uint8Array {
   const record = new Uint8Array(CONNECTION_RECORD_BYTES);
   const view = new DataView(record.buffer);
   view.setUint32(0, CONNECTION_MAGIC, true);
   view.setInt32(4, inFd, true);
   view.setInt32(8, outFd, true);
-  view.setUint32(12, 0, true);
+  view.setInt32(12, wakeFd, true);
   return record;
 }
 
@@ -659,7 +674,9 @@ async function openSession(engine: PostmasterRun, session: PipeSession): Promise
   session.onFirstByte(() => {
     firstByteMs = performance.now() - announcedAt;
   });
-  const written = engine.listener.write(connectionRecord(session.inFd, session.outFd), { block: false });
+  const written = engine.listener.write(connectionRecord(session.inFd, session.outFd, session.wakeFd), {
+    block: false,
+  });
   if (written !== CONNECTION_RECORD_BYTES) {
     throw new Error(`pgrust postmaster: the listener ring would not take a whole record (${written}/16)`);
   }
@@ -766,11 +783,20 @@ async function openEngine(dataDir: string, options: EngineOpenOptions | undefine
   const sessions: PipeSession[] = [];
   for (let index = 0; index < sessionCount; index += 1) {
     const { inFd, outFd } = host.sessionFds(index);
-    const toGuest = sab.SabPipe.create(SESSION_TO_GUEST_CAPACITY);
-    const fromGuest = sab.SabPipe.create(SESSION_FROM_GUEST_CAPACITY);
+    // ONE GATE PER SESSION: the rings a backend can be waiting on share a futex word, so the host
+    // parks its `poll` over the session's in fd AND its wake fd on one `Atomics.wait` instead of
+    // slicing between them. Per session, never global — an idle backend wakes on its own traffic.
+    const gate = sab.SabPipe.createGate();
+    const toGuest = sab.SabPipe.create(SESSION_TO_GUEST_CAPACITY, { gate });
+    const fromGuest = sab.SabPipe.create(SESSION_FROM_GUEST_CAPACITY, { gate });
     registry.register(inFd, { in: toGuest });
     registry.register(outFd, { out: fromGuest });
-    sessions.push(new PipeSession(index, inFd, outFd, toGuest, fromGuest));
+    // Both ends of one ring on one fd, exactly as the postmaster's: any guest thread whose
+    // `SetLatch` finds this backend fd-parked writes a token here, and the backend drains it.
+    const wakeFd = host.sessionWakeFd(index);
+    const wake = sab.SabPipe.create(SESSION_WAKE_CAPACITY, { gate });
+    registry.register(wakeFd, { in: wake, out: wake });
+    sessions.push(new PipeSession(index, inFd, outFd, wakeFd, toGuest, fromGuest));
   }
 
   function failEverySession(error: Error): void {

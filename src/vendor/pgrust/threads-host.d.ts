@@ -71,6 +71,14 @@ export declare const HOSTPIPES_LISTEN_FD: number;
 /** `PGRUST_HOSTPIPES_WAKE_FD` — the postmaster lane's wake channel; unused by the wire lanes. */
 export declare const HOSTPIPES_WAKE_FD: number;
 export declare function sessionFds(k: number): { readonly inFd: number; readonly outFd: number };
+/** Where session wake fds start, counted downward from the postmaster's own so both windows are disjoint. */
+export declare const HOSTPIPES_SESSION_WAKE_FD_BASE: number;
+/**
+ * Session `k`'s wake fd — the fd a blocked backend adds to its own `poll`, so a `SetLatch` from
+ * another backend (an async NOTIFY, a cancel, a fast shutdown) ends the block at once instead of at
+ * the end of the guest's 100 ms interrupt poll. Its number travels in the connection record.
+ */
+export declare function sessionWakeFd(k: number): number;
 
 /** Where the process instance's own file descriptors start. */
 export declare const PROCESS_FD_BASE: number;

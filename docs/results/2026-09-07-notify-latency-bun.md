@@ -2,9 +2,18 @@
 
 - Date: 2026-09-07
 - Runtime: bun 1.4.2 on Linux 7.0.0-30-generic (x86_64, i7-1165G7), no browser
-- Engine: pgrust `08a306441f`, `PostmasterMain` over host pipes, broker store on the memory port
+- Engine: pgrust `PostmasterMain` over host pipes, broker store on the memory port — **before**
+  `08a306441f`, **after** `d74e974426`
 - Client: `PgrustPGlite` (PGlite's `BasePGlite`, pgrust transport), `@pgxsinkit/pglite` 0.5.5-pgx.3
 - Driver: `bun run probe:notify` (`scripts/probe-notify-latency.ts`)
+
+Two runs of the same probe, either side of one change in the transport. **Before**, the connection
+record's fourth word was `reserved` and this host wrote 0 into it, so a blocked backend learned about
+another backend's `NOTIFY` only when its own 100 ms interrupt poll next woke. **After**, pgrust
+`d2da198f48` made that word a per-session **wake fd**: the host now creates a third ring per session,
+registers it as fd `900+k`, and puts its number in the record — and all three of a session's rings
+share one gate, so the backend's `poll` over its in fd and its wake fd is a single `Atomics.wait` that
+another backend's `SetLatch` ends at once. Nothing else about the probe changed.
 
 ## Method
 
@@ -16,7 +25,7 @@ trigger that calls `pg_notify` — the shape PGlite's `live` extension builds. E
 cadences: a **fixed** 20 ms gap between rounds, and a **swept** gap of 20–110 ms in 10 ms steps,
 which lands the rounds at every phase of the guest's poll instead of at one of them.
 
-## Numbers
+## Numbers — before (pgrust `08a306441f`, `reserved = 0`)
 
 | Variant | Cadence | delivered | lost | min (ms) | median (ms) | p95 (ms) | max (ms) | mean (ms) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -28,7 +37,7 @@ which lands the rounds at every phase of the guest's poll instead of at one of t
 Boot: postmaster ready in 1220 ms, two sessions handshaken in 166 ms, clean shutdown (exit 0, the
 shutdown checkpoint ran). 200 of 200 notifications arrived.
 
-## Reading
+## Reading — before
 
 - **Delivery is reliable and the bound is the guest's 100 ms idle poll, exactly as predicted.** The
   swept rows are a uniform distribution over `[0, 100)` ms: min ≈ 7, median ≈ 49, p95 ≈ 99, max ≈ 100.
@@ -47,3 +56,36 @@ shutdown checkpoint ran). 200 of 200 notifications arrived.
 - **Against the one-session shape**, where the notification rides back inline on the writing
   statement's own reply (`bun run scenario:pgxsinkit-live`), this is ~50 ms of median latency that
   a two-session split would introduce and a single session does not pay.
+
+## Numbers — after (pgrust `d74e974426`, per-session wake fd)
+
+| Variant | Cadence | delivered | lost | min (ms) | median (ms) | p95 (ms) | max (ms) | mean (ms) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| NOTIFY from session B | fixed 20 ms | 50/50 | 0 | 0.0 | 0.3 | 0.9 | 2.0 | 0.4 |
+| NOTIFY from session B | swept 20–110 ms | 50/50 | 0 | 0.0 | 0.3 | 0.8 | 0.9 | 0.3 |
+| INSERT + statement trigger calling pg_notify (the live shape) | fixed 20 ms | 50/50 | 0 | 0.0 | 0.5 | 0.9 | 0.9 | 0.5 |
+| INSERT + statement trigger calling pg_notify (the live shape) | swept 20–110 ms | 50/50 | 0 | 0.0 | 0.3 | 0.7 | 0.8 | 0.4 |
+
+Boot: postmaster ready in 1363 ms, two sessions handshaken in 183 ms, clean shutdown (exit 0, the
+shutdown checkpoint ran). 200 of 200 notifications arrived.
+
+## Reading — after
+
+- **The 100 ms bound is gone; what is left is the two backends' own work.** Every row's median is
+  0.3–0.5 ms and every maximum is at or under 2.0 ms, against a before-median of ~49 ms and a
+  before-maximum of ~100 ms. A cross-session notification now costs about as much as the round trip
+  that raised it (RTT Suite medians on this Engine are 0.4–1.4 ms), which is the honest floor.
+- **The cadence no longer changes the answer**, and that is the clearest evidence the poll is out of
+  the path: fixed and swept agree to 0.2 ms, where before they disagreed by 30 ms. The fixed run's 50
+  rounds took 1.1 s rather than 5.0 s, because there is no longer a 100 ms wheel for the loop to
+  phase-lock to.
+- **The two variants remain the same measurement.** The trigger's `pg_notify` costs 0.2 ms over a
+  bare `NOTIFY` at the median, which is inside the spread of either.
+- **A two-session split now costs what a single session costs.** The one-session shape
+  (`bun run scenario:pgxsinkit-live`, notification inline on the writing statement's own reply,
+  29.2 ms end to end including the client's re-query) is no longer the only way to get sub-poll
+  delivery: the ~50 ms median the split used to add is now ~0.3 ms.
+- **What still has to be true for it to work:** the host must create the wake ring, register it on
+  fd `900+k`, put that fd in the connection record and build all three of the session's rings on one
+  gate. A host that writes 0 there gets the "before" table back — that is exactly what pgrust's own
+  `--no-session-wake` lane reproduces.

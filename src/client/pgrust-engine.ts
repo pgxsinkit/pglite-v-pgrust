@@ -32,6 +32,7 @@ import {
   onWorkerMessage,
   PipeRegistry,
   sessionFds,
+  sessionWakeFd,
   storageWorkerUrl,
   threadWorkerUrl,
 } from "../vendor/pgrust/threads-host.js";
@@ -58,6 +59,8 @@ const LISTENER_CAPACITY = 1 << 12;
 const WAKE_CAPACITY = 1 << 16;
 const SESSION_TO_GUEST_CAPACITY = 1 << 20;
 const SESSION_FROM_GUEST_CAPACITY = 1 << 22;
+/** One session's wake ring: sized far past anything that can queue, because a full one would block a SetLatch. */
+const SESSION_WAKE_CAPACITY = 1 << 16;
 
 /** `HPGP` in stream order: the connection record's magic. */
 const CONNECTION_MAGIC = 0x50475048;
@@ -137,14 +140,20 @@ function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** The connection record `pqcomm_hostpipes` accepts: magic, in fd, out fd, reserved; little-endian. */
-function connectionRecord(inFd: number, outFd: number): Uint8Array {
+/**
+ * The connection record `pqcomm_hostpipes` accepts: magic, in fd, out fd, wake fd; little-endian.
+ *
+ * The fourth word was `reserved` until pgrust `d2da198f48`; it now carries this session's wake fd,
+ * and 0 still means "none" — a backend whose record says 0 falls back to ending its block at the end
+ * of the guest's 100 ms interrupt poll, which is what every host wrote before the field existed.
+ */
+function connectionRecord(inFd: number, outFd: number, wakeFd: number): Uint8Array {
   const record = new Uint8Array(CONNECTION_RECORD_BYTES);
   const view = new DataView(record.buffer);
   view.setUint32(0, CONNECTION_MAGIC, true);
   view.setInt32(4, inFd, true);
   view.setInt32(8, outFd, true);
-  view.setUint32(12, 0, true);
+  view.setInt32(12, wakeFd, true);
   return record;
 }
 
@@ -303,11 +312,20 @@ export async function startPgrustPostmaster(options: PgrustEngineOptions = {}): 
 
   const slots = Array.from({ length: sessionCount }, (_unused, index) => {
     const { inFd, outFd } = sessionFds(index);
-    const toGuest = SabPipe.create(SESSION_TO_GUEST_CAPACITY);
-    const fromGuest = SabPipe.create(SESSION_FROM_GUEST_CAPACITY);
+    // One gate per session: the three rings a backend can be waiting on share a futex word, so its
+    // `poll` over its in fd and its wake fd is one `Atomics.wait` rather than a slice between them.
+    // Per session, never global — an idle backend wakes on its own traffic and on nothing else.
+    const gate = SabPipe.createGate();
+    const toGuest = SabPipe.create(SESSION_TO_GUEST_CAPACITY, { gate });
+    const fromGuest = SabPipe.create(SESSION_FROM_GUEST_CAPACITY, { gate });
     registry.register(inFd, { in: toGuest });
     registry.register(outFd, { out: fromGuest });
-    return { inFd, outFd, toGuest, fromGuest };
+    // Both ends of one ring on one fd, exactly as the postmaster's: written by any guest thread
+    // whose `SetLatch` finds this backend fd-parked, drained by the backend on every wake.
+    const wakeFd = sessionWakeFd(index);
+    const wake = SabPipe.create(SESSION_WAKE_CAPACITY, { gate });
+    registry.register(wakeFd, { in: wake, out: wake });
+    return { inFd, outFd, wakeFd, toGuest, fromGuest };
   });
 
   function handleEvent(raw: unknown): void {
@@ -414,7 +432,7 @@ export async function startPgrustPostmaster(options: PgrustEngineOptions = {}): 
       if (slot === undefined) {
         throw new Error(`pgrust postmaster: only ${slots.length} session ring(s) were created`);
       }
-      const written = listener.write(connectionRecord(slot.inFd, slot.outFd), { block: false });
+      const written = listener.write(connectionRecord(slot.inFd, slot.outFd, slot.wakeFd), { block: false });
       if (written !== CONNECTION_RECORD_BYTES) {
         throw new Error(`pgrust postmaster: the listener ring would not take a whole record (${written}/16)`);
       }

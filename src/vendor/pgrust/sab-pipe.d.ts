@@ -21,11 +21,24 @@
 export interface SabPipeDescriptor {
   readonly sab: SharedArrayBuffer;
   readonly capacity: number;
+  /** The group gate, when the ring was created with one; cloned by reference like the ring itself. */
+  readonly gate?: SharedArrayBuffer | null;
+}
+
+/** What a ring is created with: nothing, or the gate of the group it belongs to. */
+export interface SabPipeOptions {
+  readonly gate?: SharedArrayBuffer | null;
 }
 
 export declare class SabPipe {
+  /**
+   * One futex word for a group of rings, so an agent watching several of them at once parks in one
+   * `Atomics.wait` instead of slicing between their own sequence words. Per group — one session's
+   * pipes — never global: an idle backend then wakes on its own traffic and on nothing else.
+   */
+  static createGate(): SharedArrayBuffer;
   /** `capacity` must be a power of two. */
-  static create(capacity?: number): SabPipe;
+  static create(capacity?: number, options?: SabPipeOptions): SabPipe;
   /** Rehydrate the same ring in another agent from a transferred descriptor. */
   static from(descriptor: SabPipeDescriptor): SabPipe;
 
