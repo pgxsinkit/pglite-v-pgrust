@@ -155,6 +155,19 @@ export interface PgrustPostmasterOpenOptions {
    * parked guest thread rechecks its predicate on.
    */
   readonly env?: Readonly<Record<string, string>>;
+  /**
+   * A **prepared store** to boot on: one `.repacked.tar.gz` holding the four files a repacked store
+   * IS, written into this Configuration's OPFS store directory before the coordinator opens it.
+   *
+   * It is not `loadDataDir` and not a datadir tarball. A datadir tarball is a POSIX tree of some
+   * thousands of files that has to be recreated one at a time through the filesystem it is restored
+   * into; this is the store's own four files, written whole, after which the coordinator opens them
+   * and finds a datadir already there. See `src/prepared-store-format.ts`.
+   *
+   * Only on the OPFS port — there is nowhere to put it on the memory port — and it implies
+   * `reset: false`, because the seed IS the reset.
+   */
+  readonly seedFromTar?: ArrayBuffer;
 }
 
 /**
@@ -182,6 +195,15 @@ export type StoreDurability = "relaxed" | "strict";
 export interface PgliteStoreSettings {
   readonly store: PgliteStoreId;
   readonly durability: StoreDurability;
+  /**
+   * A PGlite **datadir tarball** to boot on, as PGlite's own `loadDataDir` create option.
+   *
+   * The reference point the prepared-store lane is measured against, and the shape of the thing it
+   * replaces: a POSIX tree of some thousands of files, recreated one at a time through the store it
+   * is being restored INTO. Set by a probe only; no Configuration on the page carries one, because a
+   * column that started from somebody else's datadir would not be measuring a cold store.
+   */
+  readonly loadDataDir?: ArrayBuffer;
 }
 
 /**
@@ -314,6 +336,13 @@ export interface EngineRunner {
   open(config: Configuration, preamble: string, sessions?: number): Promise<void>;
   /** Execute one SQL string and return its Measurement. */
   measure(sql: string): Promise<Measurement>;
+  /**
+   * Execute one SQL string and return its wall time AND its first value.
+   *
+   * For a probe that has to CHECK what it is timing — a restored datadir's row count against the
+   * count that was written into it. Only the two Engines a probe drives answer it.
+   */
+  scalar(sql: string): Promise<{ readonly elapsedMs: number; readonly value: string | null }>;
   /** Run one scripted Scenario — every Client at once — and return what each of them did. */
   concurrent(scenario: ConcurrentScenario): Promise<ScenarioReport>;
   /** What memory this Engine is holding right now. Untimed, and never asked during a Run. */

@@ -71,6 +71,25 @@ export interface EngineConcurrentRequest {
  * `performance.measureUserAgentSpecificMemory()` reports the agent cluster, and a renderer's RSS
  * reports the process.
  */
+/**
+ * Run one statement and bring back its FIRST value as well as its wall time.
+ *
+ * `measure` deliberately answers with a time and nothing else — a Benchmark's number is its
+ * duration, and shipping result sets back across the worker boundary would be measuring the wrong
+ * thing. A probe checking that a restored datadir really holds what it should needs the value, so
+ * this is a separate kind rather than a widened `measure`: the Suites' request shape does not move.
+ *
+ * Answered by the two Engines a probe drives (`pglite`, `pgrust-postmaster`); anything else answers
+ * with an error naming the kind, which is what an unknown request should do.
+ */
+export interface EngineScalarRequest {
+  readonly kind: "scalar";
+  readonly id: number;
+  readonly sql: string;
+  /** Which session, for an Engine that has several. Session 0 when absent. */
+  readonly session?: number;
+}
+
 export interface EngineStatsRequest {
   readonly kind: "stats";
   readonly id: number;
@@ -82,9 +101,29 @@ export interface WasmMemoryStat {
   readonly bytes: number;
 }
 
+/**
+ * What one prepared-store seed cost: the tarball in, the four OPFS files out.
+ *
+ * Reported through `stats` rather than through the open response because it is the same KIND of
+ * fact — what this Run's Engine cost before it ran anything — and because only the Engine that did
+ * it can see the phases (`src/engines/pgrust-postmaster/store-seed.worker.ts` runs inside the
+ * postmaster worker, not on the page).
+ */
+export interface StoreSeedStat {
+  readonly gunzipMs: number;
+  readonly untarMs: number;
+  readonly verifyMs: number;
+  readonly writeMs: number;
+  readonly totalMs: number;
+  readonly tarBytes: number;
+  readonly bytesWritten: number;
+}
+
 /** What an Engine can say about the memory it holds; empty for an Engine that holds none it can see. */
 export interface EngineStats {
   readonly wasmMemories: readonly WasmMemoryStat[];
+  /** Present only on a Run that was seeded from a prepared-store tarball. */
+  readonly storeSeed?: StoreSeedStat;
 }
 
 export interface EngineCloseRequest {
@@ -96,6 +135,7 @@ export type EngineRequest =
   | EngineOpenRequest
   | EngineExecRequest
   | EngineMeasureRequest
+  | EngineScalarRequest
   | EngineConcurrentRequest
   | EngineStatsRequest
   | EngineCloseRequest;
@@ -108,6 +148,11 @@ export interface EngineOkResponse {
   readonly report?: ScenarioReport;
   /** Present only in answer to a `stats` request. */
   readonly stats?: EngineStats;
+  /**
+   * Present only in answer to a `scalar` request: the first column of the first row, as text, or
+   * null for a statement that returned no rows at all.
+   */
+  readonly value?: string | null;
 }
 
 export interface EngineErrorResponse {

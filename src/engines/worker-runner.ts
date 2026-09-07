@@ -59,6 +59,14 @@ export class WorkerEngineRunner implements EngineRunner {
     return measurement;
   }
 
+  async scalar(sql: string): Promise<{ readonly elapsedMs: number; readonly value: string | null }> {
+    const { measurement, value } = await this.#call({ kind: "scalar", sql });
+    if (measurement === null) {
+      throw new Error("Engine worker returned no Measurement for a scalar request");
+    }
+    return { elapsedMs: measurement.elapsedMs, value: value ?? null };
+  }
+
   /**
    * Run one Scenario and bring back what every Client did.
    *

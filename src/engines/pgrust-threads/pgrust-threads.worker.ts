@@ -875,6 +875,13 @@ async function handle(request: EngineRequest): Promise<void> {
       ok(request.id, null);
       return;
     }
+    default: {
+      // An unknown request kind must be an ANSWER, not a hang: the runner is waiting on this id and
+      // nothing else will ever settle it. `scalar` is the only kind this Engine does not implement.
+      const unknown = request as { readonly kind: string; readonly id: number };
+      post(toErrorPayload(unknown.id, new Error(`this Engine does not answer a ${unknown.kind} request`)));
+      return;
+    }
   }
 }
 

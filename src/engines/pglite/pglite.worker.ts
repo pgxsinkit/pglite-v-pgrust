@@ -45,6 +45,30 @@ function requireEngine(): PGlite {
   return pg;
 }
 
+/** The first column of the first row, as text — the one value a `scalar` request is asking for. */
+function firstValue(rows: readonly Record<string, unknown>[]): string | null {
+  const first = rows[0];
+  if (first === undefined) {
+    return null;
+  }
+  const value: unknown = Object.values(first)[0];
+  if (value === undefined || value === null) {
+    return null;
+  }
+  // PGlite hands back typed JS values, so a scalar is a scalar and anything else (a json column, a
+  // composite) is rendered rather than stringified into `[object Object]`.
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "bigint" || typeof value === "boolean") {
+    return value.toString();
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  return JSON.stringify(value) ?? String(typeof value);
+}
+
 /** The SQLSTATE of a backend error, or `undefined` for anything that is not one. */
 function sqlstateOf(error: unknown): string | undefined {
   if (typeof error !== "object" || error === null) {
@@ -129,7 +153,16 @@ async function openStore(dataDir: string, settings: PgliteStoreSettings): Promis
   const directory = await emptyOpfsDirectory(dataDir);
   storeDirectory = dataDir;
   try {
-    return await createOpfsRepackedPGlite({ directory, durability: settings.durability });
+    return await createOpfsRepackedPGlite({
+      directory,
+      durability: settings.durability,
+      // PGlite's own create option, handed through the factory's `pglite` bag — the factory owns
+      // `dataDir`, `fs` and `relaxedDurability` and refuses those three by name, and `loadDataDir`
+      // is none of them. It untars a whole datadir into the store before initdb would have run.
+      ...(settings.loadDataDir === undefined
+        ? {}
+        : { pglite: { loadDataDir: new Blob([settings.loadDataDir], { type: "application/x-gzip" }) } }),
+    });
   } catch (error: unknown) {
     throw toStoreError(`the ${settings.store} store failed to open "${dataDir}"`, error);
   }
@@ -171,6 +204,14 @@ async function handle(request: EngineRequest): Promise<void> {
       await engine.exec(request.sql);
       const elapsedMs = performance.now() - startTime;
       ok(request.id, { elapsedMs });
+      return;
+    }
+    case "scalar": {
+      const engine = requireEngine();
+      const startTime = performance.now();
+      const result = await engine.query<Record<string, unknown>>(request.sql);
+      const elapsedMs = performance.now() - startTime;
+      post({ kind: "ok", id: request.id, measurement: { elapsedMs }, value: firstValue(result.rows) });
       return;
     }
     case "concurrent": {

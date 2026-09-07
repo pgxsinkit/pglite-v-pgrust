@@ -10,6 +10,7 @@ import {
 import { readEnvironment } from "./environment";
 import { installIdleProbe } from "./idle-probe";
 import { installMemoryProbe } from "./memory-probe";
+import { installPreparedStoreProbe } from "./prepared-store-probe";
 
 import "./styles.css";
 
@@ -40,6 +41,14 @@ installMemoryProbe(environment);
  * costs. Another property on `globalThis`, and nothing else.
  */
 installIdleProbe(environment);
+
+/**
+ * The prepared-store probe's handle, published beside the other two and used by nothing on the page.
+ * `scripts/probe-prepared-store.ts` drives it: one tarball of four store files against one PGlite
+ * datadir tarball, the same datadir either way, timed from "the bytes arrived" to "the database
+ * answered". A third property on `globalThis`.
+ */
+installPreparedStoreProbe(environment);
 
 /**
  * Which Configurations this page compares, and which of them the ratios are taken against.

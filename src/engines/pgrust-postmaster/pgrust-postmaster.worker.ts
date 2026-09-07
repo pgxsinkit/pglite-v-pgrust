@@ -61,9 +61,17 @@ import { pgrustPostmasterOptions, requestedSessions } from "../contract";
 import type { QueryResult } from "../pgrust/pgwire";
 import { assertNoQueryError, decodeQueryResult } from "../pgrust/pgwire";
 import { toErrorPayload } from "../protocol";
-import type { EngineOkResponse, EngineReadyMessage, EngineRequest, EngineResponse, EngineStats } from "../protocol";
+import type {
+  EngineOkResponse,
+  EngineReadyMessage,
+  EngineRequest,
+  EngineResponse,
+  EngineStats,
+  StoreSeedStat,
+} from "../protocol";
 import type { ScenarioExecutor } from "../scenario-runner";
 import { runScenario } from "../scenario-runner";
+import type { StoreSeedRequest, StoreSeedResponse } from "./store-seed.worker";
 
 type ThreadsHostModule = typeof ThreadsHost;
 type SabPipeModule = typeof SabPipes;
@@ -526,6 +534,14 @@ interface StoragePortSettings {
   readonly durability: StoreDurability;
   /** The OPFS directory the coordinator owns in full; empty string on the memory port. */
   readonly directory: string;
+  /**
+   * Whether a prepared store has already been written into that directory.
+   *
+   * It flips two things at once, and they are the same decision seen from both ends: the coordinator
+   * is told NOT to reset (the seed is the reset), and a coordinator that then reports it RESTORED a
+   * datadir is reporting the intended outcome rather than an earlier Run's leftovers.
+   */
+  readonly seeded: boolean;
 }
 
 interface StorageBootOptions {
@@ -537,7 +553,7 @@ interface StorageBootOptions {
 
 function storageBootOptions(settings: StoragePortSettings): StorageBootOptions {
   return settings.port === "opfs"
-    ? { port: "opfs", opfsDir: settings.directory, durability: settings.durability, reset: true }
+    ? { port: "opfs", opfsDir: settings.directory, durability: settings.durability, reset: !settings.seeded }
     : { port: "memory", durability: settings.durability };
 }
 
@@ -550,6 +566,58 @@ function describeStorageReady(event: StorageEvent): string {
     `store opened in ${event.openMs ?? 0} ms, ${seeded}; /pgdata holds ${event.datadirFiles ?? 0} files ` +
     `(${event.datadirBytes ?? 0} bytes) in a ${((event.arenaBytes ?? 0) / 1_048_576).toFixed(1)} MiB arena`
   );
+}
+
+/** How long the whole seed may take: gunzip + untar + verify + four OPFS writes on a big store. */
+const STORE_SEED_TIMEOUT_MS = 300_000;
+
+/**
+ * What the prepared-store seed cost this Run, kept module-level so `stats` can report it.
+ *
+ * Null on every Run that was not seeded, which is every Run of every Configuration on the page: the
+ * seed is a probe's tool, not a column's.
+ */
+let storeSeed: StoreSeedStat | null = null;
+
+/**
+ * Write a prepared store into this Run's OPFS directory, before anything opens it.
+ *
+ * In its own dedicated worker, and terminated the moment it answers. Two reasons, and both are about
+ * where the work is allowed to happen: `createSyncAccessHandle()` is granted in a dedicated worker
+ * and refused on the window's main thread, and the storage coordinator — the other worker that could
+ * do it — is pgrust's, vendored byte-verbatim, so teaching it to read a tar would mean editing a file
+ * that must stay identical to its source. The tarball is TRANSFERRED rather than copied: it is the
+ * whole store.
+ */
+async function seedPreparedStore(directory: string, tarball: ArrayBuffer): Promise<StoreSeedStat> {
+  const worker = new Worker(new URL("./store-seed.worker.ts", import.meta.url), { type: "module" });
+  try {
+    const answered = new Promise<StoreSeedResponse>((resolve, reject) => {
+      worker.addEventListener("message", (event: MessageEvent<StoreSeedResponse>) => {
+        resolve(event.data);
+      });
+      worker.addEventListener("error", (event: ErrorEvent) => {
+        reject(new Error(`the prepared-store seed worker threw: ${event.message}`));
+      });
+    });
+    const request: StoreSeedRequest = { kind: "seed", opfsDir: directory, tar: tarball };
+    worker.postMessage(request, [tarball]);
+    const answer = await withTimeout(answered, STORE_SEED_TIMEOUT_MS, "the prepared store was never written");
+    if (answer.type === "seed-error") {
+      throw new Error(`the prepared store could not be written: ${answer.message}`);
+    }
+    console.info(
+      `pgrust postmaster storage: prepared store seeded — ${answer.tarBytes} tarball bytes -> ` +
+        `${answer.bytesWritten} bytes in 4 files (gunzip ${answer.timings.gunzipMs.toFixed(0)} ms, untar ` +
+        `${answer.timings.untarMs.toFixed(0)} ms, verify ${answer.timings.verifyMs.toFixed(0)} ms, write ` +
+        `${answer.timings.writeMs.toFixed(0)} ms)`,
+    );
+    return { ...answer.timings, tarBytes: answer.tarBytes, bytesWritten: answer.bytesWritten };
+  } finally {
+    // One job, then gone: it holds no handle after its last `close()`, and a live worker here would
+    // be one more agent in the cluster for no reason.
+    worker.terminate();
+  }
 }
 
 interface StorageCoordinator {
@@ -597,8 +665,9 @@ async function startStorageCoordinator(
       case "storage-ready":
         // A `reset` was asked for, so a coordinator reporting it RESTORED a data directory found one
         // this Run did not put there. Those would be a warm store's numbers under a cold store's
-        // label, which is worse than a failed column.
-        if (event.restored === true) {
+        // label, which is worse than a failed column. A SEEDED Run is the opposite case: this Run
+        // put that datadir there itself, four files at a time, and `restored` is the proof it worked.
+        if (event.restored === true && !settings.seeded) {
           ready.fail(
             new Error(
               `pgrust postmaster storage opened an existing data directory in "${settings.directory}" ` +
@@ -752,6 +821,24 @@ async function openEngine(dataDir: string, options: EngineOpenOptions | undefine
   // Before it runs, not after: it creates the directory as part of opening the store, and a boot
   // that fails half way through has already created it.
   storeDirectory = port === "opfs" ? dataDir : null;
+
+  // The prepared store goes in BEFORE the coordinator opens anything, and it is what `reset` would
+  // otherwise have thrown away. After this the coordinator finds a datadir already in place, reports
+  // `restored: true`, and skips the packed-image seed entirely — which is the whole point.
+  const seedFromTar = settings?.seedFromTar;
+  storeSeed = null;
+  if (seedFromTar !== undefined) {
+    if (port !== "opfs") {
+      throw new Error("pgrust postmaster Engine can only seed a prepared store onto the OPFS port");
+    }
+    try {
+      storeSeed = await seedPreparedStore(dataDir, seedFromTar);
+    } catch (error: unknown) {
+      await closeEngine();
+      throw error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
   let storage: StorageCoordinator;
   try {
     storage = await startStorageCoordinator(
@@ -760,7 +847,7 @@ async function openEngine(dataDir: string, options: EngineOpenOptions | undefine
       image,
       manifest,
       storageStopped,
-      { port, durability, directory: dataDir },
+      { port, durability, directory: dataDir, seeded: storeSeed !== null },
       poolSize,
     );
   } catch (error: unknown) {
@@ -974,6 +1061,7 @@ function engineStats(): EngineStats {
   return {
     wasmMemories:
       sharedMemory === null ? [] : [{ name: "pgrust shared memory", bytes: sharedMemory.buffer.byteLength }],
+    ...(storeSeed === null ? {} : { storeSeed }),
   };
 }
 
@@ -1119,6 +1207,17 @@ async function handle(request: EngineRequest): Promise<void> {
       const { result, elapsedMs } = await requireSession(request.session ?? 0).query(request.sql);
       assertNoQueryError(result);
       ok(request.id, { elapsedMs });
+      return;
+    }
+    case "scalar": {
+      const { result, elapsedMs } = await requireSession(request.session ?? 0).query(request.sql);
+      assertNoQueryError(result);
+      post({
+        kind: "ok",
+        id: request.id,
+        measurement: { elapsedMs },
+        value: result.rows[0]?.[0] ?? null,
+      });
       return;
     }
     case "concurrent": {
