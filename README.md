@@ -52,7 +52,10 @@ own `BasePGlite` with a pgwire transport (`src/client/`). It needs the synced as
 — `strictSync()` over the broker's store-wide sync, `dumpDataDir()` as a tarball in PGlite's own
 entry layout, `loadDataDir` seeding a second store before its postmaster boots, and a `close()` that
 takes the whole engine down with it. The scenario proves each of those in turn and prints its
-timings.
+timings, and then asks whether the DATADIR is portable between the two engines as well as the
+tarball format — it is not, and
+[the note](docs/results/2026-09-07-datadir-portability.md) says which single control-file field
+stops it.
 
 Only `bun install` and the sync need a network. The sync downloads the newest `pgrust-assets/*`
 [release](#pgrust-assets) of this repo — ~30 MB gzipped, ~135 MB unpacked into `public/pgrust/`,

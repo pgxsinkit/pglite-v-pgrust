@@ -26,11 +26,31 @@
  *     must report `synchronous_commit` `off` and must hold the rows written in (b);
  *  f. its own `close()` shuts down as cleanly as the first.
  *
+ * Then the question the shared tar FORMAT raises on its own: is the DATADIR portable too? Both
+ * engines are PostgreSQL 18.3 — same `CATALOG_VERSION_NO` (202506291), same `PG_CONTROL_VERSION`
+ * (1800) — and pgrust's own `GOAL.md` claims a C 18.3 binary can boot its data directory. So this
+ * scenario tests it in both directions rather than assuming either answer:
+ *
+ *  h. a plain in-memory `PGlite` writes rows and dumps its datadir; `createPgrustPglite` boots ON
+ *     that tarball and must find the rows, with `version()` naming pgrust;
+ *  i. the reverse — the pgrust tarball from (d) handed to `PGlite.create({ loadDataDir })`, which
+ *     must find the rows pgxsinkit's client wrote in (b).
+ *
+ * The answer, measured here and written up in `docs/results/2026-09-07-datadir-portability.md`, is
+ * NO in both directions and for one reason: `ReadControlFile` compares the cluster's `float8ByVal`
+ * against the server's own `USE_FLOAT8_BYVAL`, and PGlite is a 32-bit emscripten build (4-byte
+ * Datum) where pgrust has an 8-byte one. Same 18.3, same catalog version, same control version, two
+ * physically incompatible clusters. So this lane passes by REPRODUCING that refusal, in both
+ * directions, with the server's own words — and fails if either direction ever does anything else,
+ * because a changed answer is news and the note would then be out of date.
+ *
  * Sync is off, as in the live scenario: the store seam is the subject, not the network one.
  *
- * Exit 0 on `VERDICT: pgxsinkit-factory PASS`, exit 1 with the reason on FAIL.
+ * Exit 0 on `VERDICT: pgxsinkit-factory PASS` plus `VERDICT: datadir-portability
+ * REFUSED-AS-RECORDED`, exit 1 with the reason otherwise.
  */
 
+import { PGlite } from "@electric-sql/pglite";
 import { live } from "@electric-sql/pglite/live";
 import { createSyncClient, type ClientPGlite, type SyncClient } from "@pgxsinkit/client";
 import { testStoreAcknowledgment } from "@pgxsinkit/client/testing";
@@ -46,6 +66,9 @@ const NOTES: readonly { readonly id: string; readonly title: string }[] = [
   { id: "1c0e5b7d-3a62-4c18-9f4e-70b2d5a6c381", title: "dumped over the broker channel" },
   { id: "b47c9e21-58d0-4a3f-8e6b-19c4f2a7d503", title: "restored before the postmaster booted" },
 ];
+
+/** The table (h) writes on the PGlite side and reads back on the pgrust one. */
+const PORTABLE_ROWS = 5;
 
 /** A one-table registry: the smallest thing `createSyncClient` will provision and read. */
 const noteTable = pgTable("note", { id: uuid("id").primaryKey(), title: text("title") });
@@ -64,6 +87,20 @@ function noteRegistry(): SyncTableRegistry {
 
 function describe(error: unknown): string {
   return error instanceof Error ? (error.stack ?? error.message) : String(error);
+}
+
+/** The message alone: a portability refusal is a RESULT, and its stack is this script's, not news. */
+function describeShort(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** The last few non-empty lines of a server log, which is where a FATAL and its DETAIL are. */
+function tail(text: string, lines = 12): readonly string[] {
+  return text
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => line !== "")
+    .slice(-lines);
 }
 
 function log(line: string): void {
@@ -265,6 +302,25 @@ async function main(): Promise<void> {
         `(${restoredInstance.engineShutdown?.exitCode ?? -1} exit on the restored engine)`,
     );
     log("VERDICT: pgxsinkit-factory PASS");
+
+    // ---- (h) and (i): is the DATADIR portable, not just the tarball? --------------------------
+    // The recorded answer is no, symmetrically, over one control-file field — so this lane passes by
+    // REPRODUCING that, and fails if either direction ever does something else, because a changed
+    // answer (in either direction) is news and the note has to be rewritten.
+    const portability = await datadirPortability(tarball, NOTES.length);
+    log(
+      `(h/i) pglite->pgrust ${portability.forward.state} (${portability.forward.reason}); ` +
+        `pgrust->pglite ${portability.reverse.state} (${portability.reverse.reason})`,
+    );
+    if (!portability.asRecorded) {
+      log(
+        "VERDICT: datadir-portability CHANGED — docs/results/2026-09-07-datadir-portability.md " +
+          `records both directions refusing over ${RECORDED_REFUSAL}; this run did not, so the note is out of date`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    log(`VERDICT: datadir-portability REFUSED-AS-RECORDED (both directions, ${RECORDED_REFUSAL})`);
   } catch (error: unknown) {
     log(`VERDICT: pgxsinkit-factory FAIL — ${describe(error)}`);
     await client?.stop().catch(() => {});
@@ -274,6 +330,181 @@ async function main(): Promise<void> {
     return;
   }
   process.exitCode = 0;
+}
+
+/** How one direction of the datadir-portability test ended, and why. */
+interface PortabilityDirection {
+  readonly state: "booted" | "refused";
+  /** `USE_FLOAT8_BYVAL` for the recorded refusal, `booted`, or the message of anything else. */
+  readonly reason: string;
+}
+
+interface PortabilityOutcome {
+  /** Whether both directions did what `docs/results/2026-09-07-datadir-portability.md` records. */
+  readonly asRecorded: boolean;
+  readonly forward: PortabilityDirection;
+  readonly reverse: PortabilityDirection;
+}
+
+/**
+ * The RECORDED outcome: both engines refuse the other's datadir over one control-file field.
+ *
+ * `ReadControlFile` compares the cluster's `float8ByVal` against the server's own
+ * `USE_FLOAT8_BYVAL`, which is a build-time consequence of `SIZEOF_DATUM`: PGlite is a 32-bit
+ * emscripten build (4-byte Datum, float8 by reference), pgrust an 8-byte-Datum one. Same
+ * PostgreSQL 18.3, same `CATALOG_VERSION_NO`, same `PG_CONTROL_VERSION` — and still two physically
+ * incompatible clusters, symmetrically.
+ */
+const RECORDED_REFUSAL = "USE_FLOAT8_BYVAL";
+
+/** Classify a refusal by the server's own words, so a DIFFERENT refusal is not read as the same one. */
+function classifyRefusal(evidence: string): string {
+  return evidence.includes(RECORDED_REFUSAL) ? RECORDED_REFUSAL : (tail(evidence, 1)[0] ?? "no server output");
+}
+
+/**
+ * (h) PGlite's datadir under pgrust, and (i) pgrust's under PGlite.
+ *
+ * Each direction is attempted on its own and reported whatever it does — a refusal is a RESULT here
+ * rather than a crash, and the server's own FATAL is the interesting part. The two engines agree on
+ * `CATALOG_VERSION_NO` and `PG_CONTROL_VERSION`, and pgrust's `GOAL.md` claims a C 18.3 binary can
+ * boot its datadir, which is why the question is worth asking at all.
+ */
+async function datadirPortability(pgrustTarball: File | Blob, pgrustRows: number): Promise<PortabilityOutcome> {
+  // --- (h) PGlite writes the datadir, pgrust boots it ----------------------------------------
+  let forward: PortabilityDirection = { state: "refused", reason: "not attempted" };
+  let pgliteTarball: File | Blob | undefined;
+  let source: PGlite | undefined;
+  try {
+    const sourceStart = performance.now();
+    // `memory://` rather than `new PGlite()`: pgxsinkit's ADR-0036 D5 records that a dump taken from
+    // an explicit-`fs` memory instance silently omits relation files, and the scheme-selected form
+    // is the one it sanctions. Still entirely in memory.
+    source = await PGlite.create({ dataDir: "memory://pglite-source" });
+    log(`(h) a plain PGlite booted in ${ms(performance.now() - sourceStart)}`);
+    await source.exec("create table portable (id int primary key, note text)");
+    for (let id = 1; id <= PORTABLE_ROWS; id += 1) {
+      await source.exec(`insert into portable (id, note) values (${id}, 'written by PGlite')`);
+    }
+    await source.exec("CHECKPOINT");
+    const dumpStart = performance.now();
+    pgliteTarball = await source.dumpDataDir();
+    log(
+      `(h) PGlite dumpDataDir() -> ${pgliteTarball instanceof File ? pgliteTarball.name : "(Blob)"} ` +
+        `${pgliteTarball.size} bytes in ${ms(performance.now() - dumpStart)}`,
+    );
+    const version = await source.query<{ version: string }>("select version()");
+    log(`(h) source version(): ${version.rows[0]?.version ?? "?"}`);
+  } finally {
+    await source?.close().catch(() => {});
+  }
+
+  if (pgliteTarball !== undefined) {
+    let target: PgrustClientPGlite | undefined;
+    // The server's own stderr, kept for the refusal path: "exited with code 1" says nothing and the
+    // FATAL that preceded it says everything. Silent while it works.
+    let serverLog = "";
+    try {
+      const bootStart = performance.now();
+      target = await createPgrustPglite("memory://from-pglite", {
+        loadDataDir: pgliteTarball,
+        extensions: { live },
+        applicationName: "pgxsinkit-factory-scenario",
+        onServerLog: (text) => {
+          serverLog += text;
+        },
+      });
+      const bootMs = performance.now() - bootStart;
+      const counted = await target.query<{ count: number }>("select count(*)::int as count from portable");
+      const count = Number(counted.rows[0]?.count ?? -1);
+      const version = await target.query<{ version: string }>("select version()");
+      const reported = version.rows[0]?.version ?? "";
+      log(`(h) pgrust booted PGlite's datadir in ${ms(bootMs)}; portable holds ${count} row(s)`);
+      log(`(h) target version(): ${reported}`);
+      forward =
+        count === PORTABLE_ROWS && reported.toLowerCase().includes("pgrust")
+          ? { state: "booted", reason: "booted" }
+          : { state: "refused", reason: `booted but read ${count} of ${PORTABLE_ROWS} rows on "${reported}"` };
+    } catch (error: unknown) {
+      forward = { state: "refused", reason: classifyRefusal(serverLog) };
+      log(`(h) REFUSED: pgrust would not boot PGlite's datadir — ${describeShort(error)}`);
+      for (const line of tail(serverLog, 4)) {
+        log(`(h)   server: ${line}`);
+      }
+    } finally {
+      await target?.close().catch(() => {});
+    }
+  }
+
+  // --- (i) pgrust wrote the datadir, PGlite boots it -----------------------------------------
+  let reverse: PortabilityDirection;
+  let restored: PGlite | undefined;
+  try {
+    const bootStart = performance.now();
+    restored = await PGlite.create({ dataDir: "memory://from-pgrust", loadDataDir: pgrustTarball });
+    const bootMs = performance.now() - bootStart;
+    const counted = await restored.query<{ count: number }>("select count(*)::int as count from note");
+    const count = Number(counted.rows[0]?.count ?? -1);
+    const version = await restored.query<{ version: string }>("select version()");
+    log(`(i) PGlite booted pgrust's datadir in ${ms(bootMs)}; note holds ${count} row(s)`);
+    log(`(i) target version(): ${version.rows[0]?.version ?? "?"}`);
+    reverse =
+      count === pgrustRows
+        ? { state: "booted", reason: "booted" }
+        : { state: "refused", reason: `booted but read ${count} of ${pgrustRows} rows` };
+  } catch (error: unknown) {
+    log(`(i) REFUSED: PGlite would not boot pgrust's datadir — ${describeShort(error)}`);
+    const evidence = await pgliteBootLog(pgrustTarball);
+    reverse = { state: "refused", reason: classifyRefusal(evidence) };
+    for (const line of tail(evidence, 4)) {
+      log(`(i)   server: ${line}`);
+    }
+  } finally {
+    await restored?.close().catch(() => {});
+  }
+
+  return {
+    asRecorded:
+      forward.state === "refused" &&
+      forward.reason === RECORDED_REFUSAL &&
+      reverse.state === "refused" &&
+      reverse.reason === RECORDED_REFUSAL,
+    forward,
+    reverse,
+  };
+}
+
+/**
+ * The server output of a PGlite boot that failed, which PGlite itself will not hand back.
+ *
+ * Its `printErr` goes to `console.error` and only when `debug` is on, so the one way to READ a
+ * refusal — rather than let it scroll past interleaved with everything else — is to boot once more
+ * with `debug: 1` and collect the console while it happens. Reached only on the failure path, and
+ * the console is restored in a `finally`.
+ */
+async function pgliteBootLog(tarball: File | Blob): Promise<string> {
+  const captured: string[] = [];
+  const collect = (...args: unknown[]): void => {
+    captured.push(args.map((arg) => (typeof arg === "string" ? arg : String(arg))).join(" "));
+  };
+  const original = { error: console.error, debug: console.debug, log: console.log, warn: console.warn };
+  console.error = collect;
+  console.debug = collect;
+  console.log = collect;
+  console.warn = collect;
+  let diagnostic: PGlite | undefined;
+  try {
+    diagnostic = await PGlite.create({ dataDir: "memory://from-pgrust-debug", loadDataDir: tarball, debug: 1 });
+  } catch {
+    // The boot exists for its output; the throw is the outcome the caller already has.
+  } finally {
+    console.error = original.error;
+    console.debug = original.debug;
+    console.log = original.log;
+    console.warn = original.warn;
+    await diagnostic?.close().catch(() => {});
+  }
+  return captured.join("\n");
 }
 
 await main();
