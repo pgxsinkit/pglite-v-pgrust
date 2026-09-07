@@ -76,7 +76,16 @@ const STORAGE_READY_TIMEOUT_MS = 180_000;
 const POOL_READY_TIMEOUT_MS = 120_000;
 const POSTMASTER_READY_TIMEOUT_MS = 180_000;
 const EXIT_TIMEOUT_MS = 60_000;
-const STORAGE_STOP_TIMEOUT_MS = 10_000;
+/**
+ * How long the coordinator gets to stop before its worker is terminated regardless.
+ *
+ * A deadline, not a wait — it costs nothing in the ordinary case, where the coordinator answers
+ * `storage-stopped` at once. It is a minute rather than ten seconds because the last thing that
+ * coordinator does is a store-wide `strictSync()` and a `close()`, and on a persistent port with a
+ * quarter-gigabyte arena those are real work: terminating it early leaves the store's own files
+ * unsynced and, on the file port, their fds unclosed.
+ */
+const STORAGE_STOP_TIMEOUT_MS = 60_000;
 
 /**
  * The host's own store channel, at 1 MiB rather than the library's 64 KiB default.
@@ -92,8 +101,15 @@ const SHUTDOWN_CHECKPOINT_PATTERN = /checkpoint starting: shutdown/i;
 
 const MAX_SERVER_LOG_CHARS = 8_000;
 
-/** Where this engine's one store lives: the coordinator's heap, or an OPFS directory it owns. */
-export type PgrustStoragePort = "memory" | "opfs";
+/**
+ * Where this engine's one store lives: the coordinator's heap, an OPFS directory it owns, or a
+ * DIRECTORY on this machine's filesystem.
+ *
+ * `file` is bun's persistent port and the prepared-store lane's whole point: the four files the
+ * coordinator leaves in that directory ARE the store, so a build step can tar them and a browser can
+ * untar them into its own OPFS store directory and boot on them.
+ */
+export type PgrustStoragePort = "memory" | "opfs" | "file";
 
 /** How durable the broker is between the guest's own fsyncs; see `wasm/storage-worker.js`. */
 export type PgrustStorageDurability = "relaxed" | "strict";
@@ -108,9 +124,19 @@ export interface PgrustStorageOptions {
    * a store may live under a namespace of its host's choosing (`pgxsinkit/stores/<identity>`).
    */
   readonly opfsDir?: string;
+  /**
+   * The directory the `file` port owns in full, as an ABSOLUTE path.
+   *
+   * Owned in full exactly as the OPFS one is: the store's four files and nothing else, and `reset`
+   * removes the whole directory rather than the four names it could pick out.
+   */
+  readonly fileDir?: string;
   /** Broker durability. `relaxed` by default, which is the mode both of this repo's durability modes use. */
   readonly durability?: PgrustStorageDurability;
-  /** Empty the OPFS directory before opening it. Ignored on the memory port, which is always fresh. */
+  /**
+   * Empty the store's directory before opening it. Ignored on the memory port, which is always
+   * fresh; honoured on `opfs` and on `file`, where it is a whole-directory removal.
+   */
   readonly reset?: boolean;
 }
 
@@ -288,13 +314,26 @@ interface StorageBootOptions {
   readonly port: PgrustStoragePort;
   readonly durability: PgrustStorageDurability;
   readonly opfsDir?: string;
+  readonly fileDir?: string;
   readonly reset?: boolean;
 }
 
 function storageBootOptions(storage: PgrustStorageOptions | undefined): StorageBootOptions {
   const durability = storage?.durability ?? "relaxed";
-  if ((storage?.port ?? "memory") === "memory") {
+  const port = storage?.port ?? "memory";
+  if (port === "memory") {
     return { port: "memory", durability };
+  }
+  if (port === "file") {
+    const fileDir = storage?.fileDir;
+    // Absolute, because the coordinator runs in a worker whose working directory is nobody's
+    // business and because `reset` removes what this names.
+    if (fileDir === undefined || !fileDir.startsWith("/")) {
+      throw new Error(
+        `pgrust postmaster: the file storage port needs an absolute \`fileDir\` to own, got ${JSON.stringify(fileDir)}`,
+      );
+    }
+    return { port: "file", durability, fileDir, reset: storage?.reset === true };
   }
   const opfsDir = storage?.opfsDir;
   if (opfsDir === undefined || opfsDir === "") {

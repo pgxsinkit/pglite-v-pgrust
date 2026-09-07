@@ -80,6 +80,28 @@ export interface RepackedSyncClient {
   rename(oldPath: string, newPath: string): RepackedErrno;
 }
 
+/**
+ * One `RepackedPort`: the four owned files, wherever they live. The bundle exports three (memory,
+ * OPFS, file) and nothing here distinguishes them — the store's format lives ABOVE the port, which
+ * is the whole reason a store built on one opens on another.
+ */
+export interface RepackedPort {
+  readonly __repackedPort?: never;
+}
+
+/** The store itself, as the prepared-store lane drives it directly — no coordinator, no broker. */
+export interface RepackedVfs {
+  /**
+   * Compact the arena: the store's own garbage collection, which is what turns a datadir that was
+   * WRITTEN incrementally into four files whose size is the data rather than its history.
+   */
+  repack(reason?: string): void;
+  /** Arena before metadata, and the store's health check inside it. */
+  strictSync(): void;
+  close(): void;
+  metrics(): { readonly totalExtents: bigint; readonly generation: bigint; readonly repackCount: number };
+}
+
 /** The slice of `@pgxsinkit/pglite-opfs-repacked` the broker Configuration uses. */
 export interface RepackedBundle {
   readonly RepackedDoorbell: { create(): RepackedDoorbell };
@@ -104,6 +126,16 @@ export interface RepackedBundle {
   readonly O_WRONLY: number;
   readonly O_CREAT: number;
   readonly O_TRUNC: number;
+  /**
+   * The four owned files in an ordinary DIRECTORY, over `node:fs`. Node/bun only — the bundle
+   * reaches `node:fs` through a dynamic import precisely so this member can exist in a browser
+   * build without breaking it, and constructing one in a browser is what fails.
+   */
+  readonly FileRepackedPort: new (directory: string) => RepackedPort;
+  /** Open the store on a port directly, with no coordinator worker and no broker in between. */
+  readonly RepackedVfs: {
+    open(port: RepackedPort, options?: { readonly extentSize?: number }): Promise<RepackedVfs>;
+  };
 }
 
 /** Where the bundle sits relative to the host files: `./vendor/pglite-opfs-repacked.js`. */

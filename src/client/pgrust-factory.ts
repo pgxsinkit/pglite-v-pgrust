@@ -92,8 +92,14 @@ const DEFAULT_RESTORE_DIRECTORY_MODE = 0o755;
 const S_IFREG = 0o100000;
 const S_IFDIR = 0o040000;
 
-/** The two store backends a pgrust store can have here. */
-export type PgrustBackend = "memory" | "opfs";
+/**
+ * The three store backends a pgrust store can have here.
+ *
+ * `memory` and `opfs` are pgxsinkit's own two. `file` is neither — it is a DIRECTORY on this
+ * machine, which no browser can open and which pgxsinkit's store-path contract never names. It
+ * exists for the prepared-store lane: a store built under bun, in a place a build step can tar.
+ */
+export type PgrustBackend = "memory" | "opfs" | "file";
 
 /** pgxsinkit's registry-declared durability, as `createClientPGlite` takes it. */
 export type PgrustDurability = "relaxed" | "strict";
@@ -152,6 +158,14 @@ export interface CreatePgrustPgliteOptions<TExtensions extends Extensions = Exte
   readonly onServerLog?: (text: string) => void;
   /** How long `close()` waits for the guest's own exit; {@link CLOSE_EXIT_DEADLINE_MS} by default. */
   readonly closeDeadlineMs?: number;
+  /**
+   * Empty the store's directory before opening it, on either persistent backend.
+   *
+   * Off by default, because a persistent store's whole point is that the next open finds the last
+   * one's state. The prepared-store lane turns it on: it builds a datadir from nothing every time,
+   * and a directory that still held an earlier build's store would be a different store.
+   */
+  readonly reset?: boolean;
 }
 
 /**
@@ -175,11 +189,15 @@ interface ResolvedStorePath {
 }
 
 /**
- * Resolve `memory://<name>`, `opfs://<name>`, or a plain name plus an explicit backend.
+ * Resolve `memory://<name>`, `opfs://<name>`, `file://<absolute-directory>`, or a plain name plus an
+ * explicit backend.
  *
  * A plain name with no backend is refused rather than defaulted: "memory" would be a silently
  * non-persistent store, and pgxsinkit's whole store-path contract exists to stop that happening by
  * accident. The thin `createPglite` adapter below is what turns a plain path into a scheme.
+ *
+ * `file://` names a directory rather than a store identity, so its "name" is the path itself:
+ * `file:///var/tmp/prepared` resolves to `/var/tmp/prepared`, absolute leading slash included.
  */
 export function resolvePgrustStorePath(storePath: string, backend?: PgrustBackend): ResolvedStorePath {
   const separator = storePath.indexOf("://");
@@ -193,15 +211,24 @@ export function resolvePgrustStorePath(storePath: string, backend?: PgrustBacken
     if (storePath.trim() === "") {
       throw new Error("a pgrust store path may not be empty");
     }
+    if (backend === "file" && !storePath.startsWith("/")) {
+      throw new Error(`a pgrust file store is a directory and must be absolute; got ${JSON.stringify(storePath)}`);
+    }
     return { backend, name: storePath, dataDir: `${backend}://${storePath}` };
   }
   const scheme = storePath.slice(0, separator);
   const name = storePath.slice(separator + "://".length);
-  if (scheme !== "memory" && scheme !== "opfs") {
-    throw new Error(`unknown pgrust store scheme ${JSON.stringify(scheme)}: expected "memory" or "opfs"`);
+  if (scheme !== "memory" && scheme !== "opfs" && scheme !== "file") {
+    throw new Error(`unknown pgrust store scheme ${JSON.stringify(scheme)}: expected "memory", "opfs" or "file"`);
   }
   if (name === "") {
     throw new Error(`pgrust store path ${JSON.stringify(storePath)} names no store`);
+  }
+  if (scheme === "file" && !name.startsWith("/")) {
+    throw new Error(
+      `pgrust store path ${JSON.stringify(storePath)} names a directory, which must be absolute ` +
+        '("file:///var/tmp/store", three slashes)',
+    );
   }
   if (backend !== undefined && backend !== scheme) {
     throw new Error(
@@ -408,6 +435,17 @@ export class PgrustClientPGlite extends PgrustPGlite {
   }
 
   /**
+   * The coordinator's store, over this host's own broker channel.
+   *
+   * The two things a wire client cannot ask its server: what the datadir actually holds on disk, and
+   * a store-wide durability boundary. Live only while the engine is — after `close()` the doorbell
+   * has stopped and every call would time out. See {@link PgrustStore}; every method BLOCKS.
+   */
+  get store(): PgrustStore {
+    return this.#store;
+  }
+
+  /**
    * The store-wide durability boundary the commitment barrier calls (ADR-0049 D7).
    *
    * `fsync` with no fd on the broker, which the coordinator answers with `strictSync()` over the
@@ -519,6 +557,16 @@ export class PgrustClientPGlite extends PgrustPGlite {
       super.close().catch(() => {}),
       new Promise((resolve) => setTimeout(resolve, this.#closeDeadlineMs)),
     ]);
+    // One explicit durability boundary while the coordinator is still answering, before the server
+    // is asked to go. The shutdown that follows already ends in a checkpoint and the coordinator's
+    // own `strictSync()` + `close()`; this is the one that is this client's to ask for, and it is
+    // what makes a persistent store's four files consistent even if the guest's exit is not clean.
+    // Never fatal: a store that cannot be synced must not stop the server being taken down.
+    try {
+      this.#store.strictSync();
+    } catch {
+      // The engine's shutdown reports what actually happened; a failed pre-sync adds nothing to it.
+    }
     this.#shutdown = await this.#engine.shutdown();
   }
 }
@@ -546,6 +594,10 @@ export async function createPgrustPglite<TExtensions extends Extensions = Extens
       // mode selects is the guest's own commit discipline, below.
       durability: "relaxed",
       ...(resolved.backend === "opfs" ? { opfsDir: pgxsinkitStoreDirectory(resolved.name) } : {}),
+      // A file store's "name" IS its directory: there is no store identity to encode, because
+      // nothing but this process is looking for it.
+      ...(resolved.backend === "file" ? { fileDir: resolved.name } : {}),
+      ...(options.reset === true ? { reset: true } : {}),
     },
     settings: [
       // `relaxed` is `off`: a commit returns before its WAL record is flushed, which is the trade

@@ -4,11 +4,11 @@ Copied byte-verbatim by `bun run sync:pgrust`. **Do not edit these files by hand
 script against an updated pgrust checkout instead. They are excluded from oxlint and oxfmt so
 they stay identical to their source.
 
-- Commit: `9bab6bff1191aac9302099065a49b87129e71bfe`
-- Version: `9bab6bff11`
+- Commit: `d13d781fb95aaa2cd879fa8d0460fb24c9aba30e`
+- Version: `d13d781fb9`
 - Source: `/home/anton/dev/tmp/pgrust`
 - Working tree: clean
-- Synced: 2026-09-07T13:10:37.739Z
+- Synced: 2026-09-07T15:05:18.538Z
 
 ## Files
 
@@ -37,10 +37,10 @@ committed.
 
 - Package: `@pgxsinkit/pglite-opfs-repacked` (manifest version `0.0.0`)
 - Repository: [`feat/repacked-sync-broker`](https://github.com/pgxsinkit/pgxsinkit/tree/feat/repacked-sync-broker)
-- Commit: [`5e5d168a991546655b09ce7638c36c5bb5c4408e`](https://github.com/pgxsinkit/pgxsinkit/commit/5e5d168a991546655b09ce7638c36c5bb5c4408e)
+- Commit: [`537835b41c6450b77bc5a777c73beb56e4e85ba5`](https://github.com/pgxsinkit/pgxsinkit/commit/537835b41c6450b77bc5a777c73beb56e4e85ba5)
 - Licence: MIT
 - Built with: `bun run build:public-packages` -> `packages/pglite-opfs-repacked/dist/browser-bundle.js`
-- Installed at: `public/pgrust/host/vendor/pglite-opfs-repacked.js` (987191 bytes)
+- Installed at: `public/pgrust/host/vendor/pglite-opfs-repacked.js` (1007941 bytes)
 
 The `RepackedSyncBroker` + `createWasiPreview1Fs` pair those columns need is **not** in any
 published version of the package, so no npm release corresponds to these bytes. The two
@@ -55,8 +55,8 @@ Copied by `bun run sync:pgrust` from a local pgrust checkout. They are gitignore
 outputs; only this record of them is committed.
 
 - Source: `/home/anton/dev/tmp/pgrust`
-- Version: `9bab6bff11`
-- Copied: 2026-09-07T13:10:37.799Z
+- Version: `d13d781fb9`
+- Copied: 2026-09-07T15:05:18.596Z
 
 pgrust is AGPL-3.0-only; these binaries were built locally from the checkout named above.
 <!-- pgrust-assets:end -->
