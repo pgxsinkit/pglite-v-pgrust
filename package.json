@@ -25,11 +25,15 @@
     "validate:full": "bun run validate && bun run test:e2e"
   },
   "dependencies": {
-    "@electric-sql/pglite": "npm:@pgxsinkit/pglite@0.5.5-pgx.2",
+    "@electric-sql/pglite": "file:./tmp/agents/pgxsinkit-pglite-0.5.5-pgx.3.tgz",
+    "@pgxsinkit/client": "0.3.0",
+    "@pgxsinkit/contracts": "0.3.0",
     "@pgxsinkit/pglite-opfs-repacked": "0.3.0",
+    "drizzle-orm": "1.0.0-rc.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "wa-sqlite": "github:rhashimoto/wa-sqlite#v1.1.2"
+    "wa-sqlite": "github:rhashimoto/wa-sqlite#v1.1.2",
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@playwright/test": "1.61.1",
