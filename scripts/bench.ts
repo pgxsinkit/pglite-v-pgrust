@@ -15,6 +15,7 @@
  *   bun run bench --suite rtt --iterations 5       # a short, explicitly non-standard RTT Run
  *   bun run bench --browser firefox --no-build     # reuse the existing dist/
  *   bun run bench --browser webkit                 # skips: Playwright's WebKit has no JSPI
+ *   bun run bench --configurations pglite-memory,pgrust-memory --baseline pgrust-memory
  */
 
 import { mkdir } from "node:fs/promises";
@@ -25,6 +26,8 @@ import type { BrowserType, LaunchOptions, Page } from "@playwright/test";
 import { chromium, firefox } from "@playwright/test";
 import type { Server } from "bun";
 
+import { formatSelectionSearch, resolveConfigurationSelection } from "../src/configuration-selection";
+import { BASELINE_CANDIDATE_IDS, BASELINE_CONFIGURATION_ID, CONFIGURATION_IDS } from "../src/configurations";
 import { MAX_RTT_ITERATIONS, MIN_RTT_ITERATIONS, RTT_ITERATIONS_PARAM } from "../src/rtt-iterations";
 import type { SuiteId } from "../src/suites/types";
 
@@ -82,6 +85,14 @@ export interface BenchOptions {
   readonly suites: readonly SuiteId[];
   /** A non-standard RTT iteration count, passed to the page as `?rttIterations=N`; null for 100. */
   readonly rttIterations: number | null;
+  /**
+   * The Configurations to run, passed to the page as `?configurations=<id,id,…>`; null runs every
+   * Configuration the browser can. The page drops any of them it cannot run and says so in its own
+   * export, so this narrows the run rather than asserting what will be in it.
+   */
+  readonly configurationIds: readonly string[] | null;
+  /** The column every ratio is taken against, as `?baseline=<id>`; null leaves the page's default. */
+  readonly baselineId: string | null;
   /** Whether to run `vite build` first. */
   readonly build: boolean;
   /** Port for the local static server; 0 asks the OS for a free one. */
@@ -96,6 +107,8 @@ export const DEFAULT_BENCH_OPTIONS: BenchOptions = {
   browser: "chromium",
   suites: ALL_SUITE_IDS,
   rttIterations: null,
+  configurationIds: null,
+  baselineId: null,
   build: true,
   // Never 5580: a dev server or another session's browser may be sitting on it.
   port: 0,
@@ -191,9 +204,19 @@ function launchOptionsFor(options: BenchOptions): LaunchOptions {
     : { headless: options.headless };
 }
 
-function pageUrl(port: number, rttIterations: number | null): string {
-  const base = `http://127.0.0.1:${port}/`;
-  return rttIterations === null ? base : `${base}?${RTT_ITERATIONS_PARAM}=${rttIterations}`;
+/**
+ * The page URL a run drives: every out-of-band choice as a query parameter, and nothing else.
+ *
+ * The Configuration selection goes through exactly the parameters the page's own checkboxes write,
+ * so `--configurations`/`--baseline` and a hand-edited link are the same mechanism.
+ */
+function pageUrl(port: number, options: BenchOptions): string {
+  const base = options.rttIterations === null ? "" : `?${RTT_ITERATIONS_PARAM}=${options.rttIterations}`;
+  const search =
+    options.configurationIds === null && options.baselineId === null
+      ? base
+      : formatSelectionSearch(base, options.configurationIds, options.baselineId);
+  return `http://127.0.0.1:${port}/${search}`;
 }
 
 /** A countdown against the overall deadline, so a stuck Run fails with a clear message. */
@@ -287,7 +310,7 @@ export async function runBench(overrides: Partial<BenchOptions> = {}): Promise<B
     if (listeningPort === undefined) {
       throw new Error("The static server is not listening on a TCP port");
     }
-    const url = pageUrl(listeningPort, options.rttIterations);
+    const url = pageUrl(listeningPort, options);
     console.error(`bench: serving ${distDir} at ${url}`);
 
     const browser = await browserTypeFor(options.browser).launch(launchOptionsFor(options));
@@ -338,12 +361,17 @@ const USAGE = `Usage: bun run bench [options]
   --browser <chromium|firefox|webkit>  Browser to drive (default: chromium)
   --suite <speedtest|rtt|concurrency>  Run one Suite; repeatable (default: all three)
   --iterations <N>                     Non-standard RTT iterations, ${MIN_RTT_ITERATIONS}-${MAX_RTT_ITERATIONS}
+  --configurations <id,id,...>         Run only these Configurations; repeatable
+  --baseline <id>                      Take every ratio against this Configuration
   --no-build                           Reuse the existing dist/ instead of rebuilding
   --port <N>                           Port for the local static server (default: a free one)
   --headed                             Show the browser window
   --timeout <ms>                       Overall in-browser deadline (default: 2400000)
   --out <dir>                          Results directory (default: tmp/results)
-  -h, --help                           Print this message`;
+  -h, --help                           Print this message
+
+Configuration ids, in column order:
+${CONFIGURATION_IDS.map((id) => `  ${id}`).join("\n")}`;
 
 interface CliInvocation {
   readonly help: boolean;
@@ -399,12 +427,56 @@ function parseSuite(raw: string): SuiteId {
   return match;
 }
 
+/** The ids in one `--configurations` value; repeating the flag adds to the same list. */
+function parseConfigurationList(raw: string): readonly string[] {
+  const ids = raw
+    .split(",")
+    .map((id) => id.trim())
+    .filter((id) => id !== "");
+  if (ids.length === 0) {
+    throw new Error(`--configurations needs at least one id; valid ids are ${CONFIGURATION_IDS.join(", ")}`);
+  }
+  return ids;
+}
+
+/**
+ * Refuse a selection the page could only silently correct.
+ *
+ * The page's own resolver decides, so the CLI and the page can never disagree about what an id
+ * means — the one thing it cannot know here is which Configurations this browser will be able to
+ * run, so it asks as though all of them could and lets the page report what it dropped.
+ */
+function validateSelection(configurationIds: readonly string[] | null, baselineId: string | null): void {
+  const resolved = resolveConfigurationSelection({
+    allIds: CONFIGURATION_IDS,
+    availableIds: CONFIGURATION_IDS,
+    baselineCandidateIds: BASELINE_CANDIDATE_IDS,
+    requestedIds: configurationIds,
+    requestedBaselineId: baselineId,
+    defaultBaselineId: BASELINE_CONFIGURATION_ID,
+  });
+  if (resolved.unknownIds.length > 0) {
+    throw new Error(
+      `--configurations does not know ${resolved.unknownIds.join(", ")}; valid ids are ${CONFIGURATION_IDS.join(", ")}`,
+    );
+  }
+  if (resolved.rejectedBaselineId !== null) {
+    const candidates = resolved.selectedIds.filter((id) => BASELINE_CANDIDATE_IDS.includes(id));
+    throw new Error(
+      `--baseline expects one of the selected Configurations a ratio may be taken against ` +
+        `(${candidates.join(", ")}), got "${resolved.rejectedBaselineId}"`,
+    );
+  }
+}
+
 export function parseBenchArguments(rawArgv: readonly string[]): CliInvocation {
   const argv = normalizeArguments(rawArgv);
   const options: {
     browser?: BenchBrowser;
     suites?: readonly SuiteId[];
     rttIterations?: number;
+    configurationIds?: readonly string[];
+    baselineId?: string;
     build?: boolean;
     port?: number;
     headless?: boolean;
@@ -412,6 +484,7 @@ export function parseBenchArguments(rawArgv: readonly string[]): CliInvocation {
     outputDir?: string;
   } = {};
   const suites: SuiteId[] = [];
+  const configurationIds: string[] = [];
   let help = false;
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -438,6 +511,14 @@ export function parseBenchArguments(rawArgv: readonly string[]): CliInvocation {
           MAX_RTT_ITERATIONS,
         );
         break;
+      case "--configurations":
+        index += 1;
+        configurationIds.push(...parseConfigurationList(requireValue(argv, index, flag)));
+        break;
+      case "--baseline":
+        index += 1;
+        options.baselineId = requireValue(argv, index, flag);
+        break;
       case "--no-build":
         options.build = false;
         break;
@@ -463,6 +544,12 @@ export function parseBenchArguments(rawArgv: readonly string[]): CliInvocation {
 
   if (suites.length > 0) {
     options.suites = suites;
+  }
+  if (configurationIds.length > 0) {
+    options.configurationIds = configurationIds;
+  }
+  if (!help) {
+    validateSelection(options.configurationIds ?? null, options.baselineId ?? null);
   }
   return { help, options };
 }

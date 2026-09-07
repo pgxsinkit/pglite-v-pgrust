@@ -7,6 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 
+import { CONFIGURATION_IDS } from "../src/configurations";
 import { DEFAULT_BENCH_OPTIONS, parseBenchArguments } from "./bench";
 
 describe("parseBenchArguments", () => {
@@ -26,6 +27,23 @@ describe("parseBenchArguments", () => {
 
   test("refuses a Suite that does not exist, naming the ones that do", () => {
     expect(() => parseBenchArguments(["--suite", "concurrent"])).toThrow("concurrency");
+  });
+
+  test("narrows the Configurations and names the Baseline, defaulting to neither", () => {
+    expect(DEFAULT_BENCH_OPTIONS.configurationIds).toBeNull();
+    expect(DEFAULT_BENCH_OPTIONS.baselineId).toBeNull();
+    expect(parseBenchArguments(["--configurations", "pglite-memory,pgrust-memory"]).options.configurationIds).toEqual([
+      "pglite-memory",
+      "pgrust-memory",
+    ]);
+    expect(parseBenchArguments(["--baseline=pgrust-memory"]).options.baselineId).toBe("pgrust-memory");
+  });
+
+  test("refuses an id that names no Configuration, and a Baseline outside the selection", () => {
+    expect(() => parseBenchArguments(["--configurations", "pglite-memry"])).toThrow(CONFIGURATION_IDS.join(", "));
+    expect(() => parseBenchArguments(["--configurations", "pglite-memory", "--baseline", "pgrust-memory"])).toThrow(
+      "pgrust-memory",
+    );
   });
 
   // The default has to cover the run the default flags ask for: three Suites against fourteen

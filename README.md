@@ -430,6 +430,22 @@ Engine in a fresh worker, so no state carries over between Configurations; a Sto
 OPFS directory is emptied before its Run and removed after it, so nothing carries over between page
 loads either.
 
+The **Configurations** panel above the Suites chooses which columns a Run compares and which of them
+every ratio is taken against. Every Configuration is ticked by default; the ones this browser cannot
+run are greyed out, unticked and carry their own reason. Only ticked Configurations are run and only
+they become columns, always in the fixed order. The Baseline radio picks the column the ratio headers
+name — `PGlite Memory` unless it is unticked, in which case the first ticked column takes over — and
+the Reference Engine's radio is greyed out, because wa-sqlite is here to calibrate the harness rather
+than to be the thing every other column is measured against.
+
+Both choices are written to the URL as `?configurations=<id,id,…>` and `?baseline=<id>`
+(`history.replaceState`, so ticking four boxes is one history entry), which is what makes a narrowed
+Run reproducible: the link **is** the run. An absent `configurations` means every Configuration this
+browser can run; an id that names nothing is ignored with a note on the page and dropped from the
+URL, and a Baseline outside the selection falls back and corrects the URL the same way. Every
+Markdown export carries the line `Configurations (N of 14): … | Baseline: …` under the environment,
+so a table of three columns can never be mistaken for a table of fourteen.
+
 Both Suites the page runs unchanged are fixed by definition. The RTT Suite is 100 iterations, and the
 page offers no control that changes it. For
 automation only, the URL query `?rttIterations=N` — an integer from 1 to 1000, anything else ignored —
@@ -668,19 +684,33 @@ bun run bench                                # all three Suites, Chromium, fresh
 bun run bench --suite rtt --iterations 5     # one Suite, deliberately short RTT Run
 bun run bench --suite concurrency            # the Concurrency Suite on its own
 bun run bench --browser firefox --no-build   # reuse the existing dist/
-bun run bench --help                         # every flag
+bun run bench --help                         # every flag, and every Configuration id
+
+# three columns, ratios against the OPFS one
+bun run bench --suite rtt \
+  --configurations pglite-memory,pglite-opfs-repacked-relaxed,pgrust-postmaster-opfs-repacked-relaxed \
+  --baseline pglite-opfs-repacked-relaxed
 ```
 
-| Flag               | Meaning                                                                       |
-| ------------------ | ----------------------------------------------------------------------------- |
-| `--browser <name>` | `chromium` (default), `firefox` or `webkit`                                   |
-| `--suite <id>`     | `speedtest`, `rtt` or `concurrency`; repeatable, defaults to all three        |
-| `--iterations <N>` | Passes `?rttIterations=N` to the page; 1-1000                                 |
-| `--no-build`       | Reuse the existing `dist/` instead of rebuilding                              |
-| `--port <N>`       | Port for the local static server; the default asks for a free one, never 5580 |
-| `--headed`         | Show the browser window                                                       |
-| `--timeout <ms>`   | Overall in-browser deadline (default 2400000)                                 |
-| `--out <dir>`      | Results directory (default `tmp/results`)                                     |
+| Flag                       | Meaning                                                                                       |
+| -------------------------- | --------------------------------------------------------------------------------------------- |
+| `--browser <name>`         | `chromium` (default), `firefox` or `webkit`                                                   |
+| `--suite <id>`             | `speedtest`, `rtt` or `concurrency`; repeatable, defaults to all three                        |
+| `--iterations <N>`         | Passes `?rttIterations=N` to the page; 1-1000                                                 |
+| `--configurations <id,id>` | Passes `?configurations=` to the page: only these columns, in Configuration order; repeatable |
+| `--baseline <id>`          | Passes `?baseline=` to the page: the column every ratio is taken against                      |
+| `--no-build`               | Reuse the existing `dist/` instead of rebuilding                                              |
+| `--port <N>`               | Port for the local static server; the default asks for a free one, never 5580                 |
+| `--headed`                 | Show the browser window                                                                       |
+| `--timeout <ms>`           | Overall in-browser deadline (default 2400000)                                                 |
+| `--out <dir>`              | Results directory (default `tmp/results`)                                                     |
+
+`--configurations` and `--baseline` are the page's own two query parameters and nothing more, so a
+narrowed headless run and a hand-driven one are the same run. Both are validated before the browser
+is launched: an id that names no Configuration, or a Baseline outside the selection, exits 2 with a
+message listing the ids that would have worked (`bun run bench --help` lists all fourteen). What the
+CLI cannot know is which Configurations _this browser_ can run — the page drops those, and says so in
+the `Configurations (N of 14): … | Baseline: …` line of every table it exports.
 
 Each run writes `tmp/results/<ISO-timestamp>-<browser>.md` (gitignored) and prints the same content:
 the environment line, one table per Suite, and any Run failure the page reported — which is what
@@ -691,11 +721,11 @@ config and no second test runner. Install them once with `bunx playwright instal
 `@playwright/test` is pinned to an exact version because a Playwright release pins the browser
 revisions it will look for — floating it would silently ask for builds that are not in the cache.
 
-| Browser in the lane           | Behaviour                                                                                                                                                                                                                                                   |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Chromium (default)            | JSPI on by default, cross-origin isolation from the lane's own server and synchronous access handles granted in dedicated workers, so all fourteen Configurations run (six of them the Concurrency Suite)                                                   |
-| Firefox (`--browser firefox`) | The lane sets `javascript.options.wasm_js_promise_integration`; where JSPI is still missing the pgrust column reports `skipped` and the Run continues. Firefox's reduced timer precision quantises Measurements, so its numbers are coarser than Chromium's |
-| WebKit (`--browser webkit`)   | Exits 0 with `WebKit skipped: Playwright's WebKit build has no JSPI yet`, without launching. That build also refuses synchronous access handles in both worker kinds, so it could contribute neither the pgrust nor the OPFS columns                        |
+| Browser in the lane           | Behaviour                                                                                                                                                                                                                                                                                                                                                 |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Chromium (default)            | JSPI on by default, cross-origin isolation from the lane's own server and synchronous access handles granted in dedicated workers, so all fourteen Configurations run (six of them the Concurrency Suite)                                                                                                                                                 |
+| Firefox (`--browser firefox`) | The lane sets `javascript.options.wasm_js_promise_integration`; where JSPI is still missing the two `pgrust` Configurations are unavailable, so they are unticked and the table is drawn without them — the Configurations panel carries the reason. Firefox's reduced timer precision quantises Measurements, so its numbers are coarser than Chromium's |
+| WebKit (`--browser webkit`)   | Exits 0 with `WebKit skipped: Playwright's WebKit build has no JSPI yet`, without launching. That build also refuses synchronous access handles in both worker kinds, so it could contribute neither the pgrust nor the OPFS columns                                                                                                                      |
 
 `bun run test:e2e` drives the same lane from `bun test` (Chromium, all three Suites, RTT at three
 iterations) and asserts the shape of the result rather than any timing: an environment line that says
