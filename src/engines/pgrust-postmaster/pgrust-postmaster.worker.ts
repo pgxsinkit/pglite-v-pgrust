@@ -475,8 +475,12 @@ async function loadHostModule<T>(name: string): Promise<T> {
  * picks a transport and then falls through to the ordinary postmaster), the trailing database name
  * (a postmaster's getopt rejects it), the two GUCs that make the host fd the only way in, and the
  * warm standby pool, which has to be bounded because a fixed host thread pool is what backs it.
+ *
+ * `extra` is appended last, so a caller's `-c` wins the duplicate: no Configuration passes any, and
+ * the one caller that does (`scripts/probe-idle-cpu.ts`) is asking what the same server costs with
+ * its periodic work turned down.
  */
-function postmasterArgv(): string[] {
+function postmasterArgv(extra: readonly string[]): string[] {
   const argv = defaultWireArgv();
   argv[1] = "--host-pipes";
   argv.pop();
@@ -491,11 +495,14 @@ function postmasterArgv(): string[] {
     "-c",
     `max_parallel_workers=${MAX_PARALLEL_WORKERS}`,
   );
+  for (const setting of extra) {
+    argv.push("-c", setting);
+  }
   return argv;
 }
 
 /** The guest environment: the wire lanes' plus the two fds that are this transport's whole contract. */
-function guestEnv(host: ThreadsHostModule): Readonly<Record<string, string>> {
+function guestEnv(host: ThreadsHostModule, extra: Readonly<Record<string, string>>): Readonly<Record<string, string>> {
   return {
     USER: "postgres",
     PGRUST_TZDIR: "/share/timezone",
@@ -508,6 +515,8 @@ function guestEnv(host: ThreadsHostModule): Readonly<Record<string, string>> {
     // which would put tens of milliseconds into every session open for nothing.
     PGRUST_HOSTPIPES_LISTEN_FD: String(host.HOSTPIPES_LISTEN_FD),
     PGRUST_HOSTPIPES_WAKE_FD: String(host.HOSTPIPES_WAKE_FD),
+    // Last, so the one caller that passes any can turn a pgrust knob down; empty for every column.
+    ...extra,
   };
 }
 
@@ -888,8 +897,8 @@ async function openEngine(dataDir: string, options: EngineOpenOptions | undefine
       stdout: stdout.descriptor(),
       // The whole of this transport: the listener, the wake channel and every session's pair.
       pipes: registry.descriptors(),
-      argv: postmasterArgv(),
-      env: guestEnv(host),
+      argv: postmasterArgv(settings?.settings ?? []),
+      env: guestEnv(host, settings?.env ?? {}),
       poolSize,
       trace: 0,
       relayPorts: relayChannels.map((channel) => channel.port2),

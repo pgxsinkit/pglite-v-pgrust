@@ -138,6 +138,23 @@ export interface PgrustThreadsOpenOptions {
 export interface PgrustPostmasterOpenOptions {
   readonly port?: PgrustThreadsPort;
   readonly durability?: StoreDurability;
+  /**
+   * Extra `name=value` settings, each appended to the postmaster's argv as `-c name=value`.
+   *
+   * No Configuration sets any: the fourteen columns must all run the same server, or their numbers
+   * are not comparable. It exists for `scripts/probe-idle-cpu.ts`, which asks what an idle server
+   * costs with its background writer, WAL writer and checkpointer turned down, and the only honest
+   * way to ask that is to start the same Engine twice with two argvs.
+   */
+  readonly settings?: readonly string[];
+  /**
+   * Extra guest environment entries, merged over the transport's own.
+   *
+   * The same escape hatch as {@link settings}, for the pgrust-only knobs that are environment
+   * variables rather than GUCs — `PGRUST_WAITER_RECHECK_MS` above all, which is the period every
+   * parked guest thread rechecks its predicate on.
+   */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 /**

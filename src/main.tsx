@@ -8,6 +8,7 @@ import {
   writeConfigurationSelection,
 } from "./configuration-selection";
 import { readEnvironment } from "./environment";
+import { installIdleProbe } from "./idle-probe";
 import { installMemoryProbe } from "./memory-probe";
 
 import "./styles.css";
@@ -31,6 +32,14 @@ const environment = await readEnvironment();
  * worker how much wasm memory it is holding. Registering it costs one property on `globalThis`.
  */
 installMemoryProbe(environment);
+
+/**
+ * The idle probe's handle, published beside it and used by nothing on the page either: it exists so
+ * `scripts/probe-idle-cpu.ts` and `scripts/probe-idle-cpu-android.ts` can open one Engine, warm it,
+ * and then leave it standing while the browser and the OS say what an idle tab with a database in it
+ * costs. Another property on `globalThis`, and nothing else.
+ */
+installIdleProbe(environment);
 
 /**
  * Which Configurations this page compares, and which of them the ratios are taken against.

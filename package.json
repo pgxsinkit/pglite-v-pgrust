@@ -17,6 +17,8 @@
     "pgrust:bundle": "bun scripts/package-pgrust-assets.ts",
     "prepare": "bun run hooks:install",
     "preview": "vite preview",
+    "probe:idle-cpu": "bun scripts/probe-idle-cpu.ts",
+    "probe:idle-cpu-android": "bun scripts/probe-idle-cpu-android.ts",
     "probe:memory": "bun scripts/probe-memory.ts",
     "probe:notify": "bun scripts/probe-notify-latency.ts",
     "probe:pg-dump": "bun scripts/probe-pg-dump.ts",
