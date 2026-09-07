@@ -142,6 +142,13 @@ async function handle(request: EngineRequest): Promise<void> {
       ok(request.id, { elapsedMs });
       return;
     }
+    case "stats": {
+      // Neither Engine holds a `WebAssembly.Memory` this worker created, so there is nothing here it
+      // could measure. The case exists so a `stats` request answers rather than hangs; the memory
+      // probe does not run these columns.
+      post({ kind: "ok", id: request.id, measurement: null, stats: { wasmMemories: [] } });
+      return;
+    }
     case "close": {
       const open = engine;
       engine = null;

@@ -57,7 +57,7 @@ import { pgrustPostmasterOptions, requestedSessions } from "../contract";
 import type { QueryResult } from "../pgrust/pgwire";
 import { assertNoQueryError, decodeQueryResult } from "../pgrust/pgwire";
 import { toErrorPayload } from "../protocol";
-import type { EngineOkResponse, EngineReadyMessage, EngineRequest, EngineResponse } from "../protocol";
+import type { EngineOkResponse, EngineReadyMessage, EngineRequest, EngineResponse, EngineStats } from "../protocol";
 import type { ScenarioExecutor } from "../scenario-runner";
 import { runScenario } from "../scenario-runner";
 
@@ -713,6 +713,7 @@ async function openEngine(dataDir: string, options: EngineOpenOptions | undefine
   ]);
 
   const memory = host.createSharedMemory();
+  sharedMemory = memory;
   const exited = gate();
   const storageStopped = gate();
   const poolReady = gate();
@@ -925,6 +926,23 @@ function requireSession(index: number): PipeSession {
 }
 
 /**
+ * The one shared `WebAssembly.Memory` every instance of this Engine imports.
+ *
+ * Module-level so the memory probe can ask for its size while the Engine is open. `buffer.byteLength`
+ * is what the guest has actually taken: the host asks for 256 MiB up front and a maximum of 4 GiB, so
+ * this number says how far past the initial claim the guest has grown — not how much of it is
+ * resident, which only the renderer's RSS can say.
+ */
+let sharedMemory: WebAssembly.Memory | null = null;
+
+function engineStats(): EngineStats {
+  return {
+    wasmMemories:
+      sharedMemory === null ? [] : [{ name: "pgrust shared memory", bytes: sharedMemory.buffer.byteLength }],
+  };
+}
+
+/**
  * Take down everything this Run created, in the one order that works.
  *
  * The sessions are asked to end first (Terminate, which the backend answers by closing its fds),
@@ -941,6 +959,7 @@ function requireSession(index: number): PipeSession {
 async function closeEngine(): Promise<void> {
   const engine = run;
   run = null;
+  sharedMemory = null;
   const directory = storeDirectory;
   storeDirectory = null;
   try {
@@ -1071,6 +1090,10 @@ async function handle(request: EngineRequest): Promise<void> {
       requireRun();
       const report = await runScenario(request.scenario, postmasterExecutor());
       post({ kind: "ok", id: request.id, measurement: null, report });
+      return;
+    }
+    case "stats": {
+      post({ kind: "ok", id: request.id, measurement: null, stats: engineStats() });
       return;
     }
     case "close": {

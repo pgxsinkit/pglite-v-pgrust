@@ -17,6 +17,7 @@
     "pgrust:bundle": "bun scripts/package-pgrust-assets.ts",
     "prepare": "bun run hooks:install",
     "preview": "vite preview",
+    "probe:memory": "bun scripts/probe-memory.ts",
     "probe:notify": "bun scripts/probe-notify-latency.ts",
     "probe:pg-dump": "bun scripts/probe-pg-dump.ts",
     "scenario:pgxsinkit-live": "bun scripts/pgxsinkit-live-scenario.ts",

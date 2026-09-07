@@ -61,6 +61,32 @@ export interface EngineConcurrentRequest {
   readonly scenario: ConcurrentScenario;
 }
 
+/**
+ * Ask an open Engine what memory it is holding.
+ *
+ * Answered outside any Measurement and never during a Run: this exists for `scripts/probe-memory.ts`,
+ * which wants the one number a page cannot see for itself. A `WebAssembly.Memory` lives in the
+ * worker that created it, and its `buffer.byteLength` is the only honest statement of how much
+ * address space an Engine has actually taken — the page's own
+ * `performance.measureUserAgentSpecificMemory()` reports the agent cluster, and a renderer's RSS
+ * reports the process.
+ */
+export interface EngineStatsRequest {
+  readonly kind: "stats";
+  readonly id: number;
+}
+
+/** One wasm memory an Engine holds, named for the table it will appear in. */
+export interface WasmMemoryStat {
+  readonly name: string;
+  readonly bytes: number;
+}
+
+/** What an Engine can say about the memory it holds; empty for an Engine that holds none it can see. */
+export interface EngineStats {
+  readonly wasmMemories: readonly WasmMemoryStat[];
+}
+
 export interface EngineCloseRequest {
   readonly kind: "close";
   readonly id: number;
@@ -71,6 +97,7 @@ export type EngineRequest =
   | EngineExecRequest
   | EngineMeasureRequest
   | EngineConcurrentRequest
+  | EngineStatsRequest
   | EngineCloseRequest;
 
 export interface EngineOkResponse {
@@ -79,6 +106,8 @@ export interface EngineOkResponse {
   readonly measurement: Measurement | null;
   /** Present only in answer to a `concurrent` request. */
   readonly report?: ScenarioReport;
+  /** Present only in answer to a `stats` request. */
+  readonly stats?: EngineStats;
 }
 
 export interface EngineErrorResponse {

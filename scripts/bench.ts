@@ -136,10 +136,16 @@ function contentTypeFor(path: string): string {
 }
 
 /** No WebSocket route is registered, so the server carries no per-socket data. */
-type StaticServer = Server<undefined>;
+export type StaticServer = Server<undefined>;
 
-/** A static server for `dist/`, deliberately minimal: the build is already a plain static site. */
-function serveDist(distDir: string, port: number): StaticServer {
+/**
+ * A static server for `dist/`, deliberately minimal: the build is already a plain static site.
+ *
+ * Exported for `scripts/probe-memory.ts`, which drives the same build in the same browser and must
+ * serve it with the same two isolation headers — a probe that served it any other way would be
+ * measuring a page the benchmark never runs on.
+ */
+export function serveDist(distDir: string, port: number): StaticServer {
   return Bun.serve({
     port,
     hostname: "127.0.0.1",
@@ -166,7 +172,8 @@ function serveDist(distDir: string, port: number): StaticServer {
   });
 }
 
-async function buildApp(): Promise<void> {
+/** `vite build`, shared with `scripts/probe-memory.ts` so both lanes measure the same bundle. */
+export async function buildApp(): Promise<void> {
   const child = Bun.spawn({ cmd: ["bun", "run", "build"], cwd: REPO_ROOT, stdout: "inherit", stderr: "inherit" });
   const code = await child.exited;
   if (code !== 0) {

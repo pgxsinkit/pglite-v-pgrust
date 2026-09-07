@@ -7,7 +7,7 @@
 
 import type { Configuration, EngineRunner, Measurement } from "./contract";
 import { toOpenSettings } from "./contract";
-import type { EngineOkResponse, EngineRequest, EngineResponse } from "./protocol";
+import type { EngineOkResponse, EngineRequest, EngineResponse, EngineStats } from "./protocol";
 import type { ConcurrentScenario, ScenarioReport } from "./scenario";
 
 /** A request as the caller writes it: the runner owns the correlation id. */
@@ -72,6 +72,14 @@ export class WorkerEngineRunner implements EngineRunner {
       throw new Error("Engine worker returned no report for a concurrent request");
     }
     return report;
+  }
+
+  async stats(): Promise<EngineStats> {
+    const { stats } = await this.#call({ kind: "stats" });
+    if (stats === undefined) {
+      throw new Error("Engine worker returned no stats for a stats request");
+    }
+    return stats;
   }
 
   async close(): Promise<void> {

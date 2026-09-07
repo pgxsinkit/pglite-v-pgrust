@@ -18,7 +18,7 @@ import { emptyOpfsDirectory, removeOpfsDirectory } from "../../opfs";
 import type { EngineOpenOptions, PgliteStoreSettings } from "../contract";
 import { pgliteOpenOptions, pgliteStore } from "../contract";
 import { toErrorPayload } from "../protocol";
-import type { EngineOkResponse, EngineReadyMessage, EngineRequest, EngineResponse } from "../protocol";
+import type { EngineOkResponse, EngineReadyMessage, EngineRequest, EngineResponse, EngineStats } from "../protocol";
 import type { ScenarioExecutor } from "../scenario-runner";
 import { runScenario } from "../scenario-runner";
 import { toStoreError } from "./store-error";
@@ -135,6 +135,20 @@ async function openStore(dataDir: string, settings: PgliteStoreSettings): Promis
   }
 }
 
+/**
+ * PGlite's own wasm memory, as this worker can see it.
+ *
+ * `mod` is `protected` on `PGlite`, and this reads it anyway: the emscripten heap is the number the
+ * memory probe exists to compare against pgrust's shared memory, and PGlite exposes it nowhere else.
+ * `wasmMemory` first because it is the memory object itself; `HEAPU8.buffer` is the same bytes seen
+ * through the view emscripten keeps, and is the fallback for a build that does not export the other.
+ */
+function pgliteStats(): EngineStats {
+  const mod = (pg as unknown as { mod?: { wasmMemory?: WebAssembly.Memory; HEAPU8?: Uint8Array } } | null)?.mod;
+  const bytes = mod?.wasmMemory?.buffer.byteLength ?? mod?.HEAPU8?.buffer.byteLength ?? 0;
+  return { wasmMemories: bytes > 0 ? [{ name: "PGlite emscripten heap", bytes }] : [] };
+}
+
 async function handle(request: EngineRequest): Promise<void> {
   switch (request.kind) {
     case "open": {
@@ -162,6 +176,10 @@ async function handle(request: EngineRequest): Promise<void> {
     case "concurrent": {
       const report = await runScenario(request.scenario, pgliteExecutor(requireEngine()));
       post({ kind: "ok", id: request.id, measurement: null, report });
+      return;
+    }
+    case "stats": {
+      post({ kind: "ok", id: request.id, measurement: null, stats: pgliteStats() });
       return;
     }
     case "close": {

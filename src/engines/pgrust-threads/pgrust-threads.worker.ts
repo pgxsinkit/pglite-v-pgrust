@@ -59,7 +59,7 @@ import type { EngineOpenOptions, PgrustThreadsFs, PgrustThreadsPort, StoreDurabi
 import type { QueryResult } from "../pgrust/pgwire";
 import { assertNoQueryError, decodeQueryResult } from "../pgrust/pgwire";
 import { toErrorPayload } from "../protocol";
-import type { EngineOkResponse, EngineReadyMessage, EngineRequest, EngineResponse } from "../protocol";
+import type { EngineOkResponse, EngineReadyMessage, EngineRequest, EngineResponse, EngineStats } from "../protocol";
 
 /**
  * The three vendored host modules, loaded from `public/pgrust/host/` rather than bundled.
@@ -503,6 +503,7 @@ async function openEngine(dataDir: string, options: EngineOpenOptions | undefine
   ]);
 
   const memory = host.createSharedMemory();
+  sharedMemory = memory;
   const exited = gate();
   const storageStopped = gate();
 
@@ -735,6 +736,23 @@ async function measureQuery(sql: string): Promise<{ result: QueryResult; elapsed
 }
 
 /**
+ * The one shared `WebAssembly.Memory` every instance of this Engine imports.
+ *
+ * Module-level so the memory probe can ask for its size while the Engine is open. `buffer.byteLength`
+ * is what the guest has actually taken: the host asks for 256 MiB up front and a maximum of 4 GiB, so
+ * this number says how far past the initial claim the guest has grown — not how much of it is
+ * resident, which only the renderer's RSS can say.
+ */
+let sharedMemory: WebAssembly.Memory | null = null;
+
+function engineStats(): EngineStats {
+  return {
+    wasmMemories:
+      sharedMemory === null ? [] : [{ name: "pgrust shared memory", bytes: sharedMemory.buffer.byteLength }],
+  };
+}
+
+/**
  * Take down everything this Run created, in the one order that works.
  *
  * The guest is asked to exit first (Terminate, then stdin EOF), because its threads are parked in
@@ -749,6 +767,7 @@ async function measureQuery(sql: string): Promise<{ result: QueryResult; elapsed
 async function closeEngine(): Promise<void> {
   const engine = session;
   session = null;
+  sharedMemory = null;
   const directory = storeDirectory;
   storeDirectory = null;
   try {
@@ -826,6 +845,10 @@ async function handle(request: EngineRequest): Promise<void> {
       const { result, elapsedMs } = await measureQuery(request.sql);
       assertNoQueryError(result);
       ok(request.id, { elapsedMs });
+      return;
+    }
+    case "stats": {
+      post({ kind: "ok", id: request.id, measurement: null, stats: engineStats() });
       return;
     }
     case "close": {

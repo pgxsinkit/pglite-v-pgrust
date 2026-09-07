@@ -7,6 +7,7 @@
  * browser is not stored here — it is computed at runtime in `./availability`.
  */
 
+import type { EngineStats } from "./protocol";
 import type { ConcurrentScenario, ScenarioReport } from "./scenario";
 
 /**
@@ -297,6 +298,8 @@ export interface EngineRunner {
   measure(sql: string): Promise<Measurement>;
   /** Run one scripted Scenario — every Client at once — and return what each of them did. */
   concurrent(scenario: ConcurrentScenario): Promise<ScenarioReport>;
+  /** What memory this Engine is holding right now. Untimed, and never asked during a Run. */
+  stats(): Promise<EngineStats>;
   /** Tear the Engine and its worker down. Safe to call more than once. */
   close(): Promise<void>;
 }
