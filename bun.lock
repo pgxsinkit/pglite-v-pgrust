@@ -6,6 +6,7 @@
       "name": "pglite-v-pgrust",
       "dependencies": {
         "@electric-sql/pglite": "npm:@pgxsinkit/pglite@0.5.5-pgx.3",
+        "@electric-sql/pglite-tools": "^0.4.8",
         "@pgxsinkit/client": "0.3.0",
         "@pgxsinkit/contracts": "0.3.0",
         "@pgxsinkit/pglite-opfs-repacked": "0.3.0",
@@ -34,7 +35,7 @@
 
     "@electric-sql/pglite": ["@pgxsinkit/pglite@0.5.5-pgx.3", "", {}, "sha512-r8Ruh4W6oyDZVOqF/andUmTixqI0e0Dtvqcd/7PjmOaaHKVFPmX/hn+g00c3VcVSDmYkpz2xFh3IGZoq/0EdZQ=="],
 
-    "@electric-sql/pglite-tools": ["@electric-sql/pglite-tools@0.4.5", "", { "peerDependencies": { "@electric-sql/pglite": "0.5.5" } }, "sha512-4Fp+iFgqOLPFu/9HRI/I4JAMJaG3Bz4hIwDS5gzRYNNDMUNLdDew4nQsxocAk5Kcfbjcg/PeViqAe8KxXhpnsA=="],
+    "@electric-sql/pglite-tools": ["@electric-sql/pglite-tools@0.4.8", "", { "peerDependencies": { "@electric-sql/pglite": "0.5.8" } }, "sha512-WjgS8US6xfuE0wLYn5m9WrZ/+8dQWoQuQSRkpe7eYcxxx1UjZjvq30rpYSHfGrGtTke/zNiCd9ijVGeRUD8ukg=="],
 
     "@microsoft/fetch-event-source": ["@microsoft/fetch-event-source@2.0.1", "", {}, "sha512-W6CLUJ2eBMw3Rec70qrsEW0jOm/3twwJv21mrmj2yORiaVmVYGS4sSS5yUwvQc1ZlDLYGPnClVWmUUMagKNsfA=="],
 
@@ -299,6 +300,8 @@
     "wa-sqlite": ["wa-sqlite@github:rhashimoto/wa-sqlite#2bf1c59", {}, "rhashimoto-wa-sqlite-2bf1c59", "sha512-VdZ1E1nvOmcVNObOovAX37fykyh4bNv8bQF1fQTU3AFUfa8iU+NyGsC/SHQkFg11t8SGLe6NxbFsSAl6AsvBgQ=="],
 
     "zod": ["zod@4.5.4", "", {}, "sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA=="],
+
+    "@pgxsinkit/client/@electric-sql/pglite-tools": ["@electric-sql/pglite-tools@0.4.5", "", { "peerDependencies": { "@electric-sql/pglite": "0.5.5" } }, "sha512-4Fp+iFgqOLPFu/9HRI/I4JAMJaG3Bz4hIwDS5gzRYNNDMUNLdDew4nQsxocAk5Kcfbjcg/PeViqAe8KxXhpnsA=="],
 
     "playwright/fsevents": ["fsevents@2.3.2", "", { "os": "darwin" }, "sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA=="],
   }

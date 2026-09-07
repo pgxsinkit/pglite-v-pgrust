@@ -25,9 +25,16 @@
  * itself. Bytes past the terminator (there are none in practice, but the ring does not promise it)
  * stay buffered for the next call.
  *
- * **Nothing here blocks.** `SabPipe.readAsync` is `Atomics.waitAsync`, which is the half of the API
- * a driver may use on any thread — so this class works unchanged on the main thread of bun and in a
- * browser worker. The blocking half belongs to the guest's own threads.
+ * **Nothing here blocks, with one deliberate exception.** `SabPipe.readAsync` is
+ * `Atomics.waitAsync`, which is the half of the API a driver may use on any thread — so this class
+ * works unchanged on the main thread of bun and in a browser worker. The exception is
+ * `execProtocolRawStream`, PGlite's own seam for callers that are wasm callbacks: `pglite-tools`'
+ * pg_dump hands us protocol bytes from inside a blocking `callMain` and reads the reply back
+ * SYNCHRONOUSLY, before its write callback returns, so a reply that arrives after an `await` arrives
+ * after pg_dump has already concluded the server hung up. Where the agent is allowed to park
+ * (`Atomics.wait`: bun's main thread, and any Worker) that one method therefore drives the ring with
+ * the blocking half of the API instead — same framing, same terminators, no await before
+ * `onRawData`. See {@link PgrustPGlite.execProtocolRawStream} for the exact rule.
  *
  * **The idle pump.** With one session, a `NOTIFY` and the `LISTEN` that wants it share a backend, so
  * the `NotificationResponse` rides back on the notifying statement's own reply and nothing has to
@@ -82,6 +89,14 @@ export interface PgrustPGliteOptions<TExtensions extends Extensions = Extensions
   readonly user?: string;
   readonly database?: string;
   readonly applicationName?: string;
+  /**
+   * Whether `execProtocolRawStream` may take the blocking path when the rule allows it (see
+   * {@link PgrustPGlite.execProtocolRawStream}). True by default, and worth turning off for exactly
+   * one reason: to reproduce, on an agent that could block, what a caller which cannot wait for an
+   * `await` sees when the reply does not arrive inside the call. `scripts/probe-pg-dump.ts --async`
+   * is the only user.
+   */
+  readonly syncRawStream?: boolean;
 }
 
 /** Frontend message type bytes, in the order `BasePGlite` sends them. */
@@ -129,6 +144,30 @@ const HEADER_BYTES = 5;
  * poll, so this adds at most a millisecond to a notification's journey.
  */
 const PUMP_IDLE_POLL_MS = 1;
+
+/** The `SSLRequest`/`GSSENCRequest` packet: length 8, then the code, and no type byte. */
+const SSL_REQUEST_BYTES = 8;
+const SSL_REQUEST_CODE = 80877103;
+const GSSENC_REQUEST_CODE = 80877104;
+/** The one-byte "no, and carry on unencrypted" answer to either of them. */
+const DENIED = new Uint8Array([0x4e]); // "N"
+
+/**
+ * Whether this agent may park in `Atomics.wait`.
+ *
+ * True on bun's (and Node's) main thread and in every Worker; false on a browser's main thread,
+ * where the call throws, and false anywhere `SharedArrayBuffer` is withheld. Computed once, by
+ * asking rather than by sniffing the environment: the mismatched value makes the call return
+ * `"not-equal"` immediately, so on an agent that may block this costs nothing and never sleeps.
+ */
+const CAN_BLOCK = ((): boolean => {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 1, 0);
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -233,6 +272,18 @@ export class PgrustPGlite extends BasePGlite {
    */
   #exchangeInFlight = false;
   #pumping = false;
+  /**
+   * The bytes the backend answered this session's own startup packet with — `AuthenticationOk`, the
+   * `ParameterStatus` run, `BackendKeyData`, `ReadyForQuery`.
+   *
+   * Kept because a second client can turn up on this session and open with a handshake of its own:
+   * `pglite-tools`' pg_dump is a whole libpq, and libpq's first act is a startup packet. The backend
+   * is long past accepting one, so the handshake it already gave is replayed instead. PGlite does the
+   * same thing by another route — it re-runs `ProcessStartupPacket` against its live backend.
+   */
+  #handshakeReply: Uint8Array = new Uint8Array(0);
+  /** Whether the blocking raw-stream path is permitted at all; see `PgrustPGliteOptions.syncRawStream`. */
+  readonly #syncRawStream: boolean;
 
   // The same three mutexes `PGlite` keeps, doing the same three jobs.
   readonly #queryMutex = new Mutex();
@@ -264,6 +315,7 @@ export class PgrustPGlite extends BasePGlite {
       this.debug = options.debug;
     }
     this.#extensions = options.extensions ?? {};
+    this.#syncRawStream = options.syncRawStream ?? true;
     this.#startupParameters = {
       user: options.user ?? "postgres",
       database: options.database ?? "postgres",
@@ -322,7 +374,7 @@ export class PgrustPGlite extends BasePGlite {
     // The startup packet, and everything through the first ReadyForQuery. The postmaster has
     // already spawned this backend (the host announced the connection record); this is the
     // handshake that backend is waiting on.
-    await this.#exchange(encodeStartup(this.#startupParameters), 0);
+    this.#handshakeReply = await this.#exchange(encodeStartup(this.#startupParameters), 0);
 
     this.#ready = true;
 
@@ -415,25 +467,77 @@ export class PgrustPGlite extends BasePGlite {
     return { reply: null, scanned: at };
   }
 
-  /** The message type byte `BasePGlite` is sending, or 0 for a startup packet (which has none). */
+  /**
+   * The message that decides how far a reply runs: the type byte of the LAST whole frontend message
+   * in `message`, or 0 for a startup packet (which has no type byte and is never batched).
+   *
+   * `BasePGlite` sends exactly one message per call, so for every caller in PGlite this is the first
+   * byte and nothing more. A libpq on the other side of `execProtocolRawStream` is not so tidy: it
+   * flushes whatever its output buffer holds, which can be a whole `Parse`/`Bind`/`Describe`/
+   * `Execute`/`Sync` in one write. It is the last of those that says when the backend has finished
+   * answering — and whether the batch flushes itself.
+   */
   #frontendTypeOf(message: Uint8Array): number {
     const first = message[0];
     if (first === undefined) {
       throw new Error("PgrustPGlite: refusing to send an empty protocol message");
     }
-    return first === 0 ? 0 : first;
+    if (first === 0) {
+      return 0;
+    }
+    let type = first;
+    let at = 0;
+    while (message.length - at >= HEADER_BYTES) {
+      const view = new DataView(message.buffer, message.byteOffset + at + 1, 4);
+      const end = at + 1 + view.getUint32(0, false);
+      if (end > message.length) {
+        break; // A trailing partial frame: the last WHOLE message is still the one that answers.
+      }
+      type = message[at] as number;
+      at = end;
+    }
+    return type;
   }
 
   // -------------------------------------------------------------------------------------------
   // The abstract transport hooks
   // -------------------------------------------------------------------------------------------
 
+  /**
+   * The messages that are answered here rather than on the wire, or null for the ordinary case.
+   *
+   * Two of them, and both exist because `execProtocolRawStream` can be driven by a whole libpq
+   * rather than by `BasePGlite`: an `SSLRequest`/`GSSENCRequest` is refused (the answer is one byte,
+   * `N`, after which libpq carries on unencrypted), and a startup packet is answered with the
+   * handshake this session already completed. `Terminate` is the third, and the oldest: `close()`
+   * owns it, so a caller who sends one through the protocol seam gets the same no-op `PGlite` gives
+   * it rather than a session torn down under the client.
+   */
+  #answerLocally(message: Uint8Array, type: number): Uint8Array | null {
+    if (type === FRONTEND_TERMINATE) {
+      return new Uint8Array(0);
+    }
+    if (type !== 0) {
+      return null;
+    }
+    if (message.length === SSL_REQUEST_BYTES) {
+      const view = new DataView(message.buffer, message.byteOffset, SSL_REQUEST_BYTES);
+      const code = view.getUint32(4, false);
+      if (
+        view.getUint32(0, false) === SSL_REQUEST_BYTES &&
+        (code === SSL_REQUEST_CODE || code === GSSENC_REQUEST_CODE)
+      ) {
+        return DENIED;
+      }
+    }
+    return this.#ready ? this.#handshakeReply.slice() : null;
+  }
+
   override async execProtocolRaw(message: Uint8Array, _options: ExecProtocolOptions = {}): Promise<Uint8Array> {
     const type = this.#frontendTypeOf(message);
-    if (type === FRONTEND_TERMINATE) {
-      // `close()` owns Terminate; a caller who sends one through the protocol seam gets the same
-      // no-op `PGlite` gives it rather than a session torn down under the client.
-      return new Uint8Array(0);
+    const answered = this.#answerLocally(message, type);
+    if (answered !== null) {
+      return answered;
     }
     return await this.#exchange(message, type);
   }
@@ -456,11 +560,78 @@ export class PgrustPGlite extends BasePGlite {
     return this.#settle(data, throwOnError);
   }
 
+  /**
+   * The one method that may block, and the rule for when it does.
+   *
+   * **The rule:** `execProtocolRawStream` drives the ring with the BLOCKING half of `SabPipe` — and
+   * therefore reaches `onRawData` inside its own synchronous prefix, before it returns a promise to
+   * anybody — whenever both of these hold:
+   *
+   *  1. this agent may park in `Atomics.wait` ({@link CAN_BLOCK}: bun's main thread, any Worker; not
+   *     a browser's main thread), and
+   *  2. no other exchange is in flight, so nothing is waiting on the bytes it is about to consume
+   *     and no `await` of ours is holding the ring.
+   *
+   * Otherwise it falls back to the asynchronous path, which is correct for every caller that awaits
+   * it and wrong only for one that cannot.
+   *
+   * **Why this method and no other.** PGlite documents `execProtocolRawStream` as the seam its own
+   * tools drive from synchronous wasm callbacks, and `pglite-tools`' pg_dump is exactly that: its
+   * emscripten write callback calls this and its read callback consumes the buffered reply
+   * immediately, on the same tick, inside a blocking `callMain` where no microtask can run. On the
+   * asynchronous path the buffer is still empty when pg_dump reads it, pg_dump reads zero bytes,
+   * and libpq concludes the server closed the connection. Nothing else in this class needs the
+   * blocking path, and `execProtocolRaw` deliberately does not take it.
+   *
+   * A wire reply is read in ring-sized chunks and only completes at its terminator, so the whole
+   * reply is in hand before anything can be handed on: one call, not a stream of them. The
+   * contract — "every byte of the reply reaches `onRawData`" — is kept on both paths.
+   */
   override async execProtocolRawStream(message: Uint8Array, { onRawData }: ExecProtocolOptionsStream): Promise<void> {
-    // A wire reply is read in ring-sized chunks and only completes at its terminator, so the whole
-    // reply is in hand before anything can be handed on: one call, not a stream of them. The
-    // contract — "every byte of the reply reaches `onRawData`" — is kept either way.
+    const type = this.#frontendTypeOf(message);
+    const answered = this.#answerLocally(message, type);
+    if (answered !== null) {
+      onRawData(answered);
+      return;
+    }
+    if (this.#syncRawStream && CAN_BLOCK && !this.#exchangeInFlight) {
+      onRawData(this.#exchangeSync(message, type));
+      return;
+    }
     onRawData(await this.execProtocolRaw(message));
+  }
+
+  /**
+   * {@link PgrustPGlite.#exchange}, with the blocking half of the ring API: one `Atomics.wait` write
+   * and one `Atomics.wait` read loop instead of two awaits. Same framing, same terminators, same
+   * buffer — `#scanForReply` is the shared half — and the same `#exchangeInFlight` flag, so the idle
+   * pump stays out of its way exactly as it does for the asynchronous path.
+   */
+  #exchangeSync(message: Uint8Array, frontendType: number): Uint8Array {
+    const isTerminator = endsReplyTo(frontendType);
+    this.#exchangeInFlight = true;
+    try {
+      // Blocking, unlike `#send`: nothing else on this agent can drain the ring while this call
+      // holds it, so parking until there is room is the only honest wait available.
+      this.#toGuest.write(isSelfFlushing(frontendType) ? message : concat(message, FLUSH), { block: true });
+
+      let scanned = 0;
+      for (;;) {
+        const scan = this.#scanForReply(isTerminator, scanned);
+        if (scan.reply !== null) {
+          return scan.reply;
+        }
+        scanned = scan.scanned;
+        const read = this.#fromGuest.readInto(this.#scratch, this.#scratch.length);
+        if (read === 0) {
+          this.#closed = true;
+          throw new Error("PgrustPGlite: the backend closed the session while a reply was outstanding");
+        }
+        this.#buffered = concat(this.#buffered, this.#scratch.subarray(0, read));
+      }
+    } finally {
+      this.#exchangeInFlight = false;
+    }
   }
 
   /** Parse a reply, dispatch its notices and notifications, and surface any database error. */

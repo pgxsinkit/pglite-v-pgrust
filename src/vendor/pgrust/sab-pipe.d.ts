@@ -7,9 +7,14 @@
  * declaration is what lets `allowJs: false` see it. It describes only the surface this repo uses.
  *
  * The blocking half of the API (`readInto`, `waitReadable`, `waitWritable`, and `write` with
- * `block: true`) parks the calling agent in `Atomics.wait` and belongs to the guest's own workers.
- * The engine worker drives the pipes from the asynchronous half — `readAsync`, and `write` with
- * `block: false` — because a driver that blocked would never drain the other direction.
+ * `block: true`) parks the calling agent in `Atomics.wait`, and is mostly the guest's own workers'
+ * to use: the engine worker drives the pipes from the asynchronous half — `readAsync`, and `write`
+ * with `block: false` — because a driver that blocked would never drain the other direction.
+ *
+ * `readInto` is declared here nonetheless, for the one caller on this side of the wire that has no
+ * choice: `PgrustPGlite`'s synchronous raw-stream path, which answers a wasm callback that consumes
+ * the reply before it can return (`pglite-tools`' pg_dump). That path runs only where `Atomics.wait`
+ * is permitted — bun's main thread, and any Worker — and never while another exchange is in flight.
  */
 
 /** A `SabPipe` as it crosses an agent boundary: `SharedArrayBuffer` is cloned by reference. */
@@ -42,6 +47,11 @@ export declare class SabPipe {
   write(bytes: Uint8Array, options?: { readonly block?: boolean }): number;
   /** Consumer side, non-blocking: -1 would block, 0 EOF, >0 the byte count. */
   readIntoNow(target: Uint8Array, maxLength: number): number;
+  /**
+   * Consumer side, BLOCKING: parks in `Atomics.wait` while the ring is empty and open, and returns
+   * 0 only at EOF. Callable only from an agent whose `[[CanBlock]]` is true.
+   */
+  readInto(target: Uint8Array, maxLength: number): number;
   /** Consumer side for an agent that must not block; resolves with the byte count (0 at EOF). */
   readAsync(target: Uint8Array, maxLength: number): Promise<number>;
   /** One chunk, or null at EOF. */
