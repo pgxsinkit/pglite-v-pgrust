@@ -10,6 +10,13 @@ import { hasRatioColumn, readCell, rowDetails, unmeasuredCellText } from "./grid
 export interface MarkdownExportOptions {
   readonly title: string;
   readonly environmentLine: string;
+  /**
+   * Which Configurations this table compares, and which of them the ratios are taken against.
+   *
+   * Part of the environment block rather than a footnote: a table of three columns out of fourteen
+   * is a different result from a table of fourteen, and a pasted one has to say which it is.
+   */
+  readonly selectionLine?: string;
   readonly baselineLabel: string;
   /**
    * A line the Suite itself contributes under the environment — how many Clients ran, for the
@@ -77,6 +84,9 @@ function detailLines(grid: ResultsGrid): readonly string[] {
 export function toMarkdown(grid: ResultsGrid, options: MarkdownExportOptions): string {
   const header = markdownHeaderCells(grid, options.baselineLabel);
   const lines: string[] = [`### ${options.title}`, "", options.environmentLine, ""];
+  if (options.selectionLine !== undefined) {
+    lines.push(options.selectionLine, "");
+  }
   if (options.suiteLine !== undefined) {
     lines.push(options.suiteLine, "");
   }

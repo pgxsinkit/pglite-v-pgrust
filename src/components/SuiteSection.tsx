@@ -2,12 +2,8 @@ import type { JSX } from "react";
 import { useState } from "react";
 
 import { applyConcurrencyClients, describeConcurrencyClientsOverride } from "../concurrency-clients";
-import {
-  BASELINE_CONFIGURATION_DIALECT,
-  BASELINE_CONFIGURATION_ID,
-  BASELINE_CONFIGURATION_LABEL,
-  CONFIGURATIONS,
-} from "../configurations";
+import { describeConfigurationSelection } from "../configuration-selection";
+import { BASELINE_CONFIGURATION_DIALECT, CONFIGURATIONS } from "../configurations";
 import { suiteAvailability } from "../engines/availability";
 import type { Configuration } from "../engines/contract";
 import { configurationDialect } from "../engines/contract";
@@ -24,6 +20,13 @@ import { ResultsTable } from "./ResultsTable";
 export interface SuiteSectionProps {
   readonly suite: Suite;
   readonly environment: EnvironmentInfo;
+  /** The Configurations this Run compares, in column order: whatever the page has ticked. */
+  readonly configurations: readonly Configuration[];
+  /**
+   * The column every ratio is taken against. Null only when nothing at all is selected, which is a
+   * table with no columns and therefore nothing to take a ratio against.
+   */
+  readonly baseline: Configuration | null;
 }
 
 /**
@@ -71,8 +74,12 @@ function describeError(error: unknown): string {
   return String(error);
 }
 
-export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Element {
-  const [setupSql, setSetupSql] = useState(() => suite.initialSetupFor(BASELINE_CONFIGURATION_DIALECT));
+export function SuiteSection({ suite, environment, configurations, baseline }: SuiteSectionProps): JSX.Element {
+  // Seeded from the Baseline the page opened with, and left alone afterwards: a reader who has typed
+  // into the textarea must not have it rewritten under them by a click on another Baseline radio.
+  const [setupSql, setSetupSql] = useState(() =>
+    suite.initialSetupFor(baseline === null ? BASELINE_CONFIGURATION_DIALECT : configurationDialect(baseline)),
+  );
   const [cells, setCells] = useState<GridCells>({});
   /** The Detail of the cells that have one; keyed exactly as the cells are. */
   const [details, setDetails] = useState<GridDetails>({});
@@ -93,6 +100,8 @@ export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Ele
   }
 
   const running = runState === "running";
+  /** What the ratio headers say they are relative to; empty only when there is no column at all. */
+  const baselineLabel = baseline?.label ?? "";
   /**
    * The Suite as run: identical to `suite` unless a URL asked for fewer RTT iterations or another
    * number of Concurrency Clients. Both rewrite the Suite rather than the Run, and both say so.
@@ -108,10 +117,10 @@ export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Ele
     // The runnable Suite's rows, not the declared Suite's: a Concurrency Run with another Client
     // count has other labels, and the table has to be the table that was run.
     rows: runnableSuite.benchmarks.map((benchmark) => ({ id: benchmark.id, label: benchmark.label })),
-    columns: CONFIGURATIONS.map((configuration) =>
+    columns: configurations.map((configuration) =>
       toColumn(runnableSuite, configuration, environment, failures[configuration.id]),
     ),
-    baselineColumnId: BASELINE_CONFIGURATION_ID,
+    baselineColumnId: baseline?.id ?? "",
     cells,
     details,
   };
@@ -120,7 +129,14 @@ export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Ele
   const markdown = toMarkdown(grid, {
     title: suite.title,
     environmentLine: formatEnvironmentLine(environment),
-    baselineLabel: BASELINE_CONFIGURATION_LABEL,
+    // Taken from the grid itself rather than from the props, so the line and the table it heads
+    // cannot name different columns.
+    selectionLine: describeConfigurationSelection(
+      grid.columns.map((column) => column.id),
+      grid.baselineColumnId === "" ? null : grid.baselineColumnId,
+      CONFIGURATIONS.length,
+    ),
+    baselineLabel,
     ...(runnableSuite.headerLine === undefined ? {} : { suiteLine: runnableSuite.headerLine }),
   });
 
@@ -138,7 +154,7 @@ export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Ele
     setDetails({});
     setFailures({});
     try {
-      for (const configuration of CONFIGURATIONS) {
+      for (const configuration of configurations) {
         if (!suiteAvailability(runnableSuite, configuration, environment).available) {
           continue;
         }
@@ -239,7 +255,7 @@ export function SuiteSection({ suite, environment }: SuiteSectionProps): JSX.Ele
         {error ?? ""}
       </pre>
 
-      <ResultsTable grid={grid} baselineLabel={BASELINE_CONFIGURATION_LABEL} activeColumnId={activeColumnId} />
+      <ResultsTable grid={grid} baselineLabel={baselineLabel} activeColumnId={activeColumnId} />
 
       {/* Exactly what "Copy as Markdown" writes to the clipboard, exposed for the headless lane. */}
       <pre hidden data-testid={`markdown-${suite.id}`}>

@@ -61,11 +61,11 @@ An Engine included only so results can be calibrated against numbers published e
 _Avoid_: control, sanity engine
 
 **Baseline**:
-The Configuration every ratio is computed against: PGlite Memory.
+The Configuration every ratio is computed against: PGlite Memory by default, and any other selected Configuration a Run chooses (`?baseline=<id>`, or the radio in the page's Configurations panel) — never a Reference Engine one.
 _Avoid_: reference, control column
 
 **Configuration**:
-An Engine plus the storage and durability settings it is opened with; one Configuration is one column of results. There are exactly fourteen: PGlite Memory, PGlite Memory (unlogged), PGlite OPFS repacked (relaxed), PGlite OPFS repacked (strict), pgrust Memory, pgrust Memory (unlogged), pgrust Threads Memory, pgrust Threads Memory (broker, pre-release store), pgrust Threads OPFS repacked (relaxed, pre-release store), pgrust Threads OPFS repacked (strict, pre-release store), pgrust Postmaster Memory (broker, pre-release store), pgrust Postmaster OPFS repacked (relaxed, pre-release store), wa-sqlite Memory, wa-sqlite Memory (journal off).
+An Engine plus the storage and durability settings it is opened with; one selected Configuration is one column of results, and a Run may select any subset of them (`?configurations=<id,id,…>`, or the checkboxes in the page's Configurations panel), always in the order below. There are exactly fourteen: PGlite Memory, PGlite Memory (unlogged), PGlite OPFS repacked (relaxed), PGlite OPFS repacked (strict), pgrust Memory, pgrust Memory (unlogged), pgrust Threads Memory, pgrust Threads Memory (broker, pre-release store), pgrust Threads OPFS repacked (relaxed, pre-release store), pgrust Threads OPFS repacked (strict, pre-release store), pgrust Postmaster Memory (broker, pre-release store), pgrust Postmaster OPFS repacked (relaxed, pre-release store), wa-sqlite Memory, wa-sqlite Memory (journal off).
 _Avoid_: setup, mode, variant, column
 
 **Memory Configuration**:

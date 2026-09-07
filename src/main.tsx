@@ -2,6 +2,11 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import { App } from "./App";
+import {
+  readConfigurationSelection,
+  selectionNeedsCorrection,
+  writeConfigurationSelection,
+} from "./configuration-selection";
 import { readEnvironment } from "./environment";
 import { installMemoryProbe } from "./memory-probe";
 
@@ -27,8 +32,22 @@ const environment = await readEnvironment();
  */
 installMemoryProbe(environment);
 
+/**
+ * Which Configurations this page compares, and which of them the ratios are taken against.
+ *
+ * Resolved here rather than in a component for the same reason the environment is: it depends on
+ * what this browser can run, and the table's columns have to be settled before the table is drawn.
+ * A URL that asked for something it did not get — an id that names nothing, a Configuration this
+ * browser cannot run, a Baseline outside the selection — is corrected on the spot, so the link in
+ * the address bar always describes the page under it.
+ */
+const selection = readConfigurationSelection(environment);
+if (selectionNeedsCorrection(selection)) {
+  writeConfigurationSelection(selection.selectedIds, selection.baselineId);
+}
+
 createRoot(container).render(
   <StrictMode>
-    <App environment={environment} />
+    <App environment={environment} selection={selection} />
   </StrictMode>,
 );

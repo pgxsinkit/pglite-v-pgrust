@@ -123,6 +123,16 @@ describe("toMarkdown, a Suite that reports more than one number per cell", () =>
     expect(toMarkdown(GRID, OPTIONS)).not.toContain("#### Detail");
   });
 
+  test("carries the Configuration selection under the environment when it is given one", () => {
+    const lines = toMarkdown(GRID, {
+      ...OPTIONS,
+      selectionLine: "Configurations (3 of 14): a, b, c | Baseline: b",
+    }).split("\n");
+    expect(lines[2]).toBe(OPTIONS.environmentLine);
+    expect(lines[4]).toBe("Configurations (3 of 14): a, b, c | Baseline: b");
+    expect(lines[6]?.startsWith("| Benchmark |")).toBe(true);
+  });
+
   test("carries the Suite's own header line under the environment when it has one", () => {
     const lines = toMarkdown(GRID, { ...OPTIONS, suiteLine: "Concurrency clients: 4" }).split("\n");
     expect(lines[2]).toBe(OPTIONS.environmentLine);

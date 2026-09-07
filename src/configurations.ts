@@ -18,10 +18,12 @@
  * store's OPFS directory before it opens it and removes it after.
  *
  * Every Configuration here is wired up; whether one can run in this browser is decided at runtime by
- * `configurationAvailability` (see `./engines/availability`).
+ * `configurationAvailability` (see `./engines/availability`), and which of them a given Run actually
+ * compares — and which of those is the Baseline — is decided by the reader or by a URL (see
+ * `./configuration-selection`). The order below is the column order in every case.
  */
 
-import type { Configuration, SqlDialect } from "./engines/contract";
+import type { Configuration, EngineId, SqlDialect } from "./engines/contract";
 import { configurationDialect } from "./engines/contract";
 import { OPFS_DIRECTORY_PREFIX, opfsOwnedRootDirectory } from "./opfs";
 
@@ -33,8 +35,24 @@ import { OPFS_DIRECTORY_PREFIX, opfsOwnedRootDirectory } from "./opfs";
  */
 const UNLOGGED_TABLES = (sql: string): string => sql.replace(/CREATE TABLE/g, "CREATE UNLOGGED TABLE");
 
-/** The column every ratio is taken against. */
+/** The column every ratio is taken against, unless a Run chooses another one. */
 export const BASELINE_CONFIGURATION_ID = "pglite-memory";
+
+/**
+ * The Reference Engine: present so the harness can be calibrated against published numbers, and
+ * never the Baseline of a ratio. Its columns are the one thing the Baseline chooser will not offer.
+ */
+export const REFERENCE_ENGINE: EngineId = "wasqlite";
+
+/** Why the Reference Engine's Baseline radio is greyed out. */
+export const REFERENCE_ENGINE_BASELINE_REASON =
+  "The Reference Engine is here to calibrate the harness against published numbers, and is never " +
+  "the Baseline of a ratio";
+
+/** Whether a Configuration may be the column every other one is measured against. */
+export function canBeBaseline(configuration: Configuration): boolean {
+  return configuration.engine !== REFERENCE_ENGINE;
+}
 
 export const CONFIGURATIONS: readonly Configuration[] = [
   {
@@ -191,6 +209,14 @@ export const CONFIGURATIONS: readonly Configuration[] = [
 export function findConfiguration(id: string): Configuration | undefined {
   return CONFIGURATIONS.find((config) => config.id === id);
 }
+
+/** Every Configuration id, in column order: what a `?configurations=` list is resolved against. */
+export const CONFIGURATION_IDS: readonly string[] = CONFIGURATIONS.map((config) => config.id);
+
+/** The Configurations a ratio may be taken against, in column order. */
+export const BASELINE_CANDIDATE_IDS: readonly string[] = CONFIGURATIONS.filter(canBeBaseline).map(
+  (config) => config.id,
+);
 
 const BASELINE_CONFIGURATION = findConfiguration(BASELINE_CONFIGURATION_ID);
 

@@ -63,6 +63,52 @@ h2 {
   font-family: ui-monospace, Menlo, Monaco, "Cascadia Mono", "Roboto Mono", monospace;
 }
 
+/* The columns a Run compares, and the one every ratio is taken against. */
+.configurations {
+  margin: 0 0 2rem;
+}
+
+.configuration-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: max-content max-content max-content 1fr;
+  gap: 0.15rem 1rem;
+  font-size: 0.9rem;
+}
+
+.configuration-list li {
+  display: contents;
+}
+
+.configuration-list label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+
+.configuration-list .baseline-choice {
+  color: #555;
+}
+
+.configuration-list .configuration-id {
+  color: #666;
+  font-family: ui-monospace, Menlo, Monaco, "Cascadia Mono", "Roboto Mono", monospace;
+  font-size: 0.85em;
+}
+
+.configuration-list li.unavailable label,
+.configuration-list li.unavailable .configuration-id {
+  color: #999;
+}
+
+.configuration-list .reason {
+  color: #999;
+  font-size: 0.85em;
+}
+
 .suite {
   margin-bottom: 3rem;
 }

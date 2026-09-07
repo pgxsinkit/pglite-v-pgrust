@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  BASELINE_CANDIDATE_IDS,
   BASELINE_CONFIGURATION_DIALECT,
   BASELINE_CONFIGURATION_ID,
   BASELINE_CONFIGURATION_LABEL,
+  CONFIGURATION_IDS,
   CONFIGURATIONS,
   findConfiguration,
 } from "./configurations";
@@ -181,6 +183,11 @@ describe("Configurations", () => {
   test("give both pgrust columns their own Engine", () => {
     expect(findConfiguration("pgrust-memory")?.engine).toBe("pgrust");
     expect(findConfiguration("pgrust-memory-unlogged")?.engine).toBe("pgrust");
+  });
+
+  test("offer every column but the Reference Engine's as a Baseline, in column order", () => {
+    expect(CONFIGURATION_IDS).toEqual(CONFIGURATIONS.map((config) => config.id));
+    expect(BASELINE_CANDIDATE_IDS).toEqual(CONFIGURATION_IDS.filter((id) => !id.startsWith("wasqlite-")));
   });
 
   test("give the Reference Engine its own two columns, and never the Baseline", () => {
