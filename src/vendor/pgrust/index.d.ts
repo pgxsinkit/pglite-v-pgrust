@@ -62,5 +62,7 @@ export type {
   RepackedChannel,
   RepackedChannelTransfer,
   RepackedDoorbell,
+  RepackedStat,
+  RepackedSyncClient,
 } from "./broker-fs.js";
 export { loadRepackedBundle, repackedBundleUrl } from "./broker-fs.js";

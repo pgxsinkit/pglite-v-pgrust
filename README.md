@@ -46,6 +46,14 @@ tables; `bun run bench` on its own runs all three Suites (see [the headless lane
 postmaster under bun and runs the published `@pgxsinkit/client` against it — unchanged, over PGlite's
 own `BasePGlite` with a pgwire transport (`src/client/`). It needs the synced assets and nothing else.
 
+`bun run scenario:pgxsinkit-factory` runs the same client over the STORE half of that seam:
+`createPgrustPglite(storePath, …)` (`src/client/pgrust-factory.ts`), which is what pgxsinkit's own
+`createPglite` hook takes. One call opens a store, and the instance answers the rest of the contract
+— `strictSync()` over the broker's store-wide sync, `dumpDataDir()` as a tarball in PGlite's own
+entry layout, `loadDataDir` seeding a second store before its postmaster boots, and a `close()` that
+takes the whole engine down with it. The scenario proves each of those in turn and prints its
+timings.
+
 Only `bun install` and the sync need a network. The sync downloads the newest `pgrust-assets/*`
 [release](#pgrust-assets) of this repo — ~30 MB gzipped, ~135 MB unpacked into `public/pgrust/`,
 which is gitignored — verifies every file against the release's `SHA256SUMS` **and** the unpacked

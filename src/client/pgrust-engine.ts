@@ -12,6 +12,13 @@
  * What this file deliberately does NOT do is speak pgwire. `openSession` announces a connection
  * record, and what comes back is the session's two rings: the startup packet and everything after
  * it belong to {@link PgrustPGlite}, which is the whole point of the exercise.
+ *
+ * It does, though, keep a broker channel of its own. The coordinator's store is the datadir, and
+ * two things a PGlite client must be able to do — dump it, and REPLACE it before a postmaster
+ * exists — have no pgwire form at all. So one extra channel is minted beside the guests', attached
+ * with theirs (nothing can be attached after the serve loop starts), and handed out as
+ * {@link PgrustEngine.store}. `prepareStore` is the window between the seed and the guest, which is
+ * where a `loadDataDir` writes.
  */
 
 import { readFileSync } from "node:fs";
@@ -38,13 +45,12 @@ import {
 } from "../vendor/pgrust/threads-host.js";
 import { defaultWireArgv } from "../vendor/pgrust/wiresession.js";
 import type { PgrustSessionPipes } from "./pgrust-pglite";
+import { PgrustStore } from "./pgrust-store";
 
 /** The vendored host, committed and always present; its `.mjs` worker entries live here too. */
 const HOST_BASE = new URL("../vendor/pgrust/", import.meta.url);
 /** The gitignored build outputs `bun run sync:pgrust` writes. */
-const ASSET_DIR = fileURLToPath(new URL("../../public/pgrust/", import.meta.url));
-/** The pre-release store bundle, which sits under the served host layout rather than beside the source. */
-const BUNDLE_BASE = pathToFileURL(`${ASSET_DIR}host/`).href;
+const DEFAULT_ASSET_DIR = fileURLToPath(new URL("../../public/pgrust/", import.meta.url));
 
 const SYNC_HINT = "Run `bun run sync:pgrust` to lay the pgrust assets down.";
 
@@ -72,16 +78,78 @@ const POSTMASTER_READY_TIMEOUT_MS = 180_000;
 const EXIT_TIMEOUT_MS = 60_000;
 const STORAGE_STOP_TIMEOUT_MS = 10_000;
 
+/**
+ * The host's own store channel, at 1 MiB rather than the library's 64 KiB default.
+ *
+ * `read`/`write` chunk themselves against the payload, so this is purely how many blocking round
+ * trips a whole-datadir dump or restore costs: 41 MB of datadir is ~40 turns here against ~640 at
+ * the default. No guest channel is touched — this is one extra channel, minted for this client.
+ */
+const STORE_CHANNEL_PAYLOAD_BYTES = 1 << 20;
+
 const READY_LOG_PATTERN = /database system is ready to accept connections/i;
 const SHUTDOWN_CHECKPOINT_PATTERN = /checkpoint starting: shutdown/i;
 
 const MAX_SERVER_LOG_CHARS = 8_000;
+
+/** Where this engine's one store lives: the coordinator's heap, or an OPFS directory it owns. */
+export type PgrustStoragePort = "memory" | "opfs";
+
+/** How durable the broker is between the guest's own fsyncs; see `wasm/storage-worker.js`. */
+export type PgrustStorageDurability = "relaxed" | "strict";
+
+export interface PgrustStorageOptions {
+  /** `memory` (the default) or `opfs`. Bun has no OPFS, so only a browser worker may ask for `opfs`. */
+  readonly port?: PgrustStoragePort;
+  /**
+   * The OPFS directory the coordinator owns in full, as a `/`-separated path.
+   *
+   * Nested since pgrust `9bab6bff11`: the coordinator walks a `getDirectoryHandle` per segment, so
+   * a store may live under a namespace of its host's choosing (`pgxsinkit/stores/<identity>`).
+   */
+  readonly opfsDir?: string;
+  /** Broker durability. `relaxed` by default, which is the mode both of this repo's durability modes use. */
+  readonly durability?: PgrustStorageDurability;
+  /** Empty the OPFS directory before opening it. Ignored on the memory port, which is always fresh. */
+  readonly reset?: boolean;
+}
 
 export interface PgrustEngineOptions {
   /** How many sessions may be opened. Every ring is created before the guest starts, so this is a ceiling. */
   readonly sessions?: number;
   /** Where the server's stderr goes. Silent by default; the log tail rides on any thrown error regardless. */
   readonly onServerLog?: (text: string) => void;
+  /** Where the store lives and how durably. The coordinator's memory port by default. */
+  readonly storage?: PgrustStorageOptions;
+  /**
+   * Extra `name=value` settings, each appended to the postmaster's argv as `-c name=value`.
+   *
+   * Appended last, so a caller's setting wins a duplicate. The engine Configuration's own option of
+   * the same name (`PgrustPostmasterOpenOptions.settings`) is the browser half of this.
+   */
+  readonly settings?: readonly string[];
+  /** Extra guest environment entries, merged over the transport's own. */
+  readonly env?: Readonly<Record<string, string>>;
+  /**
+   * Run against the seeded store BEFORE the guest starts.
+   *
+   * The one window in which a datadir may be replaced wholesale: the coordinator has opened its
+   * store and seeded it from the packed image, and no postmaster exists yet. `loadDataDir` is the
+   * only caller — it empties `/pgdata` and writes a backup's entries in their place.
+   */
+  readonly prepareStore?: (store: PgrustStore) => Promise<void> | void;
+  /**
+   * How long the guest gets to exit after the listener closes, before the workers are terminated
+   * anyway. One minute by default — a shutdown checkpoint on a big datadir is not quick — and the
+   * factory sets the much shorter deadline a `close()` is allowed to take.
+   */
+  readonly exitDeadlineMs?: number;
+  /**
+   * Where the pgrust build outputs live: the module, the packed image, its manifest, and the store
+   * bundle under `host/`. A directory path with a trailing separator; `public/pgrust/` by default,
+   * which is where `bun run sync:pgrust` writes them.
+   */
+  readonly assetDir?: string;
 }
 
 export interface PgrustEngineShutdown {
@@ -94,6 +162,13 @@ export interface PgrustEngineShutdown {
 export interface PgrustEngine {
   /** Announce one session to the postmaster and hand back its rings, unhandshaken. */
   openSession(): PgrustSessionPipes;
+  /**
+   * The coordinator's store, over a broker channel of this host's own.
+   *
+   * Blocking, like every broker client (see {@link PgrustStore}). It is live for as long as the
+   * coordinator is: after `shutdown()` the doorbell has stopped and every call would time out.
+   */
+  readonly store: PgrustStore;
   /** Close the listener — the fast-shutdown request — and wait for the guest's own `exit(0)`. */
   shutdown(): Promise<PgrustEngineShutdown>;
 }
@@ -164,7 +239,7 @@ function connectionRecord(inFd: number, outFd: number, wakeFd: number): Uint8Arr
  * trailing database name, the two GUCs that make the host fd the only way in are set, and the warm
  * standby pool is bounded because a fixed host thread pool is what backs it.
  */
-function postmasterArgv(): string[] {
+function postmasterArgv(extra: readonly string[]): string[] {
   const argv = defaultWireArgv();
   argv[1] = "--host-pipes";
   argv.pop();
@@ -178,14 +253,61 @@ function postmasterArgv(): string[] {
     "-c",
     `max_parallel_workers=${MAX_PARALLEL_WORKERS}`,
   );
+  // Last, so a caller's `-c` wins the duplicate — which is how the factory sets
+  // `synchronous_commit` without this function knowing what durability is.
+  for (const setting of extra) {
+    argv.push("-c", setting);
+  }
   return argv;
 }
 
-function readAsset(name: string): Buffer {
+/**
+ * The guest environment: the wire lanes' plus the two fds that are this transport's whole contract.
+ *
+ * `extra` last, so the one caller that passes any (an opt-in pgrust knob such as
+ * `PGRUST_WAITER_RECHECK_MS`) can turn it down. Empty for every ordinary boot.
+ */
+function guestEnv(extra: Readonly<Record<string, string>>): Readonly<Record<string, string>> {
+  return {
+    USER: "postgres",
+    PGRUST_TZDIR: "/share/timezone",
+    PGRUST_PGSHAREDIR: "/share",
+    // The guest's own async runtime is off: this build runs every backend on a real wasi thread.
+    PGRUST_RUNTIME: "0",
+    RUST_BACKTRACE: "1",
+    // Required: `pqcomm_hostpipes` reads the listener fd here and `PostmasterMain` FATALs
+    // without it. The wake fd is optional, and worth tens of milliseconds per session open.
+    PGRUST_HOSTPIPES_LISTEN_FD: String(HOSTPIPES_LISTEN_FD),
+    PGRUST_HOSTPIPES_WAKE_FD: String(HOSTPIPES_WAKE_FD),
+    ...extra,
+  };
+}
+
+/** What the storage coordinator is booted with; its own defaults are the memory port and relaxed. */
+interface StorageBootOptions {
+  readonly port: PgrustStoragePort;
+  readonly durability: PgrustStorageDurability;
+  readonly opfsDir?: string;
+  readonly reset?: boolean;
+}
+
+function storageBootOptions(storage: PgrustStorageOptions | undefined): StorageBootOptions {
+  const durability = storage?.durability ?? "relaxed";
+  if ((storage?.port ?? "memory") === "memory") {
+    return { port: "memory", durability };
+  }
+  const opfsDir = storage?.opfsDir;
+  if (opfsDir === undefined || opfsDir === "") {
+    throw new Error("pgrust postmaster: the opfs storage port needs an `opfsDir` to own");
+  }
+  return { port: "opfs", durability, opfsDir, reset: storage?.reset === true };
+}
+
+function readAsset(directory: string, name: string): Buffer {
   try {
-    return readFileSync(`${ASSET_DIR}${name}`);
+    return readFileSync(`${directory}${name}`);
   } catch (error: unknown) {
-    throw new Error(`pgrust asset ${ASSET_DIR}${name} could not be read (${describe(error)}). ${SYNC_HINT}`);
+    throw new Error(`pgrust asset ${directory}${name} could not be read (${describe(error)}). ${SYNC_HINT}`);
   }
 }
 
@@ -212,14 +334,19 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, what: string, log
 export async function startPgrustPostmaster(options: PgrustEngineOptions = {}): Promise<PgrustEngine> {
   const sessionCount = options.sessions ?? 1;
   const poolSize = POOL_BASE_SIZE + sessionCount;
+  // Where `bun run sync:pgrust` put the module, the packed image and — under `host/` — the store
+  // bundle. One directory, overridable as a whole: the four are one build output and are laid out
+  // together, so a caller pointing somewhere else points at all of them at once.
+  const assetDir = options.assetDir ?? DEFAULT_ASSET_DIR;
+  const bundleBase = pathToFileURL(`${assetDir}host/`).href;
 
-  const wasmModule = await WebAssembly.compile(readAsset("postgres-threads.wasm"));
-  const imageBytes = readAsset("vfs.img");
+  const wasmModule = await WebAssembly.compile(readAsset(assetDir, "postgres-threads.wasm"));
+  const imageBytes = readAsset(assetDir, "vfs.img");
   const image = imageBytes.buffer.slice(
     imageBytes.byteOffset,
     imageBytes.byteOffset + imageBytes.byteLength,
   ) as ArrayBuffer;
-  const manifest = JSON.parse(readAsset("vfs.json").toString("utf8")) as VfsManifest;
+  const manifest = JSON.parse(readAsset(assetDir, "vfs.json").toString("utf8")) as VfsManifest;
 
   const decoder = new TextDecoder("utf-8", { fatal: false });
   let serverLog = "";
@@ -234,7 +361,7 @@ export async function startPgrustPostmaster(options: PgrustEngineOptions = {}): 
   // ---- the storage coordinator, first and always -------------------------------------------
   // Its store must be seeded before the startup process can read a file, and once its blocking
   // serve loop is entered it never reaches its event loop again.
-  const bundleUrl = repackedBundleUrl(BUNDLE_BASE);
+  const bundleUrl = repackedBundleUrl(bundleBase);
   let bundle;
   try {
     bundle = await loadRepackedBundle(bundleUrl);
@@ -250,6 +377,14 @@ export async function startPgrustPostmaster(options: PgrustEngineOptions = {}): 
   const channels: RepackedChannel[] = Array.from({ length: poolSize + 1 }, (_unused, index) =>
     bundle.RepackedChannel.create({ id: index + 1, doorbell }),
   );
+  // And one more for THIS host, which is an agent like any other: it is how a datadir is read out
+  // of the store and written into it. Attached with the rest, because the coordinator can accept
+  // no channel once its blocking serve loop is entered.
+  const storeChannel: RepackedChannel = bundle.RepackedChannel.create({
+    id: channels.length + 1,
+    doorbell,
+    payloadBytes: STORE_CHANNEL_PAYLOAD_BYTES,
+  });
 
   const storageWorker = makeWorker(storageWorkerUrl(HOST_BASE), { name: "pgrust-storage" });
   const storageReady = gate();
@@ -279,7 +414,15 @@ export async function startPgrustPostmaster(options: PgrustEngineOptions = {}): 
 
   const transfers: RepackedChannelTransfer[] = channels.map((channel) => channel.transfer());
   storageWorker.postMessage(
-    { kind: "boot", bundleUrl, image, manifest, channels: transfers, doorbell: doorbell.buffer, options: {} },
+    {
+      kind: "boot",
+      bundleUrl,
+      image,
+      manifest,
+      channels: [...transfers, storeChannel.transfer()],
+      doorbell: doorbell.buffer,
+      options: storageBootOptions(options.storage),
+    },
     [image],
   );
   try {
@@ -292,6 +435,23 @@ export async function startPgrustPostmaster(options: PgrustEngineOptions = {}): 
   } catch (error: unknown) {
     storageWorker.terminate();
     throw error;
+  }
+
+  // The store is open and seeded, and no postmaster exists yet: the one window in which a whole
+  // datadir may be replaced. `loadDataDir` is what runs here.
+  const store = new PgrustStore(new bundle.RepackedSyncClient(storeChannel), bundle);
+  if (options.prepareStore !== undefined) {
+    try {
+      await options.prepareStore(store);
+    } catch (error: unknown) {
+      doorbell.requestStop();
+      await Promise.race([
+        storageStopped.promise,
+        new Promise((resolve) => setTimeout(resolve, STORAGE_STOP_TIMEOUT_MS)),
+      ]);
+      storageWorker.terminate();
+      throw error;
+    }
   }
 
   // The packed image now lives in the coordinator's store (and its ArrayBuffer was transferred
@@ -402,19 +562,8 @@ export async function startPgrustPostmaster(options: PgrustEngineOptions = {}): 
       stdin: stdin.descriptor(),
       stdout: stdout.descriptor(),
       pipes: registry.descriptors(),
-      argv: postmasterArgv(),
-      env: {
-        USER: "postgres",
-        PGRUST_TZDIR: "/share/timezone",
-        PGRUST_PGSHAREDIR: "/share",
-        // The guest's own async runtime is off: this build runs every backend on a real wasi thread.
-        PGRUST_RUNTIME: "0",
-        RUST_BACKTRACE: "1",
-        // Required: `pqcomm_hostpipes` reads the listener fd here and `PostmasterMain` FATALs
-        // without it. The wake fd is optional, and worth tens of milliseconds per session open.
-        PGRUST_HOSTPIPES_LISTEN_FD: String(HOSTPIPES_LISTEN_FD),
-        PGRUST_HOSTPIPES_WAKE_FD: String(HOSTPIPES_WAKE_FD),
-      },
+      argv: postmasterArgv(options.settings ?? []),
+      env: guestEnv(options.env ?? {}),
       poolSize,
       trace: 0,
       relayPorts: relayChannels.map((channel) => channel.port2),
@@ -426,6 +575,8 @@ export async function startPgrustPostmaster(options: PgrustEngineOptions = {}): 
   let stopped = false;
 
   const engine: PgrustEngine = {
+    store,
+
     openSession(): PgrustSessionPipes {
       const slot = slots[nextSession];
       nextSession += 1;
@@ -451,7 +602,10 @@ export async function startPgrustPostmaster(options: PgrustEngineOptions = {}): 
       // the very handler a SIGINT runs, and what follows is Postgres's own ceremony.
       listener.close();
       wake.write(new Uint8Array([0]), { block: false });
-      await Promise.race([exited.promise, new Promise((resolve) => setTimeout(resolve, EXIT_TIMEOUT_MS))]);
+      await Promise.race([
+        exited.promise,
+        new Promise((resolve) => setTimeout(resolve, options.exitDeadlineMs ?? EXIT_TIMEOUT_MS)),
+      ]);
       const shutdownMs = performance.now() - startedAt;
       // The last stderr chunks can still be in flight when `exit` lands; give them one turn.
       await new Promise((resolve) => setTimeout(resolve, 300));

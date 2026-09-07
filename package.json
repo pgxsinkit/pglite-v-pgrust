@@ -22,6 +22,7 @@
     "probe:memory": "bun scripts/probe-memory.ts",
     "probe:notify": "bun scripts/probe-notify-latency.ts",
     "probe:pg-dump": "bun scripts/probe-pg-dump.ts",
+    "scenario:pgxsinkit-factory": "bun scripts/pgxsinkit-factory-scenario.ts",
     "scenario:pgxsinkit-live": "bun scripts/pgxsinkit-live-scenario.ts",
     "sync:pgrust": "bun scripts/sync-pgrust.ts",
     "test": "bun test src scripts",
@@ -39,6 +40,7 @@
     "drizzle-orm": "1.0.0-rc.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "tinytar": "^0.1.0",
     "wa-sqlite": "github:rhashimoto/wa-sqlite#v1.1.2",
     "zod": "^4.5.4"
   },

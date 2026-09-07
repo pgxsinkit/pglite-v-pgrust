@@ -48,7 +48,9 @@
  *
  * **What is deliberately absent.** There is no filesystem to sync (`syncToFs` is a no-op), no
  * `/dev/blob` device (the blob hooks are no-ops), and no data directory this side of the wire
- * (`dumpDataDir` throws). Everything else mirrors `packages/pglite/src/pglite.ts` line for line.
+ * (`dumpDataDir` throws — `PgrustClientPGlite` in `./pgrust-factory.ts` is the subclass that has
+ * one, over the engine's own broker channel). Everything else mirrors
+ * `packages/pglite/src/pglite.ts` line for line.
  */
 
 import type {
@@ -78,6 +80,12 @@ export interface PgrustSessionPipes {
   readonly toGuest: SabPipe;
   readonly fromGuest: SabPipe;
 }
+
+/**
+ * PGlite's `DumpTarCompressionOptions`, which its published types do not re-export from the package
+ * entry (only `DumpDataDirResult` is). The three values are `packages/pglite/src/fs/tarUtils.ts`'s.
+ */
+export type PgrustDumpCompression = "none" | "gzip" | "auto";
 
 /** Options for {@link PgrustPGlite.create}, the subset of `PGliteOptions` that means anything here. */
 export interface PgrustPGliteOptions<TExtensions extends Extensions = Extensions> {
@@ -917,11 +925,19 @@ export class PgrustPGlite extends BasePGlite {
     await this.close();
   }
 
-  /** No data directory this side of the wire: the store lives in the coordinator, not in this client. */
-  async dumpDataDir(): Promise<never> {
+  /**
+   * No data directory this side of the wire: the store lives in the coordinator, not in this client.
+   *
+   * The signature is PGlite's rather than `Promise<never>` so a subclass that DOES hold the store —
+   * `PgrustClientPGlite`, which the factory builds over the engine's own broker channel — can
+   * override it with the real thing. A bare session, opened on rings alone, still has nowhere to
+   * read a file from and says so.
+   */
+  async dumpDataDir(_compression?: PgrustDumpCompression): Promise<File | Blob> {
     throw new Error(
-      "PgrustPGlite: dumpDataDir is not supported — the data directory belongs to the pgrust storage " +
-        "coordinator, not to this client",
+      "PgrustPGlite: dumpDataDir is not supported on a bare session — the data directory belongs to " +
+        "the pgrust storage coordinator, and only a client built over its broker channel " +
+        "(`createPgrustPglite`) can read it",
     );
   }
 }
