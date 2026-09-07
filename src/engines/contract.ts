@@ -188,8 +188,9 @@ export interface EngineOpenOptions {
    * The two existing Suites need one and never set it; the Concurrency Suite needs one per Client.
    * Every Engine is told, and only one can act on it: the postmaster opens that many host-pipe
    * sessions, each on its own backend thread, and everything else has exactly one place to run SQL
-   * (which is why the Concurrency Suite is reported unavailable on the Engines where "concurrent"
-   * could only mean "serialised" — see `./availability`).
+   * and runs every Client's work on it, interleaved per statement (`./single-session.ts`). That is
+   * not a refusal and not a serialisation; it is the mode those Engines have, and the Concurrency
+   * Suite says which mode each column ran in.
    */
   readonly sessions?: number;
 }

@@ -15,8 +15,9 @@ two cannot:
   timings discarded, mean of the rest.
 - **[Concurrency Suite](#the-concurrency-suite)** — five scripted scenarios run by four **Clients**
   at once against one 100 000-row table: a read fan-out, a reader under a bulk write, short queries
-  beside a long one, writers on disjoint rows and writers on the same row. What "at once" means is
-  the Engine's answer and is exactly what the Suite reports.
+  beside a long one, writers on disjoint rows and writers on the same row. Every Engine runs it; what
+  "at once" means is the Engine's answer, stated in each column's header and exactly what the Suite
+  reports.
 
 Each Engine runs in its own dedicated module worker, and every timing is taken **inside** that worker
 around the Engine call alone — the main-thread messaging is deliberately outside the measured window.
@@ -290,19 +291,35 @@ The Speedtest and RTT Suites time one statement at a time. This one runs **four 
 reports what they did to each other, which is a different question — and one where the Engines
 genuinely differ rather than merely differing in speed.
 
-**What "at once" means, per Engine.** This is the whole point of the Suite, so it is worth being
-exact:
+**Every Engine runs it, and every column says how.** There are exactly two answers to "what does at
+once mean here", and each column's header carries its own — its **Concurrency mode** — right beside
+the label, in the page and in the Markdown export:
 
-| Engine                     | What concurrency is there                                                                                                                                                                                                                                       |
-| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pgrust Postmaster`        | **Real backends.** Client `i` gets Session `i`, which is a Postgres backend on its own guest thread; they share one buffer pool, one lock manager and one WAL, and they block on each other exactly as backends do                                              |
-| `PGlite`                   | **Queue interleaving.** One instance, one queue: plain statements go through `pg.query`, so another Client's statement can be served between two of this Client's; a `pg.transaction` holds the queue for its whole callback, so nothing interleaves inside one |
-| `pgrust`, `pgrust Threads` | **Unavailable** — "one session". Both run a single backend on one pipe, so the only number they could produce would be the Clients run one after another                                                                                                        |
-| `wa-sqlite`                | **Unavailable** — "synchronous API". Each statement runs to completion on the calling thread; there is nothing for a second Client to interleave with                                                                                                           |
+| Concurrency mode             | Which Engines                                     | What it is                                                                                                                                                                                                                                                     |
+| ---------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `one backend per Client`     | `pgrust Postmaster`                               | **Real backends.** Client `i` gets Session `i`, which is a Postgres backend on its own guest thread; they share one buffer pool, one lock manager and one WAL, and they block on each other exactly as backends do                                             |
+| `interleaved on one session` | `PGlite`, `pgrust`, `pgrust Threads`, `wa-sqlite` | **One place to run SQL, taken a statement at a time.** A Client's plain statement takes it and gives it back, so another Client's can be served in between; a transaction takes it at `BEGIN` and holds it through `COMMIT`, so nothing interleaves inside one |
 
-The unavailable cells say `skipped` with that reason in the column header, exactly as a missing
-capability does. Nothing here is ever faked by serialising the Clients and calling the result
-concurrency.
+That is not a hedge and it is not a serialised Run wearing the word "concurrent": it is how an
+application really gets concurrency out of any of the four — several callers, one place, one
+statement at a time — and it is what PGlite was already being measured doing. The four share one
+queue (`src/engines/single-session.ts`), so they differ in their database and in nothing else. **No
+cell in this Suite is ever `skipped` for what an Engine is;** the only reasons a Concurrency column
+can be empty are the browser capabilities every other Suite is gated on too.
+
+The mode belongs in the header because the cell under it cannot be read without it. A reader p95 of
+`0.4 ms` and one of `670 ms` are both honest answers to "what did the other Clients feel" — which one
+an Engine gives is decided entirely by the mode, and a pasted table has to carry it.
+
+**Two dialects.** The Suite's SQL is Postgres-flavoured and wa-sqlite is not, so the dataset, the
+per-Session lock wait and the third Benchmark's long query each have a SQLite spelling, exactly as
+the RTT Suite's setup does. `generate_series` becomes a recursive CTE and `rpad(md5(…), 100, 'x')`
+becomes `substr(hex(x) || 'xxx…', 1, 100)`; `SET lock_timeout = '2s'` becomes
+`PRAGMA busy_timeout = 2000` and `55P03` becomes `SQLITE_BUSY`; and the long query — SQLite has no
+`~` operator, and its `GLOB` over the same payloads finishes in single-digit milliseconds — becomes
+a recursive CTE doing arithmetic, sized to land in the same band as the Postgres full scan (it
+measures 151 ms against PGlite's 267). Nothing else differs: the keys, the Clients and the statement
+counts come out of the same seeded draws in the same order.
 
 **The dataset** is built in each Run's untimed setup and is the same everywhere: `concurrency_rows`,
 100 000 rows with an integer key, an integer value and a 100-byte text payload (different in every
@@ -311,13 +328,13 @@ fights over.
 
 **The five rows**, each with the one number it reports and the Detail beneath it:
 
-| Benchmark                       | What runs                                                                                      | The cell                              | The Detail                                           |
-| ------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------- | ---------------------------------------------------- |
-| Read fan-out                    | 4 Clients x 500 indexed point SELECTs by random key                                            | total wall for all Clients            | statements, statements/s, per-Client p50/p95/max     |
-| Reader under a bulk write       | Client 0 inserts 25 000 rows in one transaction, then signals; the others read `untilSignal`   | the readers' **p95**                  | writer total, reader max, reader statement count     |
-| Short queries beside a long one | Client 0 runs a full scan with two string comparisons (~150-250 ms), then signals; others read | the short Clients' **p95**            | long query time, short max, short statement count    |
-| Writers on disjoint rows        | 4 Clients x 200 short transactions, each in its own quarter of the key space                   | **transactions/s** (higher is better) | per-Client p95, total wall, transactions             |
-| Writers on the same row         | 4 Clients x 200 short transactions on one row, `lock_timeout = 2s` per Session                 | **p95** commit latency                | lock timeouts (55P03), per-Client totals, total wall |
+| Benchmark                       | What runs                                                                                                                                                   | The cell                              | The Detail                                        |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- | ------------------------------------------------- |
+| Read fan-out                    | 4 Clients x 500 indexed point SELECTs by random key                                                                                                         | total wall for all Clients            | statements, statements/s, per-Client p50/p95/max  |
+| Reader under a bulk write       | Client 0 inserts 25 000 rows in one transaction, then signals; the others read `untilSignal`                                                                | the readers' **p95**                  | writer total, reader max, reader statement count  |
+| Short queries beside a long one | Client 0 runs one long query — a full scan with two string comparisons in Postgres, a recursive CTE in SQLite, both ~150-400 ms — then signals; others read | the short Clients' **p95**            | long query time, short max, short statement count |
+| Writers on disjoint rows        | 4 Clients x 200 short transactions, each in its own quarter of the key space                                                                                | **transactions/s** (higher is better) | per-Client p95, total wall, transactions          |
+| Writers on the same row         | 4 Clients x 200 short transactions on one row, `lock_timeout = 2s` (`PRAGMA busy_timeout` on SQLite) per Session                                            | **p95** commit latency                | lock timeouts, per-Client totals, total wall      |
 
 A **transaction is one sample**, not three. A postmaster Session can time a `COMMIT` on its own and
 PGlite cannot (its `transaction` issues both ends itself), so the only unit both can be asked for
@@ -723,7 +740,7 @@ revisions it will look for — floating it would silently ask for builds that ar
 
 | Browser in the lane           | Behaviour                                                                                                                                                                                                                                                                                                                                                 |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Chromium (default)            | JSPI on by default, cross-origin isolation from the lane's own server and synchronous access handles granted in dedicated workers, so all fourteen Configurations run (six of them the Concurrency Suite)                                                                                                                                                 |
+| Chromium (default)            | JSPI on by default, cross-origin isolation from the lane's own server and synchronous access handles granted in dedicated workers, so all fourteen Configurations run — every Suite, the Concurrency Suite included                                                                                                                                       |
 | Firefox (`--browser firefox`) | The lane sets `javascript.options.wasm_js_promise_integration`; where JSPI is still missing the two `pgrust` Configurations are unavailable, so they are unticked and the table is drawn without them — the Configurations panel carries the reason. Firefox's reduced timer precision quantises Measurements, so its numbers are coarser than Chromium's |
 | WebKit (`--browser webkit`)   | Exits 0 with `WebKit skipped: Playwright's WebKit build has no JSPI yet`, without launching. That build also refuses synchronous access handles in both worker kinds, so it could contribute neither the pgrust nor the OPFS columns                                                                                                                      |
 
@@ -733,8 +750,9 @@ iterations) and asserts the shape of the result rather than any timing: an envir
 headers in Configuration order so the positional assertions cannot drift, a millisecond figure and a
 ratio in every PGlite Memory and wa-sqlite cell, and `skipped`, `failed` or a millisecond figure in
 every pgrust, pgrust Threads, postmaster and OPFS cell. For the Concurrency Suite it also asserts the
-Suite's own header line, the Detail block under the table, and an explicit `skipped` in every column
-whose Engine cannot run it. The Reference Engine is held to the stricter rule on
+Suite's own header line, the Detail block under the table, and each column's Concurrency mode in the
+header it exports — `interleaved on one session` on the four single-session Engines,
+`one backend per Client` on the postmaster. The Reference Engine is held to the stricter rule on
 purpose — it needs no JSPI, no synchronous access handle and no asset that can be missing, so a cell
 without a number in it is a harness bug rather than a browser or a build state. It is deliberately outside `test`, `check` and `validate` — `bun run
 validate:full` is `validate` plus this lane.

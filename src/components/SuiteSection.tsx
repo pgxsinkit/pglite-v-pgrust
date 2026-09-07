@@ -4,7 +4,7 @@ import { useState } from "react";
 import { applyConcurrencyClients, describeConcurrencyClientsOverride } from "../concurrency-clients";
 import { describeConfigurationSelection } from "../configuration-selection";
 import { BASELINE_CONFIGURATION_DIALECT, CONFIGURATIONS } from "../configurations";
-import { suiteAvailability } from "../engines/availability";
+import { configurationAvailability } from "../engines/availability";
 import type { Configuration } from "../engines/contract";
 import { configurationDialect } from "../engines/contract";
 import type { EnvironmentInfo } from "../environment";
@@ -39,6 +39,10 @@ type RunState = "idle" | "running" | "complete";
  * A column is unavailable either because this browser cannot run the Engine, or because its Run has
  * already failed. Either way the reason is shown in the header and the Run moves on to the next
  * Configuration rather than abandoning the whole table.
+ *
+ * The Suite's note travels with the column whatever its state: a skipped Concurrency column still
+ * says which kind of concurrency it would have had, which is what makes the reason beside it read as
+ * a browser's answer rather than the Engine's.
  */
 function toColumn(
   suite: Suite,
@@ -46,25 +50,20 @@ function toColumn(
   environment: EnvironmentInfo,
   failure: string | undefined,
 ): GridColumn {
-  if (failure !== undefined) {
-    return {
-      id: configuration.id,
-      label: configuration.label,
-      available: false,
-      unavailableReason: failure,
-      failed: true,
-    };
-  }
-  const availability = suiteAvailability(suite, configuration, environment);
-  if (availability.available) {
-    return { id: configuration.id, label: configuration.label, available: true };
-  }
-  return {
+  const note = suite.columnNoteFor?.(configuration.engine);
+  const named = {
     id: configuration.id,
     label: configuration.label,
-    available: false,
-    unavailableReason: availability.reason ?? "unavailable",
+    ...(note === undefined ? {} : { note }),
   };
+  if (failure !== undefined) {
+    return { ...named, available: false, unavailableReason: failure, failed: true };
+  }
+  const availability = configurationAvailability(configuration, environment);
+  if (availability.available) {
+    return { ...named, available: true };
+  }
+  return { ...named, available: false, unavailableReason: availability.reason ?? "unavailable" };
 }
 
 function describeError(error: unknown): string {
@@ -155,7 +154,7 @@ export function SuiteSection({ suite, environment, configurations, baseline }: S
     setFailures({});
     try {
       for (const configuration of configurations) {
-        if (!suiteAvailability(runnableSuite, configuration, environment).available) {
+        if (!configurationAvailability(configuration, environment).available) {
           continue;
         }
         setActiveColumnId(configuration.id);

@@ -21,8 +21,10 @@ import { defaultWireArgv, jspiSupported, WireSession, WireSessionDead } from "..
 import { JSPI_REQUIREMENT_MESSAGE } from "../availability";
 import { toErrorPayload } from "../protocol";
 import type { EngineOkResponse, EngineReadyMessage, EngineRequest, EngineResponse } from "../protocol";
+import { runScenario } from "../scenario-runner";
 import type { QueryResult } from "./pgwire";
 import { assertNoQueryError, decodeQueryResult } from "./pgwire";
+import { wireScenarioExecutor } from "./wire-executor";
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
@@ -157,6 +159,16 @@ async function measureQuery(sql: string): Promise<{ result: QueryResult; elapsed
   }
 }
 
+/**
+ * One cycle for a Scenario Client, with the same clock the Suite's other rows use left out.
+ *
+ * The Concurrency Suite times a Client's unit itself (`runScenario`), around this call and around a
+ * whole transaction, so what this needs to supply is the decoded result and nothing else.
+ */
+async function scenarioQuery(sql: string): Promise<QueryResult> {
+  return (await measureQuery(sql)).result;
+}
+
 async function handle(request: EngineRequest): Promise<void> {
   switch (request.kind) {
     case "open": {
@@ -174,6 +186,12 @@ async function handle(request: EngineRequest): Promise<void> {
       const { result, elapsedMs } = await measureQuery(request.sql);
       assertNoQueryError(result);
       ok(request.id, { elapsedMs });
+      return;
+    }
+    case "concurrent": {
+      requireSession();
+      const report = await runScenario(request.scenario, wireScenarioExecutor(scenarioQuery));
+      post({ kind: "ok", id: request.id, measurement: null, report });
       return;
     }
     case "stats": {

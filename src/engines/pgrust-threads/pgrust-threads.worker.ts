@@ -58,8 +58,10 @@ import { pgrustThreadsOptions } from "../contract";
 import type { EngineOpenOptions, PgrustThreadsFs, PgrustThreadsPort, StoreDurability } from "../contract";
 import type { QueryResult } from "../pgrust/pgwire";
 import { assertNoQueryError, decodeQueryResult } from "../pgrust/pgwire";
+import { wireScenarioExecutor } from "../pgrust/wire-executor";
 import { toErrorPayload } from "../protocol";
 import type { EngineOkResponse, EngineReadyMessage, EngineRequest, EngineResponse, EngineStats } from "../protocol";
+import { runScenario } from "../scenario-runner";
 
 /**
  * The three vendored host modules, loaded from `public/pgrust/host/` rather than bundled.
@@ -828,6 +830,17 @@ async function removeStoreDirectory(path: string): Promise<void> {
   }
 }
 
+/**
+ * One cycle for a Scenario Client. The Suite's own clock brackets this call (and a whole
+ * transaction), so all this has to supply is the decoded result.
+ *
+ * The queue inside `wireScenarioExecutor` is also what keeps `collect` honest: this guest speaks one
+ * simple-query cycle at a time and refuses an overlapping one, and Clients take the session in turn.
+ */
+async function scenarioQuery(sql: string): Promise<QueryResult> {
+  return (await measureQuery(sql)).result;
+}
+
 async function handle(request: EngineRequest): Promise<void> {
   switch (request.kind) {
     case "open": {
@@ -845,6 +858,12 @@ async function handle(request: EngineRequest): Promise<void> {
       const { result, elapsedMs } = await measureQuery(request.sql);
       assertNoQueryError(result);
       ok(request.id, { elapsedMs });
+      return;
+    }
+    case "concurrent": {
+      requireSession();
+      const report = await runScenario(request.scenario, wireScenarioExecutor(scenarioQuery));
+      post({ kind: "ok", id: request.id, measurement: null, report });
       return;
     }
     case "stats": {

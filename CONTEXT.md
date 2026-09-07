@@ -17,8 +17,12 @@ Twelve single-statement CRUD queries each executed 100 times; reports the per-st
 _Avoid_: latency suite, CRUD suite
 
 **Concurrency Suite**:
-Five Benchmarks run by N Clients at once (four by default) against one 100,000-row indexed table built in the untimed setup: a read fan-out, a reader under a bulk write, short queries beside a long one, writers on disjoint rows and writers on the same row. Each row reports one headline number — a wall time, a percentile or a rate — and its Detail. What concurrency _is_ differs per Engine and is the thing being reported: real backends on pgrust Postmaster, queue interleaving on PGlite, and unavailable with a reason on the Engines that have one Session or a synchronous API.
+Five Benchmarks run by N Clients at once (four by default) against one 100,000-row indexed table built in the untimed setup: a read fan-out, a reader under a bulk write, short queries beside a long one, writers on disjoint rows and writers on the same row. Each row reports one headline number — a wall time, a percentile or a rate — and its Detail. Every Engine runs it. What concurrency _is_ differs per Engine and is the thing being reported, so every column's header states its **Concurrency mode**.
 _Avoid_: parallel suite, contention suite, multi-client suite
+
+**Concurrency mode**:
+How an Engine gives N Clients concurrency, stated in every Concurrency Suite column header and carried into the Markdown export. Exactly two: `one backend per Client`, which is pgrust Postmaster giving Client `i` its own Session and therefore its own real backend; and `interleaved on one session`, which is PGlite, both pgrust wire builds and wa-sqlite serving one statement at a time from one place to run SQL, with a transaction holding it from BEGIN to COMMIT. A cell cannot be read without it: a reader p95 of 0.4 ms and one of 670 ms are both correct answers to different questions.
+_Avoid_: concurrency level, parallelism, threading model
 
 **Client**:
 One scripted program inside a Scenario — a list of Steps — run against one Session, concurrently with every other Client of that Scenario. N Clients is what "concurrent" means in the Concurrency Suite; on an Engine with one Session every Client runs on it, which is exactly the property being measured there.

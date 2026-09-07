@@ -1,29 +1,47 @@
 import { describe, expect, test } from "bun:test";
 
-import { SINGLE_SESSION_SUITE_REASON, SYNCHRONOUS_API_SUITE_REASON } from "../../engines/availability";
+import type { EngineId, SqlDialect } from "../../engines/contract";
 import { isSignalStep, isTransactionStep, isUntilSignalStep, scenarioSessions } from "../../engines/scenario";
 import { isScenarioBenchmark, suiteSessions } from "../types";
-import type { ScenarioBenchmark } from "../types";
+import type { Benchmark, ScenarioBenchmark } from "../types";
 import {
   buildConcurrencyBenchmarks,
   buildConcurrencySuite,
+  BUSY_TIMEOUT_MS,
   CONCURRENCY_CLIENTS,
   CONCURRENCY_ROWS,
   CONCURRENCY_SETUP_SQL,
+  CONCURRENCY_SETUP_SQL_SQLITE,
   CONCURRENCY_SUITE,
+  INTERLEAVED_ON_ONE_SESSION,
   LOCK_TIMEOUT,
   LOCK_TIMEOUT_SQLSTATE,
+  ONE_BACKEND_PER_CLIENT,
   READ_FANOUT_STATEMENTS,
+  SQLITE_BUSY_CODE,
   WRITE_TRANSACTIONS,
 } from "./index";
 import { createRandom } from "./random";
 
-function benchmark(id: string): ScenarioBenchmark {
-  const found = CONCURRENCY_SUITE.benchmarks.find((candidate) => candidate.id === id);
+function scenarioBenchmark(benchmarks: readonly Benchmark[], id: string): ScenarioBenchmark {
+  const found = benchmarks.find((candidate) => candidate.id === id);
   if (found === undefined || !isScenarioBenchmark(found)) {
     throw new Error(`the Concurrency Suite has no Scenario Benchmark "${id}"`);
   }
   return found;
+}
+
+function benchmark(id: string): ScenarioBenchmark {
+  return scenarioBenchmark(CONCURRENCY_SUITE.benchmarks, id);
+}
+
+/** The same Benchmark as a SQLite Engine is handed it. */
+function sqliteBenchmark(id: string): ScenarioBenchmark {
+  const benchmarks = CONCURRENCY_SUITE.benchmarksFor?.("sqlite");
+  if (benchmarks === undefined) {
+    throw new Error("the Concurrency Suite no longer spells its Benchmarks per dialect");
+  }
+  return scenarioBenchmark(benchmarks, id);
 }
 
 describe("the Concurrency Suite", () => {
@@ -53,16 +71,34 @@ describe("the Concurrency Suite", () => {
     expect(CONCURRENCY_SUITE.initialSetupFor("postgres")).toBe(CONCURRENCY_SETUP_SQL);
   });
 
-  test("names the Engines that cannot run it, with the reason their cells carry", () => {
-    expect(CONCURRENCY_SUITE.unsupportedEngines).toEqual({
-      pgrust: SINGLE_SESSION_SUITE_REASON,
-      "pgrust-threads": SINGLE_SESSION_SUITE_REASON,
-      wasqlite: SYNCHRONOUS_API_SUITE_REASON,
-    });
-    // Never PGlite and never the postmaster: one interleaves through its queue, the other has real
-    // backends, and both answer the question honestly.
-    expect(CONCURRENCY_SUITE.unsupportedEngines?.pglite).toBeUndefined();
-    expect(CONCURRENCY_SUITE.unsupportedEngines?.["pgrust-postmaster"]).toBeUndefined();
+  // The same dataset, in the only other dialect anything here speaks. Not a rewrite of the Postgres
+  // spelling: `generate_series`, `md5` and `rpad` are three functions SQLite does not have.
+  test("builds the same dataset for a SQLite Engine, in SQLite's own spelling", () => {
+    expect(CONCURRENCY_SUITE.initialSetupFor("sqlite")).toBe(CONCURRENCY_SETUP_SQL_SQLITE);
+    expect(CONCURRENCY_SETUP_SQL_SQLITE).toContain("CREATE TABLE concurrency_rows");
+    expect(CONCURRENCY_SETUP_SQL_SQLITE).toContain(`WHERE x < ${CONCURRENCY_ROWS}`);
+    expect(CONCURRENCY_SETUP_SQL_SQLITE).toContain("CREATE INDEX concurrency_rows_v");
+    expect(CONCURRENCY_SETUP_SQL_SQLITE).toContain("CREATE TABLE concurrency_contended");
+    // 100 bytes, distinct per row, and containing neither pattern anything searches for.
+    expect(CONCURRENCY_SETUP_SQL_SQLITE).toContain("substr(hex(x) || '");
+    expect(CONCURRENCY_SETUP_SQL_SQLITE).toContain(", 1, 100)");
+    expect(CONCURRENCY_SETUP_SQL_SQLITE).not.toContain("generate_series");
+    expect(CONCURRENCY_SETUP_SQL_SQLITE).not.toContain("md5");
+  });
+
+  // The Suite refuses no Engine: what differs between columns is the kind of concurrency they had,
+  // and that is stated rather than used as grounds for an empty cell.
+  test("names every Engine's concurrency mode instead of refusing any of them", () => {
+    const modes: Readonly<Record<EngineId, string>> = {
+      pglite: INTERLEAVED_ON_ONE_SESSION,
+      pgrust: INTERLEAVED_ON_ONE_SESSION,
+      "pgrust-threads": INTERLEAVED_ON_ONE_SESSION,
+      "pgrust-postmaster": ONE_BACKEND_PER_CLIENT,
+      wasqlite: INTERLEAVED_ON_ONE_SESSION,
+    };
+    for (const [engine, mode] of Object.entries(modes)) {
+      expect(CONCURRENCY_SUITE.columnNoteFor?.(engine as EngineId)).toBe(mode);
+    }
   });
 
   test("records the Client count in the line the export carries", () => {
@@ -101,6 +137,17 @@ describe("the five Scenarios", () => {
     expect(long && "sql" in long ? long.sql : "").toContain("count(*)");
   });
 
+  // SQLite has no `~` and its GLOB gives up on the first character, so the same scan would finish in
+  // milliseconds and the row would be short queries beside a short one. The CTE spends the time the
+  // Benchmark needs the long Client to spend, and the Detail reports what it actually took.
+  test("short queries beside a long one: SQLite spends the same time in a recursive CTE", () => {
+    const long = sqliteBenchmark("3").scenario.clients[0]?.steps[0];
+    const sql = long && "sql" in long ? long.sql : "";
+    expect(sql).toContain("WITH RECURSIVE spin(i, h)");
+    expect(sql).toContain("count(*)");
+    expect(sql).not.toContain("payload ~ ");
+  });
+
   // Disjoint means disjoint: two Clients that shared a key would be the same-row Benchmark under
   // another name, and the row would measure contention it claims not to have.
   test("writers on disjoint rows: each Client updates only keys in its own quarter of the table", () => {
@@ -127,6 +174,17 @@ describe("the five Scenarios", () => {
       expect(client.steps[0]).toEqual({ transaction: ["UPDATE concurrency_contended SET v = v + 1 WHERE id = 1"] });
     }
   });
+
+  // The same wait and the same tolerated outcome, in SQLite's spelling: `busy_timeout` takes
+  // milliseconds and gives up with SQLITE_BUSY. The UPDATE itself is dialect-neutral and unchanged.
+  test("writers on the same row: SQLite waits with busy_timeout and tolerates SQLITE_BUSY", () => {
+    const scenario = sqliteBenchmark("5").scenario;
+    expect(scenario.setup).toEqual([`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`]);
+    expect(scenario.tolerate).toEqual([SQLITE_BUSY_CODE]);
+    expect(scenario.clients[0]?.steps[0]).toEqual({
+      transaction: ["UPDATE concurrency_contended SET v = v + 1 WHERE id = 1"],
+    });
+  });
 });
 
 describe("the key sequence", () => {
@@ -136,6 +194,23 @@ describe("the key sequence", () => {
     expect(JSON.stringify(buildConcurrencyBenchmarks(CONCURRENCY_CLIENTS).map((entry) => entry.scenario))).toBe(
       JSON.stringify(buildConcurrencyBenchmarks(CONCURRENCY_CLIENTS).map((entry) => entry.scenario)),
     );
+  });
+
+  // Both dialects draw from the same seed in the same order, so the two spellings read and update
+  // exactly the same rows. A column whose keys differed would be answering another question.
+  test("is the same in both dialects: only the SQL that has to differ does", () => {
+    const dialects: readonly SqlDialect[] = ["postgres", "sqlite"];
+    const keysOf = (dialect: SqlDialect): readonly string[] =>
+      buildConcurrencyBenchmarks(CONCURRENCY_CLIENTS, dialect)
+        .flatMap((entry) => entry.scenario.clients)
+        .flatMap((client) => client.steps)
+        .flatMap((step) =>
+          Array.from(String("sql" in step ? step.sql : "").matchAll(/WHERE k = (\d+)/g), (m) => m[1] ?? ""),
+        )
+        .filter((key) => key !== "");
+    const [postgres, sqlite] = dialects.map(keysOf);
+    expect(postgres?.length).toBeGreaterThan(0);
+    expect(sqlite).toEqual(postgres ?? []);
   });
 
   test("is not a constant: the keys really do vary", () => {

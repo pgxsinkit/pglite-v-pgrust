@@ -15,8 +15,11 @@
  *   interleave per statement; a `transaction` Step goes through `pg.transaction`, which holds the
  *   queue until its callback resolves, so nothing interleaves inside one. That is the honest way an
  *   application gets concurrency out of PGlite, and it is what the numbers report.
- * - Every other Engine has one place to run SQL and no way to interleave, so it does not run the
- *   Concurrency Suite at all rather than reporting a serialised Run as a concurrent one.
+ * - **Every other Engine** — both pgrust wire builds and wa-sqlite — has one place to run SQL too,
+ *   and answers exactly as PGlite does: a Client takes it for one statement, or for a whole
+ *   transaction, and gives it back (`../engines/single-session.ts`). Not a serialised Run wearing
+ *   the word "concurrent": per-statement interleaving is the concurrency such an Engine has, and the
+ *   Suite states the mode in the column header so the number underneath can be read.
  */
 
 /** One statement, run once. */

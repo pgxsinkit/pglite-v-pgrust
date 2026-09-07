@@ -22,6 +22,13 @@ export interface GridColumn {
   readonly unavailableReason?: string;
   /** True when this column's Run failed, as opposed to never having been attempted. */
   readonly failed?: boolean;
+  /**
+   * What the Suite has to say about this column beside its label — the Concurrency Suite's mode.
+   *
+   * Part of the header rather than a footnote, because the cells under it cannot be read without
+   * it: `interleaved on one session` and `one backend per Client` are two different questions.
+   */
+  readonly note?: string;
 }
 
 /** Cell values keyed by `cellKey(columnId, rowId)`; a missing key means "not measured yet". */

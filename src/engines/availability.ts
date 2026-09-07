@@ -51,23 +51,6 @@ export const OPFS_SYNC_ACCESS_REQUIREMENT_MESSAGE =
   "The opfs-repacked store requires an OPFS synchronous access handle in a dedicated worker; " +
   "Chromium and Firefox grant one, Playwright's WebKit build refuses it";
 
-/**
- * Why an Engine with one Session cannot run the Concurrency Suite.
- *
- * Not a browser capability and not a missing asset: `--stdio-wire` and `--stdio-wire-threaded` are
- * one backend on one pair of file descriptors, and the only way such an Engine could produce a
- * number for a Suite about concurrency would be to run the Clients one after another and call the
- * result concurrent.
- */
-export const SINGLE_SESSION_SUITE_REASON =
-  "one session: this Engine runs a single backend on one pipe, so concurrent Clients could only be " +
-  "serialised — which is not what this Suite measures";
-
-/** Why wa-sqlite cannot run the Concurrency Suite. */
-export const SYNCHRONOUS_API_SUITE_REASON =
-  "synchronous API: wa-sqlite executes each statement to completion on the calling thread, so there " +
-  "is nothing for a second Client to interleave with";
-
 /** Engines whose worker cannot start without JS Promise Integration. */
 const ENGINES_REQUIRING_JSPI: readonly EngineId[] = ["pgrust"];
 
@@ -121,29 +104,15 @@ export interface AvailabilityEnvironment {
 const AVAILABLE: Availability = { available: true };
 
 /**
- * Whether this Configuration can run this **Suite** here.
+ * Whether this Configuration can run here at all.
  *
- * Asked in this order on purpose: an Engine that cannot run a Suite at all cannot run it in any
- * browser, so that reason is the true one and is what the cell should say — a wa-sqlite column told
- * about cross-origin isolation would be told something that has nothing to do with why it is empty.
+ * Every Suite runs on every Engine, so there is nothing a Suite can add to this: the only reasons a
+ * column is empty are the three capabilities above, and all three are properties of the browser
+ * rather than of what is being measured. The Concurrency Suite used to name three Engines it refused
+ * — the two pgrust wire builds and wa-sqlite — on the grounds that one Session cannot be concurrent;
+ * it can, one statement at a time, which is what PGlite was doing all along, and those columns now
+ * run with the mode in their header instead of a reason in their cell.
  */
-export function suiteAvailability(
-  suite: SuiteSupport,
-  configuration: Configuration,
-  environment: AvailabilityEnvironment,
-): Availability {
-  const reason = suite.unsupportedEngines?.[configuration.engine];
-  if (reason !== undefined) {
-    return { available: false, reason };
-  }
-  return configurationAvailability(configuration, environment);
-}
-
-/** The slice of a Suite the gate reads; a Suite that names no Engine can run everywhere. */
-export interface SuiteSupport {
-  readonly unsupportedEngines?: Readonly<Partial<Record<EngineId, string>>>;
-}
-
 export function configurationAvailability(
   configuration: Configuration,
   environment: AvailabilityEnvironment,

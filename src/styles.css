@@ -186,6 +186,13 @@ th .reason {
   color: #999;
 }
 
+/* The Suite's note on a column — the Concurrency Suite's mode — under the label it qualifies. */
+th .mode {
+  font-weight: 400;
+  font-size: 0.85em;
+  color: #555;
+}
+
 .non-standard-note {
   margin: 0.25rem 0;
   padding: 0.25rem 0.5rem;

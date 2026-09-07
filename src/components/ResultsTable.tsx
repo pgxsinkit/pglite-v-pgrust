@@ -24,6 +24,7 @@ export function ResultsTable({ grid, baselineLabel, activeColumnId }: ResultsTab
               key={column.id}
               columnId={column.id}
               label={column.label}
+              note={column.note}
               available={column.available}
               unavailableReason={column.unavailableReason}
               showRatio={hasRatioColumn(grid, column.id)}
@@ -99,6 +100,8 @@ function DetailRow({ grid, rowId, rowLabel }: DetailRowProps): JSX.Element | nul
 interface ColumnHeadersProps {
   readonly columnId: string;
   readonly label: string;
+  /** The Suite's note on this column — the Concurrency Suite's mode — or nothing. */
+  readonly note: string | undefined;
   readonly available: boolean;
   readonly unavailableReason: string | undefined;
   readonly showRatio: boolean;
@@ -112,6 +115,7 @@ function ColumnHeaders(props: ColumnHeadersProps): JSX.Element {
     <>
       <th scope="col" className={classNames === "" ? undefined : classNames} title={props.unavailableReason}>
         {props.label} <span className="unit">(ms)</span>
+        {props.note === undefined ? null : <div className="mode">{props.note}</div>}
         {props.available ? null : <div className="reason">{props.unavailableReason}</div>}
       </th>
       {props.showRatio ? (

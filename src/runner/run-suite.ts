@@ -6,7 +6,7 @@
  */
 
 import type { Configuration, Measurement } from "../engines/contract";
-import { applyModSql } from "../engines/contract";
+import { applyModSql, configurationDialect } from "../engines/contract";
 import { createEngineRunner } from "../engines/registry";
 import { mapScenarioSql } from "../engines/scenario";
 import { aggregateRun } from "../results/aggregate";
@@ -24,7 +24,7 @@ export interface RunPlan {
 }
 
 /**
- * Resolve a Run's SQL: the single place a Configuration's `modSql` is applied.
+ * Resolve a Run's SQL: the single place a Configuration's dialect and its `modSql` are applied.
  *
  * The rewrite has to reach the untimed setup as well as the Benchmarks. The RTT Suite creates its
  * two tables in the setup and nowhere else, so an unlogged Configuration whose setup was left alone
@@ -32,12 +32,18 @@ export interface RunPlan {
  * Scenario is no different: every statement of every Client is rewritten too, which is why it
  * travels as data rather than as a closure. All of it happens here, on the main thread, before the
  * worker is asked for anything.
+ *
+ * The dialect is asked first and the rewrite applied after it, in that order: a Suite that spells
+ * its Benchmarks differently for SQLite (the Concurrency Suite does) still has to be handed to a
+ * Configuration's own rewrite, and a Configuration that has none gets the dialect's spelling
+ * untouched.
  */
 export function planRun(suite: Suite, configuration: Configuration, setupSql: string): RunPlan {
   const rewrite = (sql: string): string => applyModSql(configuration, sql);
+  const benchmarks = suite.benchmarksFor?.(configurationDialect(configuration)) ?? suite.benchmarks;
   return {
     setupSql: rewrite(setupSql),
-    benchmarks: suite.benchmarks.map((benchmark) =>
+    benchmarks: benchmarks.map((benchmark) =>
       isScenarioBenchmark(benchmark)
         ? { ...benchmark, scenario: mapScenarioSql(benchmark.scenario, rewrite) }
         : { ...benchmark, sql: rewrite(benchmark.sql) },

@@ -57,11 +57,19 @@ export interface Suite {
   readonly description: string;
   readonly benchmarks: readonly Benchmark[];
   /**
+   * The Benchmarks as a given dialect must spell them; absent where one spelling serves everybody.
+   *
+   * The Speedtest and RTT Benchmarks are dialect-neutral and are run byte-identically against every
+   * Engine. The Concurrency Suite's are not: a Scenario sets a per-Session lock wait and runs one
+   * deliberately long query, and neither `SET lock_timeout` nor a `~` operator exists in SQLite. The
+   * ids and the labels are the same list either way — the table has one row per Benchmark, whatever
+   * the column — and only the SQL inside differs.
+   */
+  benchmarksFor?(dialect: SqlDialect): readonly Benchmark[];
+  /**
    * SQL run untimed on a freshly opened Engine, before the first Benchmark.
    *
-   * The Benchmarks themselves are dialect-neutral and are run byte-identically against every
-   * Engine; only this setup has to be spelled differently for a SQLite Engine, so it is the one
-   * place a dialect is asked for.
+   * The one place every Suite has to answer a dialect, because every Suite builds its own dataset.
    */
   initialSetupFor(dialect: SqlDialect): string;
   /** Whether the UI offers the setup SQL as an editable preamble. */
@@ -70,13 +78,14 @@ export interface Suite {
   readonly iterations: number;
   readonly aggregation: AggregationStrategy;
   /**
-   * Engines that cannot run this Suite at all, and the reason their cells carry.
+   * What this Suite has to say about one Engine's column, beside its label.
    *
-   * Not a browser capability and not a Configuration's storage: a property of what the Engine *is*.
-   * The Concurrency Suite names the Engines with one place to run SQL, because the only way they
-   * could produce a number for it would be to serialise the Clients and call the result concurrency.
+   * The Concurrency Suite's columns are not comparable without it: `one backend per Client` and
+   * `interleaved on one session` are two different questions being answered, and a table pasted
+   * somewhere else has to carry which one each column answered. It rides in the header cell rather
+   * than in a footnote for exactly that reason. Absent for a Suite whose columns need no such note.
    */
-  readonly unsupportedEngines?: Readonly<Partial<Record<EngineId, string>>>;
+  columnNoteFor?(engine: EngineId): string | undefined;
   /** A line the Markdown export carries under the environment, e.g. how many Clients ran. */
   readonly headerLine?: string;
 }

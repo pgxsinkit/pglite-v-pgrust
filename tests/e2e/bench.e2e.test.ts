@@ -14,13 +14,15 @@ import { describe, expect, test } from "bun:test";
 
 import type { BenchReport } from "../../scripts/bench";
 import { runBench, WEBKIT_SKIP_MESSAGE } from "../../scripts/bench";
-import { SINGLE_SESSION_SUITE_REASON, SYNCHRONOUS_API_SUITE_REASON } from "../../src/engines/availability";
+import { CONFIGURATIONS } from "../../src/configurations";
 import { EMPTY_CELL } from "../../src/results/format";
+import { markdownColumnHeader } from "../../src/results/markdown";
 import { describeRttIterations } from "../../src/rtt-iterations";
-import { CONCURRENCY_CLIENTS, CONCURRENCY_SUITE } from "../../src/suites/concurrency";
+import { SUITES } from "../../src/suites";
+import { CONCURRENCY_CLIENTS, CONCURRENCY_SUITE, INTERLEAVED_ON_ONE_SESSION } from "../../src/suites/concurrency";
 import { RTT_STATEMENTS } from "../../src/suites/rtt/statements";
 import { SPEEDTEST_BENCHMARK_IDS } from "../../src/suites/speedtest/benchmarks";
-import type { SuiteId } from "../../src/suites/types";
+import type { Suite, SuiteId } from "../../src/suites/types";
 
 /**
  * Build plus three Suites against fourteen Configurations; generous, because it is a real browser.
@@ -179,25 +181,45 @@ const SUITE_IDS: readonly SuiteId[] = ["speedtest", "rtt", "concurrency"];
 const CONCURRENCY_SUITE_ID: SuiteId = "concurrency";
 
 /**
- * The columns that cannot run the Concurrency Suite, and the reason each of them carries.
+ * The columns that used to be refused the Concurrency Suite and now run it.
  *
- * Not a browser capability: no header and no flag would change either answer, so these cells must be
- * `skipped` in every environment, including the one where every other cell has a number.
+ * They have one Session each, which is a mode rather than an excuse: their Clients interleave per
+ * statement on it, exactly as PGlite's do, and their headers say so. A `skipped` cell in any of them
+ * would be this repo having quietly re-introduced the refusal.
  */
-const CONCURRENCY_UNAVAILABLE_COLUMNS: readonly { readonly column: ColumnPair; readonly reason: string }[] = [
-  {
-    column: { label: "pgrust Memory", value: COLUMNS.pgrust, ratio: COLUMNS.pgrustRatio },
-    reason: SINGLE_SESSION_SUITE_REASON,
-  },
-  {
-    column: { label: "pgrust Threads Memory", value: COLUMNS.pgrustThreads, ratio: COLUMNS.pgrustThreadsRatio },
-    reason: SINGLE_SESSION_SUITE_REASON,
-  },
-  {
-    column: WASQLITE_COLUMNS[0] ?? { label: "wa-sqlite Memory", value: COLUMNS.wasqlite, ratio: COLUMNS.wasqliteRatio },
-    reason: SYNCHRONOUS_API_SUITE_REASON,
-  },
+const CONCURRENCY_SINGLE_SESSION_COLUMNS: readonly ColumnPair[] = [
+  { label: "pgrust Memory", value: COLUMNS.pgrust, ratio: COLUMNS.pgrustRatio },
+  { label: "pgrust Threads Memory", value: COLUMNS.pgrustThreads, ratio: COLUMNS.pgrustThreadsRatio },
+  WASQLITE_COLUMNS[0] ?? { label: "wa-sqlite Memory", value: COLUMNS.wasqlite, ratio: COLUMNS.wasqliteRatio },
 ];
+
+function suiteFor(suiteId: SuiteId): Suite {
+  const found = SUITES.find((candidate) => candidate.id === suiteId);
+  if (found === undefined) {
+    throw new Error(`no Suite with id "${suiteId}"`);
+  }
+  return found;
+}
+
+/**
+ * The header cell a column should carry in this Suite: its label, the Suite's note on it, the unit.
+ *
+ * Built from the Suite rather than written down, so the Concurrency Suite's mode cannot go missing
+ * from the export without this failing.
+ */
+function expectedColumnHeader(suiteId: SuiteId, label: string): string {
+  const configuration = CONFIGURATIONS.find((candidate) => candidate.label === label);
+  if (configuration === undefined) {
+    throw new Error(`no Configuration labelled "${label}"`);
+  }
+  const note = suiteFor(suiteId).columnNoteFor?.(configuration.engine);
+  return markdownColumnHeader({
+    id: configuration.id,
+    label,
+    available: true,
+    ...(note === undefined ? {} : { note }),
+  });
+}
 
 /** The Baseline's own label, which every ratio header names. */
 const BASELINE_LABEL = "PGlite Memory";
@@ -304,10 +326,10 @@ describe("bench lane", () => {
         ...PGRUST_POSTMASTER_COLUMNS,
         ...WASQLITE_COLUMNS,
       ]) {
-        expect(header[column.value]).toBe(`${column.label} (ms)`);
+        expect(header[column.value]).toBe(expectedColumnHeader(suiteId, column.label));
         expect(header[column.ratio]).toBe(`vs ${BASELINE_LABEL}`);
       }
-      expect(header[COLUMNS.baseline]).toBe(`${BASELINE_LABEL} (ms)`);
+      expect(header[COLUMNS.baseline]).toBe(expectedColumnHeader(suiteId, BASELINE_LABEL));
       expect(header).toHaveLength(EXPECTED_CELLS_PER_ROW);
     });
 
@@ -352,17 +374,14 @@ describe("bench lane", () => {
     // The Reference Engine is held to a stricter rule than the subjects: it needs no JSPI and no
     // asset that can be missing, so a `skipped` or `failed` cell here is a harness bug, not a
     // browser or a build state. Its whole purpose is to be the column that always has a number.
+    // Every Suite, this one included: wa-sqlite runs the Concurrency Suite on its one connection,
+    // interleaving per statement, which is the mode its header states.
     test(`${suiteId}: both wa-sqlite Reference columns report milliseconds and a ratio in every row`, () => {
-      // Except in the one Suite it cannot run at all: wa-sqlite's API is synchronous, so there is
-      // nothing for a second Client to interleave with and `skipped` is the honest cell.
-      const expectSkipped = suiteId === CONCURRENCY_SUITE_ID;
       const rows = rowsFor(suiteId);
       const offenders = rows
         .filter((row) =>
-          WASQLITE_COLUMNS.some((column) =>
-            expectSkipped
-              ? (row[column.value] ?? "") !== "skipped" || (row[column.ratio] ?? "") !== EMPTY_CELL
-              : !MS_PATTERN.test(row[column.value] ?? "") || !RATIO_PATTERN.test(row[column.ratio] ?? ""),
+          WASQLITE_COLUMNS.some(
+            (column) => !MS_PATTERN.test(row[column.value] ?? "") || !RATIO_PATTERN.test(row[column.ratio] ?? ""),
           ),
         )
         .map(describeRow);
@@ -387,23 +406,26 @@ describe("the Concurrency Suite", () => {
     expect(markdown).toMatch(/- \*\*Test 1: Read fan-out/);
   });
 
-  test("says skipped, with the Engine's own reason, wherever concurrency could only be serialised", () => {
+  test("runs on the single-session Engines too, rather than refusing them", () => {
     const rows = rowsFor(CONCURRENCY_SUITE_ID);
-    for (const { column } of CONCURRENCY_UNAVAILABLE_COLUMNS) {
+    for (const column of CONCURRENCY_SINGLE_SESSION_COLUMNS) {
       const offenders = rows
-        .filter((row) => (row[column.value] ?? "") !== "skipped" || (row[column.ratio] ?? "") !== EMPTY_CELL)
+        .filter((row) => !MS_PATTERN.test(row[column.value] ?? "") || !RATIO_PATTERN.test(row[column.ratio] ?? ""))
         .map(describeRow);
       expect(offenders).toEqual([]);
     }
   });
 
-  test("greys those columns out for the Engine's reason rather than for a browser capability", () => {
-    // The reasons are in the page, not in the table, so this is the lane's own console: a column
-    // skipped here must never be skipped for a missing header or a missing handle.
+  test("states each column's concurrency mode in the header the export carries", () => {
+    const header = headerFor(CONCURRENCY_SUITE_ID);
     const suite = report.suites.find((candidate) => candidate.suiteId === CONCURRENCY_SUITE_ID);
     expect(suite?.failures).toBe("");
-    for (const { reason } of CONCURRENCY_UNAVAILABLE_COLUMNS) {
-      expect(reason.length).toBeGreaterThan(0);
+    for (const column of CONCURRENCY_SINGLE_SESSION_COLUMNS) {
+      expect(header[column.value]).toContain(INTERLEAVED_ON_ONE_SESSION);
+    }
+    // The one Engine that answers the other way, and the whole reason the note has to be there.
+    for (const column of PGRUST_POSTMASTER_COLUMNS) {
+      expect(header[column.value]).toContain("one backend per Client");
     }
   });
 

@@ -21,7 +21,7 @@
  */
 
 import { findConfiguration } from "./configurations";
-import { suiteAvailability } from "./engines/availability";
+import { configurationAvailability } from "./engines/availability";
 import type { EngineRunner } from "./engines/contract";
 import { configurationDialect } from "./engines/contract";
 import type { WasmMemoryStat } from "./engines/protocol";
@@ -143,7 +143,7 @@ export async function runMemoryProbe(
   if (configuration === undefined) {
     throw new Error(`No Configuration with id "${configurationId}"`);
   }
-  const availability = suiteAvailability(RTT_SUITE, configuration, environment);
+  const availability = configurationAvailability(configuration, environment);
   if (!availability.available) {
     return {
       configurationId,

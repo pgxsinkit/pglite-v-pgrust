@@ -4,7 +4,7 @@
  */
 
 import { EMPTY_CELL, formatDetail, formatMs, formatRatio } from "./format";
-import type { ResultsGrid } from "./grid";
+import type { GridColumn, ResultsGrid } from "./grid";
 import { hasRatioColumn, readCell, rowDetails, unmeasuredCellText } from "./grid";
 
 export interface MarkdownExportOptions {
@@ -33,11 +33,22 @@ function escapeCell(text: string): string {
   return text.replaceAll("|", "\\|");
 }
 
+/**
+ * One column's header cell: its label, the note the Suite gave it, and the unit.
+ *
+ * The note travels in the header so a pasted table stays self-describing. A Concurrency table whose
+ * columns did not say which kind of concurrency each of them had would be five rows of numbers
+ * answering two different questions with no way to tell which.
+ */
+export function markdownColumnHeader(column: GridColumn): string {
+  return column.note === undefined ? `${column.label} (ms)` : `${column.label} — ${column.note} (ms)`;
+}
+
 /** Header cells, in order, including the ratio column that follows each non-baseline column. */
 export function markdownHeaderCells(grid: ResultsGrid, baselineLabel: string): readonly string[] {
   const cells: string[] = ["Benchmark"];
   for (const column of grid.columns) {
-    cells.push(`${column.label} (ms)`);
+    cells.push(markdownColumnHeader(column));
     if (hasRatioColumn(grid, column.id)) {
       cells.push(`vs ${baselineLabel}`);
     }
