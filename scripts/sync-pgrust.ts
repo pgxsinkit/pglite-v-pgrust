@@ -81,6 +81,11 @@ const VENDORED_FILES: readonly string[] = [
   "wasm/threads-host.js",
   // One worker bootstrap, three roles (process / thread-prewarm / thread-start).
   "wasm/thread-worker.js",
+  // The two Node/bun worker entries. `threadWorkerUrl`/`storageWorkerUrl` resolve `.mjs` off the
+  // host base whenever `IS_NODE`, so the bun lane (`scripts/pgxsinkit-live-scenario.ts`) cannot
+  // start a thread or a store without them; each is a one-line re-export of the `.js` beside it.
+  "wasm/thread-worker.mjs",
+  "wasm/storage-worker.mjs",
   // The SharedArrayBuffer byte ring stdin and stdout ride on.
   "wasm/sab-pipe.js",
   // The `--fs broker` seam, and the storage coordinator on the other end of it.
@@ -112,6 +117,11 @@ const HOST_RUNTIME_FILES: readonly string[] = [
   "broker-fs.js",
   "storage-worker.js",
   "pgrust-wasi.js",
+  // The Node/bun worker entries, laid out beside the `.js` they re-export: the browser Engines never
+  // touch them, but the bun lane loads the host from this same directory and `IS_NODE` sends
+  // `threadWorkerUrl`/`storageWorkerUrl` at the `.mjs` names.
+  "thread-worker.mjs",
+  "storage-worker.mjs",
 ];
 
 /** One build output, and the name it takes in `public/pgrust/`. */

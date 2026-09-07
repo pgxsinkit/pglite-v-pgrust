@@ -8,7 +8,7 @@ they stay identical to their source.
 - Version: `08a306441f`
 - Source: `/home/anton/dev/tmp/pgrust`
 - Working tree: clean
-- Synced: 2026-09-06T14:19:23.918Z
+- Synced: 2026-09-07T06:03:01.282Z
 
 ## Files
 
@@ -17,6 +17,8 @@ they stay identical to their source.
 - `wasm/wire.js`
 - `wasm/threads-host.js`
 - `wasm/thread-worker.js`
+- `wasm/thread-worker.mjs`
+- `wasm/storage-worker.mjs`
 - `wasm/sab-pipe.js`
 - `wasm/broker-fs.js`
 - `wasm/storage-worker.js`
@@ -54,7 +56,7 @@ outputs; only this record of them is committed.
 
 - Source: `/home/anton/dev/tmp/pgrust`
 - Version: `08a306441f`
-- Copied: 2026-09-06T14:19:23.953Z
+- Copied: 2026-09-07T06:03:01.341Z
 
 pgrust is AGPL-3.0-only; these binaries were built locally from the checkout named above.
 <!-- pgrust-assets:end -->

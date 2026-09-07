@@ -1,0 +1,616 @@
+/**
+ * `PgrustPGlite` — PGlite's own client class, over a pgrust backend.
+ *
+ * **The claim this file exists to make.** Everything a pgxsinkit client asks of PGlite —
+ * `query`/`sql`/`exec`/`transaction`, the type parser and serializer registries, `describeQuery`,
+ * the notification map the `live` extension listens on — lives in `BasePGlite`, above a handful of
+ * abstract transport hooks. `PGlite` implements those hooks against a wasm Postgres it runs in
+ * process. This class implements the same hooks against a **pgwire session on a pgrust postmaster
+ * backend**, reached over the two `SharedArrayBuffer` rings the vendored host owns. Nothing above
+ * the hooks is re-implemented, overridden or forked: the client is PGlite's, verbatim, and so is
+ * every extension that sits on it (`live` is loaded here unmodified).
+ *
+ * **The one hard part: framing.** `PGlite.execProtocolRawSync` hands a message to a wasm Postgres
+ * and gets back whatever that call produced, synchronously — there is no question of when the
+ * response is finished. On a wire there is. `BasePGlite` drives the EXTENDED query protocol one
+ * message per `execProtocol*` call and it needs each answer before it sends the next (it reads the
+ * `ParameterDescription` from `Describe('S')` to serialize the parameters it then `Bind`s), so
+ * batching until `Sync` is not open to us. A real backend, though, buffers its output until a
+ * `Sync` or a `Flush`. So every non-terminal frontend message goes out with a `Flush` behind it,
+ * and this file reads until the message that ENDS that request's reply — `ParseComplete` for a
+ * Parse, `BindComplete` for a Bind, `RowDescription`/`NoData` for a Describe, `CommandComplete` for
+ * an Execute, `ReadyForQuery` for a Sync or a simple Query — or an `ErrorResponse`, after which the
+ * backend discards everything up to the next `Sync`, which is exactly what `BasePGlite`'s `finally`
+ * sends. The framing is the protocol's own: one type byte, one big-endian length that counts
+ * itself. Bytes past the terminator (there are none in practice, but the ring does not promise it)
+ * stay buffered for the next call.
+ *
+ * **Nothing here blocks.** `SabPipe.readAsync` is `Atomics.waitAsync`, which is the half of the API
+ * a driver may use on any thread — so this class works unchanged on the main thread of bun and in a
+ * browser worker. The blocking half belongs to the guest's own threads.
+ *
+ * **What is deliberately absent.** There is no filesystem to sync (`syncToFs` is a no-op), no
+ * `/dev/blob` device (the blob hooks are no-ops), and no data directory this side of the wire
+ * (`dumpDataDir` throws). Everything else mirrors `packages/pglite/src/pglite.ts` line for line.
+ */
+
+import type {
+  DebugLevel,
+  ExecProtocolOptions,
+  ExecProtocolOptionsStream,
+  ExecProtocolResult,
+  Extension,
+  Extensions,
+  ParserOptions,
+  PGliteInterface,
+  PGliteInterfaceExtensions,
+  SerializerOptions,
+  Transaction,
+} from "@electric-sql/pglite";
+import { BasePGlite, messages, Mutex, protocol } from "@electric-sql/pglite";
+
+import type { SabPipe } from "../vendor/pgrust/sab-pipe.js";
+import { encodeStartup, TERMINATE } from "../vendor/pgrust/wire.js";
+
+/**
+ * One pgrust session's pair of rings, as the host hands them out: `toGuest` is what the backend
+ * reads, `fromGuest` is what it writes. The same two objects the postmaster Engine's own
+ * `PipeSession` drives.
+ */
+export interface PgrustSessionPipes {
+  readonly toGuest: SabPipe;
+  readonly fromGuest: SabPipe;
+}
+
+/** Options for {@link PgrustPGlite.create}, the subset of `PGliteOptions` that means anything here. */
+export interface PgrustPGliteOptions<TExtensions extends Extensions = Extensions> {
+  readonly extensions?: TExtensions;
+  readonly debug?: DebugLevel;
+  readonly parsers?: ParserOptions;
+  readonly serializers?: SerializerOptions;
+  /** Startup-packet parameters. The postmaster lane's own defaults. */
+  readonly user?: string;
+  readonly database?: string;
+  readonly applicationName?: string;
+}
+
+/** Frontend message type bytes, in the order `BasePGlite` sends them. */
+const FRONTEND_PARSE = 0x50; // "P"
+const FRONTEND_BIND = 0x42; // "B"
+const FRONTEND_DESCRIBE = 0x44; // "D"
+const FRONTEND_EXECUTE = 0x45; // "E"
+const FRONTEND_CLOSE = 0x43; // "C"
+const FRONTEND_SYNC = 0x53; // "S"
+const FRONTEND_QUERY = 0x51; // "Q"
+const FRONTEND_FLUSH = 0x48; // "H"
+const FRONTEND_TERMINATE = 0x58; // "X"
+const FRONTEND_FUNCTION_CALL = 0x46; // "F"
+
+/** Backend message type bytes this file has to recognise to know when a reply has ended. */
+const BACKEND_PARSE_COMPLETE = 0x31; // "1"
+const BACKEND_BIND_COMPLETE = 0x32; // "2"
+const BACKEND_CLOSE_COMPLETE = 0x33; // "3"
+const BACKEND_ROW_DESCRIPTION = 0x54; // "T"
+const BACKEND_NO_DATA = 0x6e; // "n"
+const BACKEND_COMMAND_COMPLETE = 0x43; // "C"
+const BACKEND_EMPTY_QUERY = 0x49; // "I"
+const BACKEND_PORTAL_SUSPENDED = 0x73; // "s"
+const BACKEND_FUNCTION_CALL_RESPONSE = 0x56; // "V"
+const BACKEND_ERROR_RESPONSE = 0x45; // "E"
+const BACKEND_READY_FOR_QUERY = 0x5a; // "Z"
+
+/** The `Flush` frame, byte for byte: type "H", length 4, no body. */
+const FLUSH = new Uint8Array([FRONTEND_FLUSH, 0, 0, 0, 4]);
+
+/** One ring read at a time; the session ring the backend writes is 4 MiB, so this is 64 turns of it. */
+const READ_CHUNK_BYTES = 65_536;
+
+/** A message header is the type byte plus a four-byte length that counts itself. */
+const HEADER_BYTES = 5;
+
+/**
+ * Which backend message ends the reply to `frontendType`.
+ *
+ * `ErrorResponse` ends every one of them: after it the backend discards frontend messages until the
+ * next `Sync`, and `BasePGlite`'s `finally` sends exactly that.
+ */
+function endsReplyTo(frontendType: number): (backendType: number) => boolean {
+  switch (frontendType) {
+    // A startup packet has no type byte; the handshake ends at the first ReadyForQuery.
+    case 0:
+    case FRONTEND_QUERY:
+    case FRONTEND_SYNC:
+      return (type) => type === BACKEND_READY_FOR_QUERY;
+    case FRONTEND_PARSE:
+      return (type) => type === BACKEND_PARSE_COMPLETE || type === BACKEND_ERROR_RESPONSE;
+    case FRONTEND_BIND:
+      return (type) => type === BACKEND_BIND_COMPLETE || type === BACKEND_ERROR_RESPONSE;
+    case FRONTEND_DESCRIBE:
+      // Describe('S') answers ParameterDescription first and then one of these two; Describe('P')
+      // answers one of these two alone.
+      return (type) => type === BACKEND_ROW_DESCRIPTION || type === BACKEND_NO_DATA || type === BACKEND_ERROR_RESPONSE;
+    case FRONTEND_EXECUTE:
+      return (type) =>
+        type === BACKEND_COMMAND_COMPLETE ||
+        type === BACKEND_EMPTY_QUERY ||
+        type === BACKEND_PORTAL_SUSPENDED ||
+        type === BACKEND_ERROR_RESPONSE;
+    case FRONTEND_CLOSE:
+      return (type) => type === BACKEND_CLOSE_COMPLETE || type === BACKEND_ERROR_RESPONSE;
+    case FRONTEND_FUNCTION_CALL:
+      return (type) => type === BACKEND_FUNCTION_CALL_RESPONSE || type === BACKEND_ERROR_RESPONSE;
+    default:
+      throw new Error(
+        `PgrustPGlite: no reply terminator is defined for frontend message type ` +
+          `"${String.fromCharCode(frontendType)}" (0x${frontendType.toString(16)})`,
+      );
+  }
+}
+
+/** Whether a frontend message is one the backend answers without being flushed. */
+function isSelfFlushing(frontendType: number): boolean {
+  return frontendType === 0 || frontendType === FRONTEND_QUERY || frontendType === FRONTEND_SYNC;
+}
+
+/** Always allocates: the ring's bytes are reused by the next read, so a view of them cannot be kept. */
+function concat(head: Uint8Array, tail: Uint8Array): Uint8Array<ArrayBuffer> {
+  const joined = new Uint8Array(head.length + tail.length);
+  joined.set(head, 0);
+  joined.set(tail, head.length);
+  return joined;
+}
+
+/**
+ * The channel-name normalisation `pglUtils.toPostgresName` performs, reproduced here because it is
+ * not on `@electric-sql/pglite`'s public surface. Same rule as the identifier one: a quoted name
+ * keeps its case, an unquoted one is folded down, and that is the name a `NotificationResponse`
+ * carries.
+ */
+function toPostgresName(input: string): string {
+  return input.startsWith('"') && input.endsWith('"') ? input.slice(1, -1) : input.toLowerCase();
+}
+
+/** What one `execProtocol` call collects while the parser walks its bytes. */
+class CurrentQuery {
+  readonly results: messages.BackendMessage[] = [];
+  readonly throwOnError: boolean;
+  readonly onNotice: ((notice: messages.NoticeMessage) => void) | undefined;
+  databaseError: messages.DatabaseError | null = null;
+
+  constructor(throwOnError = false, onNotice?: (notice: messages.NoticeMessage) => void) {
+    this.throwOnError = throwOnError;
+    this.onNotice = onNotice;
+  }
+}
+
+export class PgrustPGlite extends BasePGlite {
+  override readonly debug: DebugLevel = 0;
+
+  readonly waitReady: Promise<void>;
+
+  readonly #toGuest: SabPipe;
+  readonly #fromGuest: SabPipe;
+  readonly #startupParameters: Readonly<Record<string, string>>;
+
+  /** Backend bytes read but not yet consumed by a reply — never more than a trailing partial message. */
+  #buffered: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+  readonly #scratch = new Uint8Array(READ_CHUNK_BYTES);
+
+  #ready = false;
+  #closing = false;
+  #closed = false;
+
+  // The same three mutexes `PGlite` keeps, doing the same three jobs.
+  readonly #queryMutex = new Mutex();
+  readonly #transactionMutex = new Mutex();
+  readonly #listenMutex = new Mutex();
+
+  #protocolParser = new protocol.Parser();
+  #currentQuery = new CurrentQuery();
+
+  readonly #extensions: Extensions;
+  readonly #extensionsClose: Array<() => Promise<void>> = [];
+
+  readonly #notifyListeners = new Map<string, Set<(payload: string) => void>>();
+  readonly #globalNotifyListeners = new Set<(channel: string, payload: string) => void>();
+
+  constructor(session: PgrustSessionPipes, options: PgrustPGliteOptions = {}) {
+    super();
+    this.#toGuest = session.toGuest;
+    this.#fromGuest = session.fromGuest;
+    if (options.parsers !== undefined) {
+      this.parsers = { ...this.parsers, ...options.parsers };
+    }
+    if (options.serializers !== undefined) {
+      this.serializers = { ...this.serializers, ...options.serializers };
+    }
+    if (options.debug !== undefined) {
+      this.debug = options.debug;
+    }
+    this.#extensions = options.extensions ?? {};
+    this.#startupParameters = {
+      user: options.user ?? "postgres",
+      database: options.database ?? "postgres",
+      application_name: options.applicationName ?? "pgxsinkit-live-scenario",
+      client_encoding: "UTF8",
+    };
+    this.waitReady = this.#init();
+  }
+
+  /**
+   * Open a client on an already-announced pgrust session, exactly as `PGlite.create` opens one on a
+   * wasm instance: construct, await the ready promise, hand back an instance whose extension
+   * namespaces are on its type.
+   */
+  static async create<TExtensions extends Extensions>(
+    session: PgrustSessionPipes,
+    options: PgrustPGliteOptions<TExtensions> = {},
+  ): Promise<PgrustPGlite & PGliteInterfaceExtensions<TExtensions>> {
+    const instance = new PgrustPGlite(session, options);
+    await instance.waitReady;
+    return instance as PgrustPGlite & PGliteInterfaceExtensions<TExtensions>;
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Boot
+  // -------------------------------------------------------------------------------------------
+
+  async #init(): Promise<void> {
+    // Extension setup, in `PGlite.#init`'s shape: the namespace object is assigned onto the
+    // instance under the extension's key, `init` runs once the database answers queries, and
+    // `close` is kept for `close()`. There is no emscripten module here, so the options a setup
+    // amends are an empty object it is welcome to ignore, and a bundle path has nowhere to go.
+    const extensionInitFns: Array<() => Promise<void>> = [];
+    for (const [name, extension] of Object.entries(this.#extensions)) {
+      if (extension instanceof URL) {
+        throw new Error(
+          `PgrustPGlite: extension "${name}" is a bundle URL; a pgrust backend loads no PGlite ` +
+            "extension bundles (only JS extensions with a setup function are supported)",
+        );
+      }
+      const result = await (extension as Extension).setup(this as unknown as PGliteInterface, {});
+      if (result.namespaceObj) {
+        (this as unknown as Record<string, unknown>)[name] = result.namespaceObj;
+      }
+      if (result.bundlePath) {
+        throw new Error(`PgrustPGlite: extension "${name}" asks for a bundle, which this transport cannot load`);
+      }
+      if (result.init) {
+        extensionInitFns.push(result.init);
+      }
+      if (result.close) {
+        this.#extensionsClose.push(result.close);
+      }
+    }
+
+    // The startup packet, and everything through the first ReadyForQuery. The postmaster has
+    // already spawned this backend (the host announced the connection record); this is the
+    // handshake that backend is waiting on.
+    await this.#exchange(encodeStartup(this.#startupParameters), 0);
+
+    this.#ready = true;
+
+    await this._initArrayTypes();
+
+    for (const initFn of extensionInitFns) {
+      await initFn();
+    }
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Transport
+  // -------------------------------------------------------------------------------------------
+
+  /**
+   * Enqueue frontend bytes without ever parking this thread.
+   *
+   * A short write is normal rather than exceptional — a schema script is larger than a ring — and
+   * blocking through one would stop the very pump that drains it.
+   */
+  async #send(bytes: Uint8Array): Promise<void> {
+    let offset = 0;
+    while (offset < bytes.length) {
+      offset += this.#toGuest.write(bytes.subarray(offset), { block: false });
+      if (offset < bytes.length) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    }
+  }
+
+  /**
+   * Send one frontend message and return the raw bytes of the reply it ends with.
+   *
+   * `frontendType` is the message's own type byte, or 0 for the startup packet (which has none).
+   * Anything the backend would otherwise hold in its output buffer is prised out with a `Flush`.
+   */
+  async #exchange(message: Uint8Array, frontendType: number): Promise<Uint8Array> {
+    const isTerminator = endsReplyTo(frontendType);
+    await this.#send(isSelfFlushing(frontendType) ? message : concat(message, FLUSH));
+
+    let scanned = 0;
+    for (;;) {
+      while (this.#buffered.length - scanned >= HEADER_BYTES) {
+        const type = this.#buffered[scanned] as number;
+        const view = new DataView(this.#buffered.buffer, this.#buffered.byteOffset + scanned + 1, 4);
+        const end = scanned + 1 + view.getUint32(0, false);
+        if (this.#buffered.length < end) {
+          break;
+        }
+        scanned = end;
+        if (isTerminator(type)) {
+          const reply = this.#buffered.slice(0, end);
+          this.#buffered = this.#buffered.slice(end);
+          return reply;
+        }
+      }
+      const read = await this.#fromGuest.readAsync(this.#scratch, this.#scratch.length);
+      if (read === 0) {
+        this.#closed = true;
+        throw new Error("PgrustPGlite: the backend closed the session while a reply was outstanding");
+      }
+      this.#buffered = concat(this.#buffered, this.#scratch.subarray(0, read));
+    }
+  }
+
+  /** The message type byte `BasePGlite` is sending, or 0 for a startup packet (which has none). */
+  #frontendTypeOf(message: Uint8Array): number {
+    const first = message[0];
+    if (first === undefined) {
+      throw new Error("PgrustPGlite: refusing to send an empty protocol message");
+    }
+    return first === 0 ? 0 : first;
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // The abstract transport hooks
+  // -------------------------------------------------------------------------------------------
+
+  override async execProtocolRaw(message: Uint8Array, _options: ExecProtocolOptions = {}): Promise<Uint8Array> {
+    const type = this.#frontendTypeOf(message);
+    if (type === FRONTEND_TERMINATE) {
+      // `close()` owns Terminate; a caller who sends one through the protocol seam gets the same
+      // no-op `PGlite` gives it rather than a session torn down under the client.
+      return new Uint8Array(0);
+    }
+    return await this.#exchange(message, type);
+  }
+
+  override async execProtocol(
+    message: Uint8Array,
+    { throwOnError = true, onNotice }: ExecProtocolOptions = {},
+  ): Promise<ExecProtocolResult> {
+    this.#currentQuery = new CurrentQuery(throwOnError, onNotice);
+    const data = await this.execProtocolRaw(message);
+    return { messages: this.#settle(data, throwOnError), data };
+  }
+
+  override async execProtocolStream(
+    message: Uint8Array,
+    { throwOnError = true, onNotice }: ExecProtocolOptions = {},
+  ): Promise<messages.BackendMessage[]> {
+    this.#currentQuery = new CurrentQuery(throwOnError, onNotice);
+    const data = await this.execProtocolRaw(message);
+    return this.#settle(data, throwOnError);
+  }
+
+  override async execProtocolRawStream(message: Uint8Array, { onRawData }: ExecProtocolOptionsStream): Promise<void> {
+    // A wire reply is read in ring-sized chunks and only completes at its terminator, so the whole
+    // reply is in hand before anything can be handed on: one call, not a stream of them. The
+    // contract — "every byte of the reply reaches `onRawData`" — is kept either way.
+    onRawData(await this.execProtocolRaw(message));
+  }
+
+  /** Parse a reply, dispatch its notices and notifications, and surface any database error. */
+  #settle(data: Uint8Array, throwOnError: boolean): messages.BackendMessage[] {
+    this.#protocolParser.parse(data, (message) => {
+      const kept = this.#dispatch(message);
+      if (kept) {
+        this.#currentQuery.results.push(kept);
+      }
+    });
+    const databaseError = this.#currentQuery.databaseError;
+    const results = this.#currentQuery.results;
+    this.#currentQuery = new CurrentQuery();
+    if (throwOnError && databaseError) {
+      this.#protocolParser = new protocol.Parser(); // Reset the parser
+      throw databaseError;
+    }
+    return results;
+  }
+
+  /** `PGlite.#parse`, verbatim in behaviour: the first error wins, notices and notifications fan out. */
+  #dispatch(message: messages.BackendMessage): messages.BackendMessage | null {
+    if (this.#currentQuery.databaseError) {
+      return null;
+    }
+    if (message instanceof messages.DatabaseError) {
+      if (this.#currentQuery.throwOnError) {
+        this.#currentQuery.databaseError = message;
+      }
+    } else if (message instanceof messages.NoticeMessage) {
+      if (this.debug > 0) {
+        console.warn(message);
+      }
+      this.#currentQuery.onNotice?.(message);
+    } else if (message instanceof messages.NotificationResponseMessage) {
+      const listeners = this.#notifyListeners.get(message.channel);
+      if (listeners) {
+        // queueMicrotask so the callback runs after the synchronous parse has finished, exactly as
+        // `PGlite` does — a listener that queries would otherwise re-enter the parser.
+        listeners.forEach((callback) => queueMicrotask(() => callback(message.payload)));
+      }
+      this.#globalNotifyListeners.forEach((callback) =>
+        queueMicrotask(() => callback(message.channel, message.payload)),
+      );
+    }
+    return message;
+  }
+
+  /** There is no filesystem on this side of the wire: the backend owns its own, and syncs it itself. */
+  override async syncToFs(): Promise<void> {
+    // Intentionally empty.
+  }
+
+  /** No `/dev/blob` device: `COPY TO/FROM '/dev/blob'` is a wasm-in-process affordance. */
+  override async _handleBlob(_blob?: File | Blob): Promise<void> {
+    // Intentionally empty.
+  }
+
+  override async _getWrittenBlob(): Promise<File | Blob | undefined> {
+    return undefined;
+  }
+
+  override async _cleanupBlob(): Promise<void> {
+    // Intentionally empty.
+  }
+
+  override async _checkReady(): Promise<void> {
+    if (this.#closing) {
+      throw new Error("PgrustPGlite is closing");
+    }
+    if (this.#closed) {
+      throw new Error("PgrustPGlite is closed");
+    }
+    if (!this.#ready) {
+      await this.waitReady;
+    }
+  }
+
+  override async _runExclusiveQuery<T>(fn: () => Promise<T>): Promise<T> {
+    return await this.#queryMutex.runExclusive(fn);
+  }
+
+  override async _runExclusiveTransaction<T>(fn: () => Promise<T>): Promise<T> {
+    return await this.#transactionMutex.runExclusive(fn);
+  }
+
+  async _runExclusiveListen<T>(fn: () => Promise<T>): Promise<T> {
+    return await this.#listenMutex.runExclusive(fn);
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Notifications — `PGlite`'s implementation, unchanged
+  // -------------------------------------------------------------------------------------------
+
+  override async listen(
+    channel: string,
+    callback: (payload: string) => void,
+    tx?: Transaction,
+  ): Promise<(tx?: Transaction) => Promise<void>> {
+    return await this._runExclusiveListen(async () => await this.#listen(channel, callback, tx));
+  }
+
+  async #listen(
+    channel: string,
+    callback: (payload: string) => void,
+    tx?: Transaction,
+  ): Promise<(tx?: Transaction) => Promise<void>> {
+    const pgChannel = toPostgresName(channel);
+    const pg = tx ?? this;
+    if (!this.#notifyListeners.has(pgChannel)) {
+      this.#notifyListeners.set(pgChannel, new Set());
+    }
+    this.#notifyListeners.get(pgChannel)?.add(callback);
+    try {
+      await pg.exec(`LISTEN ${channel}`);
+    } catch (error) {
+      this.#notifyListeners.get(pgChannel)?.delete(callback);
+      if (this.#notifyListeners.get(pgChannel)?.size === 0) {
+        this.#notifyListeners.delete(pgChannel);
+      }
+      throw error;
+    }
+    return async (unlistenTx?: Transaction) => {
+      await this.unlisten(pgChannel, callback, unlistenTx);
+    };
+  }
+
+  async unlisten(channel: string, callback?: (payload: string) => void, tx?: Transaction): Promise<void> {
+    await this._runExclusiveListen(async () => {
+      await this.#unlisten(channel, callback, tx);
+    });
+  }
+
+  async #unlisten(channel: string, callback?: (payload: string) => void, tx?: Transaction): Promise<void> {
+    const pgChannel = toPostgresName(channel);
+    const pg = tx ?? this;
+    const cleanUp = async (): Promise<void> => {
+      await pg.exec(`UNLISTEN ${channel}`);
+      // Another query may have subscribed while that ran, so check again.
+      if (this.#notifyListeners.get(pgChannel)?.size === 0) {
+        this.#notifyListeners.delete(pgChannel);
+      }
+    };
+    if (callback) {
+      this.#notifyListeners.get(pgChannel)?.delete(callback);
+      if (this.#notifyListeners.get(pgChannel)?.size === 0) {
+        await cleanUp();
+      }
+    } else {
+      await cleanUp();
+    }
+  }
+
+  onNotification(callback: (channel: string, payload: string) => void): () => void {
+    this.#globalNotifyListeners.add(callback);
+    return () => {
+      this.#globalNotifyListeners.delete(callback);
+    };
+  }
+
+  offNotification(callback: (channel: string, payload: string) => void): void {
+    this.#globalNotifyListeners.delete(callback);
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Lifecycle
+  // -------------------------------------------------------------------------------------------
+
+  get ready(): boolean {
+    return this.#ready && !this.#closing && !this.#closed;
+  }
+
+  get closed(): boolean {
+    return this.#closed;
+  }
+
+  /**
+   * End the session: run the extensions' own teardown, send `Terminate`, and wait for the backend's
+   * `secure_close` — which this side sees as EOF on the ring it reads. The postmaster's shutdown is
+   * a separate, later thing (the engine closes the listener); this is one client leaving.
+   */
+  async close(): Promise<void> {
+    if (this.#closed || this.#closing) {
+      return;
+    }
+    this.#closing = true;
+    try {
+      for (const closeExtension of this.#extensionsClose) {
+        await closeExtension();
+      }
+      await this.#send(TERMINATE);
+      for (;;) {
+        const read = await this.#fromGuest.readAsync(this.#scratch, this.#scratch.length);
+        if (read === 0) {
+          break;
+        }
+      }
+    } finally {
+      this.#closed = true;
+      this.#closing = false;
+      this.#ready = false;
+    }
+  }
+
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.close();
+  }
+
+  /** No data directory this side of the wire: the store lives in the coordinator, not in this client. */
+  async dumpDataDir(): Promise<never> {
+    throw new Error(
+      "PgrustPGlite: dumpDataDir is not supported — the data directory belongs to the pgrust storage " +
+        "coordinator, not to this client",
+    );
+  }
+}
