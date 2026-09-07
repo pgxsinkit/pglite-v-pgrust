@@ -142,9 +142,10 @@ describe("Configurations", () => {
 
   test("give each store its own OPFS directory, carrying this app's own prefix", () => {
     const directories = CONFIGURATIONS.filter((config) => config.dataDir !== "").map((config) => config.dataDir);
-    // PGlite's two sit inside the prefix directory. The threads pair cannot: the vendored storage
-    // coordinator resolves its one `opfsDir` name against the OPFS root, which rejects a name with a
-    // slash in it, so they are root-level directories whose NAME carries the prefix instead.
+    // PGlite's two sit inside the prefix directory. The three pgrust ones are root-level directories
+    // whose NAME carries the prefix: the vendored storage coordinator resolved its one `opfsDir`
+    // against the OPFS root, which rejects a name with a slash in it. It walks a path since pgrust
+    // `9bab6bff11`, but these columns keep the names their earlier Runs used (see `./opfs`).
     expect(directories).toEqual([
       `${OPFS_DIRECTORY_PREFIX}/opfs-repacked-relaxed`,
       `${OPFS_DIRECTORY_PREFIX}/opfs-repacked-strict`,

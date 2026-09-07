@@ -4,11 +4,11 @@ Copied byte-verbatim by `bun run sync:pgrust`. **Do not edit these files by hand
 script against an updated pgrust checkout instead. They are excluded from oxlint and oxfmt so
 they stay identical to their source.
 
-- Commit: `d74e9744265bd647dcd47f1c34c9c79ee480a20d`
-- Version: `d74e974426`
+- Commit: `9bab6bff1191aac9302099065a49b87129e71bfe`
+- Version: `9bab6bff11`
 - Source: `/home/anton/dev/tmp/pgrust`
 - Working tree: clean
-- Synced: 2026-09-07T10:22:46.031Z
+- Synced: 2026-09-07T13:10:37.739Z
 
 ## Files
 
@@ -51,19 +51,12 @@ published version of the package, so no npm release corresponds to these bytes. 
 <!-- pgrust-assets:begin -->
 ## Binary assets in `public/pgrust/`
 
-Downloaded by `bun run sync:pgrust --release pgrust-assets/d74e9744` — **not** from the checkout above.
-They are gitignored build outputs; only this record of them is committed.
+Copied by `bun run sync:pgrust` from a local pgrust checkout. They are gitignored build
+outputs; only this record of them is committed.
 
-- Release: [`pgrust-assets/d74e9744`](https://github.com/pgxsinkit/pglite-v-pgrust/releases/tag/pgrust-assets/d74e9744)
-- pgrust commit: [`d74e9744265bd647dcd47f1c34c9c79ee480a20d`](https://github.com/pgxsinkit/pgrust/commit/d74e9744265bd647dcd47f1c34c9c79ee480a20d)
-- Branch: [`spike/wasip1-threads`](https://github.com/pgxsinkit/pgrust/tree/spike/wasip1-threads)
-- Upstream base: `438c8c420b96b23ca61927ba57e608839f86e935` (https://github.com/malisper/pgrust)
-- Build: `wasm-release` / `wasm32-wasip1` / `nightly-2026-07-17`
-- Threads build: `wasm-release` / `wasm32-wasip1-threads` (postgres-threads.wasm)
-- VFS: `initdb` from PostgreSQL 18, built 2026-09-07T10:22:46.051Z
-- Downloaded: 2026-09-07T10:23:24.241Z
-- Fetched from: `file:///home/anton/dev/tmp/pglite-v-pgrust/tmp/pgrust-assets/pgrust-assets-d74e9744` (PGLITE_V_PGRUST_RELEASE_BASE_URL)
+- Source: `/home/anton/dev/tmp/pgrust`
+- Version: `9bab6bff11`
+- Copied: 2026-09-07T13:10:37.799Z
 
-pgrust is AGPL-3.0-only. The complete corresponding source for these binaries is the commit
-linked above; the release's `manifest.json` records the same thing in machine-readable form.
+pgrust is AGPL-3.0-only; these binaries were built locally from the checkout named above.
 <!-- pgrust-assets:end -->

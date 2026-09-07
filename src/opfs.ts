@@ -20,19 +20,23 @@
 export const OPFS_DIRECTORY_PREFIX = "pglite-v-pgrust";
 
 /**
- * A directory this app owns at the OPFS **root**, for a store whose worker can address nothing else.
+ * A directory this app owns at the OPFS **root**, for the three pgrust storage columns.
  *
  * Everything this app writes belongs under the prefix directory, and every store PGlite opens is in
- * there. The pgrust threads storage coordinator cannot be: it is vendored byte-verbatim, it takes
- * one `opfsDir` **name** and resolves it with a single `root.getDirectoryHandle(name)`, and a name
- * containing `/` is a `TypeError` in Chromium (`Name is not allowed`) and Firefox (`Invalid
- * directory name`) alike. Giving it a nested path is therefore not a choice this repo has; editing
- * the coordinator to walk one would fork the thing being benchmarked.
+ * there. The pgrust storage coordinator could not be: it took one `opfsDir` **name** and resolved it
+ * with a single `root.getDirectoryHandle(name)`, and a name containing `/` is a `TypeError` in
+ * Chromium (`Name is not allowed`) and Firefox (`Invalid directory name`) alike — so those columns
+ * got a root-level directory whose **name carries the prefix** instead.
  *
- * So those columns get a root-level directory whose **name carries the prefix** instead. It is
- * still unmistakably this app's, it is still emptied before the Run that uses it and removed when
- * that Run closes, and `isOwnedOpfsPath` is what holds every path this app uses to one of the two
- * shapes.
+ * pgrust `9bab6bff11` lifted that: the coordinator now walks a `/`-separated path, one
+ * `getDirectoryHandle` per segment, which is what lets a pgrust store live in the nested namespace
+ * pgxsinkit gives it (`pgxsinkit/stores/<identity>`). These three columns keep their root-level
+ * names anyway — a Configuration's directory is part of its identity, and renaming one would
+ * silently orphan the store every earlier Run of that column used.
+ *
+ * Either shape is still unmistakably this app's, still emptied before the Run that uses it and
+ * removed when that Run closes, and `isOwnedOpfsPath` is what holds every path this app uses to one
+ * of the two.
  */
 export function opfsOwnedRootDirectory(name: string): string {
   return `${OPFS_DIRECTORY_PREFIX}-${name}`;
