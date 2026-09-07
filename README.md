@@ -45,14 +45,6 @@ tables; `bun run bench` on its own runs all three Suites (see [the headless lane
 postmaster under bun and runs the published `@pgxsinkit/client` against it — unchanged, over PGlite's
 own `BasePGlite` with a pgwire transport (`src/client/`). It needs the synced assets and nothing else.
 
-> **Temporary pin.** `@electric-sql/pglite` is aliased to a local `pnpm pack` build of the fork
-> (`file:./tmp/agents/pgxsinkit-pglite-0.5.5-pgx.3.tgz`) because `0.5.5-pgx.3` — the first version to
-> export `BasePGlite`, which that scenario subclasses — is not published yet; it flips back to
-> `npm:@pgxsinkit/pglite@0.5.5-pgx.3` the moment it is. Rebuild the tarball with
-> `pnpm -C packages/pglite build && pnpm -C packages/pglite pack --pack-destination <this repo>/tmp/agents`
-> in a checkout of the fork. Only the scenario cares: every benchmark column is on the same client
-> either way.
-
 Only `bun install` and the sync need a network. The sync downloads the newest `pgrust-assets/*`
 [release](#pgrust-assets) of this repo — ~30 MB gzipped, ~135 MB unpacked into `public/pgrust/`,
 which is gitignored — verifies every file against the release's `SHA256SUMS` **and** the unpacked

@@ -26,7 +26,7 @@
     "validate:full": "bun run validate && bun run test:e2e"
   },
   "dependencies": {
-    "@electric-sql/pglite": "file:./tmp/agents/pgxsinkit-pglite-0.5.5-pgx.3.tgz",
+    "@electric-sql/pglite": "npm:@pgxsinkit/pglite@0.5.5-pgx.3",
     "@pgxsinkit/client": "0.3.0",
     "@pgxsinkit/contracts": "0.3.0",
     "@pgxsinkit/pglite-opfs-repacked": "0.3.0",
