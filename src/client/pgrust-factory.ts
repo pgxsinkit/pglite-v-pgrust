@@ -80,6 +80,11 @@ const COMPRESSED_MIME_TYPES: readonly string[] = [
  */
 const BACKUP_EXCLUDED: readonly string[] = ["/postmaster.pid", "/postmaster.opts"];
 
+/** PGlite's blob file, and the directory it needs before `COPY TO` can open it. */
+const DEV_BLOB_DIRECTORY = "/dev";
+const DEV_BLOB_PATH = "/dev/blob";
+const EMPTY_BLOB_BYTES = new Uint8Array(0);
+
 /** The modes a restored entry is created with when the tarball's own are unreadable. */
 const DEFAULT_RESTORE_FILE_MODE = 0o644;
 const DEFAULT_RESTORE_DIRECTORY_MODE = 0o755;
@@ -412,6 +417,66 @@ export class PgrustClientPGlite extends PgrustPGlite {
   async strictSync(): Promise<void> {
     await this._checkReady();
     this.#store.strictSync();
+  }
+
+  /**
+   * `/dev/blob` — the file `COPY … FROM '/dev/blob'` reads and `COPY … TO '/dev/blob'` writes.
+   *
+   * PGlite makes it a character device inside its own emscripten FS, and the base client here
+   * refuses the whole facility on the grounds that a wire client has no filesystem. That is true of
+   * the base client and false of this one: the coordinator's store IS the guest's root filesystem
+   * (`/pgdata` and `/share` are two directories in it), so the host can put a real file at
+   * `/dev/blob` over the broker channel and the backend opens it like any other. `pg_read_file`,
+   * `COPY FROM` and `COPY TO` all see it — nothing in the guest is special-cased.
+   *
+   * The three hooks map onto PGlite's own semantics rather than onto files: `_handleBlob` stages the
+   * query's input, `_cleanupBlob` drops it the moment the query is done (the base calls it before
+   * asking for the output, which is what keeps an input from being read back as one), and
+   * `_getWrittenBlob` takes whatever the backend left and empties the file behind it. A blobless
+   * query costs one `lstat` and nothing else; an instance that never runs `COPY` still creates the
+   * empty file once, because `COPY TO` needs the directory to exist before Postgres opens the path.
+   */
+  #devBlobReady = false;
+  /** Whether the CURRENT query's input bytes are sitting in the file. */
+  #devBlobStaged = false;
+
+  #ensureDevBlob(): void {
+    if (this.#devBlobReady) {
+      return;
+    }
+    this.#store.mkdirp(DEV_BLOB_DIRECTORY);
+    this.#store.writeFile(DEV_BLOB_PATH, EMPTY_BLOB_BYTES);
+    this.#devBlobReady = true;
+  }
+
+  override async _handleBlob(blob?: File | Blob): Promise<void> {
+    this.#ensureDevBlob();
+    if (blob === undefined) {
+      return;
+    }
+    this.#store.writeFile(DEV_BLOB_PATH, new Uint8Array(await blob.arrayBuffer()));
+    this.#devBlobStaged = true;
+  }
+
+  override async _cleanupBlob(): Promise<void> {
+    if (!this.#devBlobStaged) {
+      return;
+    }
+    this.#store.writeFile(DEV_BLOB_PATH, EMPTY_BLOB_BYTES);
+    this.#devBlobStaged = false;
+  }
+
+  override async _getWrittenBlob(): Promise<File | Blob | undefined> {
+    if (!this.#devBlobReady) {
+      return undefined;
+    }
+    const size = Number(this.#store.lstat(DEV_BLOB_PATH).size);
+    if (size === 0) {
+      return undefined;
+    }
+    const bytes = this.#store.readFile(DEV_BLOB_PATH);
+    this.#store.writeFile(DEV_BLOB_PATH, EMPTY_BLOB_BYTES);
+    return new Blob([bytes.slice().buffer]);
   }
 
   /**

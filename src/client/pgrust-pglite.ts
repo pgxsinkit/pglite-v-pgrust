@@ -770,7 +770,11 @@ export class PgrustPGlite extends BasePGlite {
     // Intentionally empty.
   }
 
-  /** No `/dev/blob` device: `COPY TO/FROM '/dev/blob'` is a wasm-in-process affordance. */
+  /**
+   * No `/dev/blob` here: this client is the wire and nothing else, and the file the facility needs
+   * lives in a store it does not have. A subclass that owns one answers all three (see
+   * `PgrustClientPGlite` in `pgrust-factory.ts`, which puts a real file at that path).
+   */
   override async _handleBlob(_blob?: File | Blob): Promise<void> {
     // Intentionally empty.
   }
