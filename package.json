@@ -22,6 +22,7 @@
     "probe:memory": "bun scripts/probe-memory.ts",
     "probe:notify": "bun scripts/probe-notify-latency.ts",
     "probe:pg-dump": "bun scripts/probe-pg-dump.ts",
+    "probe:prepared-store": "bun scripts/probe-prepared-store.ts",
     "scenario:pgxsinkit-factory": "bun scripts/pgxsinkit-factory-scenario.ts",
     "scenario:pgxsinkit-live": "bun scripts/pgxsinkit-live-scenario.ts",
     "sync:pgrust": "bun scripts/sync-pgrust.ts",
