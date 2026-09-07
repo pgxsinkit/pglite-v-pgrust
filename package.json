@@ -17,6 +17,7 @@
     "pgrust:bundle": "bun scripts/package-pgrust-assets.ts",
     "prepare": "bun run hooks:install",
     "preview": "vite preview",
+    "probe:notify": "bun scripts/probe-notify-latency.ts",
     "scenario:pgxsinkit-live": "bun scripts/pgxsinkit-live-scenario.ts",
     "sync:pgrust": "bun scripts/sync-pgrust.ts",
     "test": "bun test src scripts",

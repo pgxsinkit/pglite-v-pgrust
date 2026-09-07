@@ -29,6 +29,16 @@
  * a driver may use on any thread — so this class works unchanged on the main thread of bun and in a
  * browser worker. The blocking half belongs to the guest's own threads.
  *
+ * **The idle pump.** With one session, a `NOTIFY` and the `LISTEN` that wants it share a backend, so
+ * the `NotificationResponse` rides back on the notifying statement's own reply and nothing has to
+ * watch the ring. Two sessions is the other shape: the listening backend writes its notification
+ * while this client is idle, and a client that only ever reads inside an exchange would not see it
+ * until its next query. {@link PgrustPGlite.pumpNotifications} is the smallest thing that closes
+ * that gap — an opt-in loop that reads the out-pipe ONLY when no exchange is in flight (so it can
+ * never take a byte of a reply out of the ring) and feeds whole `NotificationResponse` frames
+ * through the same listener dispatch `execProtocol` uses. It is what the future two-session split
+ * needs; nothing in this file starts it.
+ *
  * **What is deliberately absent.** There is no filesystem to sync (`syncToFs` is a no-op), no
  * `/dev/blob` device (the blob hooks are no-ops), and no data directory this side of the wire
  * (`dumpDataDir` throws). Everything else mirrors `packages/pglite/src/pglite.ts` line for line.
@@ -98,6 +108,8 @@ const BACKEND_PORTAL_SUSPENDED = 0x73; // "s"
 const BACKEND_FUNCTION_CALL_RESPONSE = 0x56; // "V"
 const BACKEND_ERROR_RESPONSE = 0x45; // "E"
 const BACKEND_READY_FOR_QUERY = 0x5a; // "Z"
+/** The one frame the idle pump takes off the ring by itself. */
+const BACKEND_NOTIFICATION_RESPONSE = 0x41; // "A"
 
 /** The `Flush` frame, byte for byte: type "H", length 4, no body. */
 const FLUSH = new Uint8Array([FRONTEND_FLUSH, 0, 0, 0, 4]);
@@ -107,6 +119,20 @@ const READ_CHUNK_BYTES = 65_536;
 
 /** A message header is the type byte plus a four-byte length that counts itself. */
 const HEADER_BYTES = 5;
+
+/**
+ * How long the idle pump waits before looking at the ring again.
+ *
+ * The ring's own wakeup (`Atomics.waitAsync`) is not usable here: it would park the pump inside a
+ * read that an exchange may need to make instead. A short poll is the honest alternative, and it is
+ * two orders of magnitude below the thing it is measuring — the guest's own idle read is a 100 ms
+ * poll, so this adds at most a millisecond to a notification's journey.
+ */
+const PUMP_IDLE_POLL_MS = 1;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
  * Which backend message ends the reply to `frontendType`.
@@ -200,12 +226,22 @@ export class PgrustPGlite extends BasePGlite {
   #closing = false;
   #closed = false;
 
+  /**
+   * Whether a reply is outstanding on the ring. The idle pump reads only when this is false, and
+   * both sides of that check run without an `await` between them, so the pump can never take a byte
+   * an exchange is waiting for.
+   */
+  #exchangeInFlight = false;
+  #pumping = false;
+
   // The same three mutexes `PGlite` keeps, doing the same three jobs.
   readonly #queryMutex = new Mutex();
   readonly #transactionMutex = new Mutex();
   readonly #listenMutex = new Mutex();
 
   #protocolParser = new protocol.Parser();
+  /** The pump's own parser: it is fed whole frames only, so it never shares partial state with one. */
+  readonly #pumpParser = new protocol.Parser();
   #currentQuery = new CurrentQuery();
 
   readonly #extensions: Extensions;
@@ -325,31 +361,58 @@ export class PgrustPGlite extends BasePGlite {
    */
   async #exchange(message: Uint8Array, frontendType: number): Promise<Uint8Array> {
     const isTerminator = endsReplyTo(frontendType);
-    await this.#send(isSelfFlushing(frontendType) ? message : concat(message, FLUSH));
+    this.#exchangeInFlight = true;
+    try {
+      await this.#send(isSelfFlushing(frontendType) ? message : concat(message, FLUSH));
 
-    let scanned = 0;
-    for (;;) {
-      while (this.#buffered.length - scanned >= HEADER_BYTES) {
-        const type = this.#buffered[scanned] as number;
-        const view = new DataView(this.#buffered.buffer, this.#buffered.byteOffset + scanned + 1, 4);
-        const end = scanned + 1 + view.getUint32(0, false);
-        if (this.#buffered.length < end) {
-          break;
+      let scanned = 0;
+      for (;;) {
+        const scan = this.#scanForReply(isTerminator, scanned);
+        if (scan.reply !== null) {
+          return scan.reply;
         }
-        scanned = end;
-        if (isTerminator(type)) {
-          const reply = this.#buffered.slice(0, end);
-          this.#buffered = this.#buffered.slice(end);
-          return reply;
+        scanned = scan.scanned;
+        const read = await this.#fromGuest.readAsync(this.#scratch, this.#scratch.length);
+        if (read === 0) {
+          this.#closed = true;
+          throw new Error("PgrustPGlite: the backend closed the session while a reply was outstanding");
         }
+        this.#buffered = concat(this.#buffered, this.#scratch.subarray(0, read));
       }
-      const read = await this.#fromGuest.readAsync(this.#scratch, this.#scratch.length);
-      if (read === 0) {
-        this.#closed = true;
-        throw new Error("PgrustPGlite: the backend closed the session while a reply was outstanding");
-      }
-      this.#buffered = concat(this.#buffered, this.#scratch.subarray(0, read));
+    } finally {
+      this.#exchangeInFlight = false;
     }
+  }
+
+  /**
+   * Walk the buffered bytes from `scanned` looking for the frame that ends this reply.
+   *
+   * The framing is the protocol's own — one type byte, one big-endian length that counts itself —
+   * and it is here, in one place, because the asynchronous read loop and the blocking one differ in
+   * nothing else. When the terminator is complete the reply is taken off the front of the buffer
+   * and anything past it stays for the next call; otherwise the scan offset comes back so the
+   * caller can read more and resume where it left off.
+   */
+  #scanForReply(
+    isTerminator: (backendType: number) => boolean,
+    scanned: number,
+  ): { reply: Uint8Array<ArrayBuffer> | null; scanned: number } {
+    let at = scanned;
+    while (this.#buffered.length - at >= HEADER_BYTES) {
+      const type = this.#buffered[at] as number;
+      const view = new DataView(this.#buffered.buffer, this.#buffered.byteOffset + at + 1, 4);
+      const end = at + 1 + view.getUint32(0, false);
+      if (this.#buffered.length < end) {
+        break;
+      }
+      at = end;
+      if (isTerminator(type)) {
+        const reply = this.#buffered.slice(0, end);
+        this.#buffered = this.#buffered.slice(end);
+        return { reply, scanned: 0 };
+      }
+    }
+    return { reply: null, scanned: at };
   }
 
   /** The message type byte `BasePGlite` is sending, or 0 for a startup packet (which has none). */
@@ -433,17 +496,94 @@ export class PgrustPGlite extends BasePGlite {
       }
       this.#currentQuery.onNotice?.(message);
     } else if (message instanceof messages.NotificationResponseMessage) {
-      const listeners = this.#notifyListeners.get(message.channel);
-      if (listeners) {
-        // queueMicrotask so the callback runs after the synchronous parse has finished, exactly as
-        // `PGlite` does — a listener that queries would otherwise re-enter the parser.
-        listeners.forEach((callback) => queueMicrotask(() => callback(message.payload)));
-      }
-      this.#globalNotifyListeners.forEach((callback) =>
-        queueMicrotask(() => callback(message.channel, message.payload)),
-      );
+      this.#deliverNotification(message);
     }
     return message;
+  }
+
+  /**
+   * Fan one notification out to its listeners. `PGlite`'s own dispatch, and the pump's too: a
+   * notification that arrived on a reply and one the idle pump took off the ring are the same event
+   * and reach the same callbacks by the same route.
+   */
+  #deliverNotification(message: messages.NotificationResponseMessage): void {
+    const listeners = this.#notifyListeners.get(message.channel);
+    if (listeners) {
+      // queueMicrotask so the callback runs after the synchronous parse has finished, exactly as
+      // `PGlite` does — a listener that queries would otherwise re-enter the parser.
+      listeners.forEach((callback) => queueMicrotask(() => callback(message.payload)));
+    }
+    this.#globalNotifyListeners.forEach((callback) => queueMicrotask(() => callback(message.channel, message.payload)));
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // The idle notification pump — what a second session needs, and nothing more
+  // -------------------------------------------------------------------------------------------
+
+  /**
+   * Watch the out-pipe while this client is idle and deliver the notifications that arrive on it.
+   *
+   * Opt-in, and off by default: with one session a notification rides back on the notifying
+   * statement's own reply, so nothing has to watch anything. Two sessions is the shape this exists
+   * for — the listening backend writes its `NotificationResponse` while this client is between
+   * queries, and without a pump the payload sits in the ring until the next `execProtocol` happens
+   * to read past it.
+   *
+   * The rule that keeps it safe is the whole design: it reads only when `#exchangeInFlight` is
+   * false, and there is no `await` between that check and the non-blocking `readIntoNow`, so it can
+   * never consume a byte an outstanding reply is waiting for. What it takes off the front of the
+   * buffer is a whole `NotificationResponse` and nothing else; any other frame that turns up while
+   * idle is left buffered for the next exchange to parse, exactly as if the pump had never run.
+   *
+   * Resolves when `signal` aborts, when the session closes, or when the backend hangs up.
+   */
+  async pumpNotifications(signal: AbortSignal): Promise<void> {
+    if (this.#pumping) {
+      throw new Error("PgrustPGlite: the notification pump is already running on this client");
+    }
+    this.#pumping = true;
+    const scratch = new Uint8Array(READ_CHUNK_BYTES);
+    try {
+      while (!signal.aborted && !this.#closing && !this.#closed) {
+        if (this.#exchangeInFlight) {
+          await delay(PUMP_IDLE_POLL_MS);
+          continue;
+        }
+        const read = this.#fromGuest.readIntoNow(scratch, scratch.length);
+        if (read === 0) {
+          return; // The backend hung up; `close()` and the next exchange both report it themselves.
+        }
+        if (read < 0) {
+          await delay(PUMP_IDLE_POLL_MS);
+          continue;
+        }
+        this.#buffered = concat(this.#buffered, scratch.subarray(0, read));
+        this.#drainNotifications();
+      }
+    } finally {
+      this.#pumping = false;
+    }
+  }
+
+  /** Take every leading whole `NotificationResponse` off the buffer and deliver it. */
+  #drainNotifications(): void {
+    for (;;) {
+      if (this.#buffered.length < HEADER_BYTES || this.#buffered[0] !== BACKEND_NOTIFICATION_RESPONSE) {
+        return;
+      }
+      const view = new DataView(this.#buffered.buffer, this.#buffered.byteOffset + 1, 4);
+      const end = 1 + view.getUint32(0, false);
+      if (this.#buffered.length < end) {
+        return;
+      }
+      const frame = this.#buffered.slice(0, end);
+      this.#buffered = this.#buffered.slice(end);
+      this.#pumpParser.parse(frame, (message) => {
+        if (message instanceof messages.NotificationResponseMessage) {
+          this.#deliverNotification(message);
+        }
+      });
+    }
   }
 
   /** There is no filesystem on this side of the wire: the backend owns its own, and syncs it itself. */
