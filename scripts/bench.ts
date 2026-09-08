@@ -73,8 +73,12 @@ const MIME_TYPES: Readonly<Record<string, string>> = {
  * The lane serves `dist/` from its own Bun server, so the headers Vite sends never reach it: without
  * this pair the browser withholds `SharedArrayBuffer` and the two pgrust Threads columns report
  * themselves skipped in every headless run while the hand-run page shows numbers.
+ *
+ * Exported for `scripts/probe-wasm-instantiate.ts`, which serves one `.wasm` and one page from its
+ * own server and needs the same pair: the module imports a SHARED memory, and a shared
+ * `WebAssembly.Memory` cannot be constructed on a page that is not cross-origin isolated.
  */
-const CROSS_ORIGIN_ISOLATION_HEADERS: Readonly<Record<string, string>> = {
+export const CROSS_ORIGIN_ISOLATION_HEADERS: Readonly<Record<string, string>> = {
   "cross-origin-opener-policy": "same-origin",
   "cross-origin-embedder-policy": "require-corp",
 };

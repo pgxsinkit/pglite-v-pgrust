@@ -25,6 +25,7 @@
     "probe:notify": "bun scripts/probe-notify-latency.ts",
     "probe:pg-dump": "bun scripts/probe-pg-dump.ts",
     "probe:prepared-store": "bun scripts/probe-prepared-store.ts",
+    "probe:wasm-instantiate": "bun scripts/probe-wasm-instantiate.ts",
     "repro:pgrust": "bun scripts/pgrust-repro.ts",
     "scenario:pgxsinkit-factory": "bun scripts/pgxsinkit-factory-scenario.ts",
     "scenario:pgxsinkit-live": "bun scripts/pgxsinkit-live-scenario.ts",
