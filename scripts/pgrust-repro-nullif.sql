@@ -1,0 +1,18 @@
+-- pgrust bug 1 — `ERROR: funcapi exprType: node family T_NullIfExpr not ported`
+--
+-- One statement, no DDL, no PL/pgSQL. `format()` is declared `format(text, VARIADIC "any")`, so at
+-- RUN time it asks fmgr for each argument's type: get_fn_expr_argtype -> get_call_expr_argtype ->
+-- exprType. Here that argument is a `NullIfExpr`, a family pgrust's exprType port does not carry, and
+-- the backend raises instead of answering INT4OID. Any `"any"`-argument function does it — `concat`,
+-- `concat_ws`, `json_build_object`, `jsonb_build_object` — because they all resolve argument types the
+-- same way.
+--
+-- `generate_series` is the whole reason for a FROM clause: it keeps the NULLIF non-constant. With two
+-- literals (`NULLIF('a'::text, '')`) the planner folds the whole thing to a Const and the walker is
+-- never reached, so the bug does not show. A plain column reference works the same way.
+--
+-- A bare `SELECT NULLIF(g, 0) FROM generate_series(1, 1) AS g` is fine on pgrust: the gap is only in
+-- the fmgr argument-type walk, not in NULLIF itself.
+--
+-- PostgreSQL 18.3 / PGlite 0.5.5: one row, `1`.
+SELECT format('%s', NULLIF(g, 0)) AS out FROM generate_series(1, 1) AS g;
