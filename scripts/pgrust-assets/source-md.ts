@@ -90,6 +90,22 @@ export function replaceAssetsSection(markdown: string, section: string | null): 
   return replaceSection(markdown, ASSETS_BLOCK, [ASSETS_BEGIN, ASSETS_END], section);
 }
 
+/**
+ * The branch the BINARY assets were built from, when the assets block names one.
+ *
+ * Only the release block does — a copy out of a local checkout records the directory it came from,
+ * not what was checked out in it — so null means "not recorded here", which is a caller's cue to
+ * fall back to `PGRUST_DEFAULT_BRANCH` rather than to invent a branch of its own.
+ */
+export function readAssetsBranch(markdown: string): string | null {
+  const section = extractAssetsSection(markdown);
+  if (section === null) {
+    return null;
+  }
+  const match = /^- Branch: \[?`([^`]+)`/m.exec(section);
+  return match?.[1] ?? null;
+}
+
 /** The store-bundle block's contents, or null when the file has none yet. */
 export function extractStoreBundleSection(markdown: string): string | null {
   return extractSection(markdown, STORE_BUNDLE_BLOCK);

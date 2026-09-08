@@ -33,6 +33,7 @@ import {
   CHECKSUMS_FILE_NAME,
   MANIFEST_FILE_NAME,
   ManifestError,
+  PGRUST_DEFAULT_BRANCH,
   PGRUST_REPOSITORY,
   PGRUST_UPSTREAM_REPOSITORY,
   parseVersionFile,
@@ -68,7 +69,7 @@ const GZIP_LEVEL = 9;
  * — bundling what is in tree — is `bun run pgrust:bundle` with nothing after it.
  */
 const DEFAULTS = {
-  branch: "spike/wasip1-threads",
+  branch: PGRUST_DEFAULT_BRANCH,
   upstreamCommit: "438c8c420b96b23ca61927ba57e608839f86e935",
   upstreamRepository: PGRUST_UPSTREAM_REPOSITORY,
   repository: PGRUST_REPOSITORY,

@@ -691,8 +691,10 @@ The pgrust postmaster in this repo is not only a benchmark column. It also answe
 local-store seam**, so a pgxsinkit app — the `apps/board` demo above all — can be driven against
 pgrust instead of PGlite without a line of engine-specific code landing in that repo.
 
-The seam is one build-time variable. `VITE_BOARD_STORE_FACTORY=<absolute module URL>` makes the board
-`import()` that module and take its **default export** as
+The seam has **two ways in, and both take the same module**. `VITE_BOARD_STORE_FACTORY=<absolute
+module URL>` bakes one engine into one build; the login screen's **Store engine** preference picks one
+at run time, with no rebuild, out of a **drop-in** directory the app serves from its own origin. Either
+way the board `import()`s that module and takes its **default export** as
 `(storePath: string, backendOverride?: "memory") => Promise<ClientPGlite>`; every local store the app
 opens is then minted by it (see `apps/board/docs/local-store-seam.md` in pgxsinkit). It passes a plain
 store **name** and nothing else — no asset base, no storage layout — so the module owns all of that.
@@ -718,6 +720,7 @@ self-contained ESM file with PGlite's `BasePGlite`, the `live` extension and the
 and copies it plus everything it fetches at run time into the directory you name:
 
 ```
+<dir>/manifest.json                 how the drop-in names itself: `{ "factory", "name" }`
 <dir>/pgrust-store-factory.js       the seam module — its default export is the factory
 <dir>/pgrust/postgres-threads.wasm  the wasm32-wasip1-threads Postgres
 <dir>/pgrust/vfs.img, vfs.json      the packed image a fresh store is seeded from
@@ -725,8 +728,22 @@ and copies it plus everything it fetches at run time into the directory you name
 <dir>/pgrust/LICENSE, NOTICE        pgrust is AGPL-3.0; the notice travels with the binary
 ```
 
-It then prints the exact variable to set. It is ~88 MB, so a `public/` directory that a repo ignores
-is the right place for it.
+`manifest.json` is **required**, and writing it is the engine's job rather than the app's: the board
+will not guess a bundle's file name, because knowing one would be precisely the engine-specific
+knowledge the seam exists to keep out of that repo. A directory without a manifest is not a drop-in —
+the preference is simply not offered, and the board behaves as if nothing had been laid down. This
+script writes it with the factory's file name and a label taken from `src/vendor/pgrust/VERSION` (and
+the branch `SOURCE.md` records, or the fork's default):
+
+```json
+{
+  "factory": "pgrust-store-factory.js",
+  "name": "pgrust df11a1dd (spike/wasip1-threads)"
+}
+```
+
+It then prints that manifest and the exact variable to set. The directory is ~88 MB, so a `public/`
+one that the app's repo ignores is the right place for it.
 
 ### Serve it, and point the app at it
 
@@ -734,6 +751,16 @@ is the right place for it.
 VITE_BOARD_STORE_FACTORY=http://localhost:5173/store-engine/pgrust-store-factory.js \
 VITE_BOARD_ISOLATED=1 bun run build      # in apps/board
 VITE_BOARD_ISOLATED=1 bun run preview    # 5173
+```
+
+Or bake nothing at all and let the person at the keyboard choose: with the drop-in served, the login
+screen offers **Store engine → External (pgrust …)**, read from the manifest above. Apply obsoletes
+the current stores and reloads, so fresh ones mint under the new declaration — a datadir belongs to
+the engine that wrote it, and the other engine will not open it.
+
+```bash
+VITE_BOARD_ISOLATED=1 bun run build      # in apps/board — no factory variable
+VITE_BOARD_ISOLATED=1 bun run preview    # 5173, then pick the engine on the login screen
 ```
 
 Two things are not optional:
@@ -744,7 +771,9 @@ Two things are not optional:
   `Cross-Origin-Resource-Policy: cross-origin` under the isolation headers.
 - **Cross-origin isolation.** `VITE_BOARD_ISOLATED=1` makes the app serve COOP `same-origin` +
   COEP `require-corp` on **every** response, which is what puts `SharedArrayBuffer` and a shared
-  `WebAssembly.Memory` in the engine's worker as well as in the page. See
+  `WebAssembly.Memory` in the engine's worker as well as in the page. It gates the preference route
+  outright: an engine is only OFFERED on a cross-origin-isolated page, because a threaded one served
+  without those headers could do nothing but refuse to construct. See
   [Cross-origin isolation](#cross-origin-isolation).
 
 There is a third requirement the factory enforces rather than documents: it must run **in a worker**.

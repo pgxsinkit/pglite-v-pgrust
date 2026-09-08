@@ -1,16 +1,26 @@
 /**
  * Lay this repo's pgrust store engine down inside somebody else's app, as static files it can serve.
  *
- * **What the drop-in is.** pgxsinkit's board picks its local store through one build-time variable —
- * `VITE_BOARD_STORE_FACTORY=<absolute module URL>` — imports that module, and takes its default
- * export as the store factory (`apps/board/docs/local-store-seam.md`). `src/client/
- * pgrust-browser-factory.ts` is that module on this engine, and `bun run engine:build` bundles it
- * into ONE self-contained ESM file. This script copies that file plus the assets it loads at run
- * time into a directory the host app serves.
+ * **What the drop-in is.** pgxsinkit's board picks its local store two ways, and both take the same
+ * module: a build-time variable (`VITE_BOARD_STORE_FACTORY=<absolute module URL>`) and, with no
+ * rebuild at all, the login screen's **Store engine** preference — which discovers the engine by
+ * reading `<base>store-engine/manifest.json` off its own origin
+ * (`apps/board/src/board/store-engine-dropin.ts`, `apps/board/docs/local-store-seam.md`). Either way
+ * the module's default export is the store factory. `src/client/pgrust-browser-factory.ts` is that
+ * module on this engine, and `bun run engine:build` bundles it into ONE self-contained ESM file.
+ * This script copies that file plus the assets it loads at run time into a directory the host app
+ * serves, and writes the manifest that names it.
+ *
+ * **Why the manifest is written here.** It is REQUIRED and it is the drop-in's own statement of what
+ * it is: the board refuses to guess an engine's bundle file name, because knowing one would be the
+ * engine-specific knowledge the seam exists to keep out of that repo. A directory without a manifest
+ * is simply not a drop-in — the preference is not offered — so the engine that lays the files down
+ * is the thing that has to say `{ "factory": …, "name": … }`, and this is that engine.
  *
  * **Why the shape is what it is.** The factory finds its own assets from `import.meta.url` — the
  * seam passes no asset base and will not grow one — so `./pgrust/` must sit beside the bundle:
  *
+ *   <dir>/manifest.json                    { "factory": …, "name": … }: what the board reads first
  *   <dir>/pgrust-store-factory.js          the seam module; its default export is the factory
  *   <dir>/pgrust/postgres-threads.wasm     the wasm32-wasip1-threads Postgres
  *   <dir>/pgrust/vfs.img, vfs.json         the packed image the store is seeded from
@@ -31,18 +41,36 @@
  *   bun run engine:package --into … --no-build     # reuse dist/store-engine/
  */
 
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { PGRUST_DEFAULT_BRANCH } from "./pgrust-assets/manifest";
+import { readAssetsBranch } from "./pgrust-assets/source-md";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 /** Where `bun run engine:build` writes the bundle. */
 const BUNDLE_DIR = resolve(REPO_ROOT, "dist/store-engine");
 const BUNDLE_FILE = "pgrust-store-factory.js";
+/** The file the board reads before anything else; without it the directory is not a drop-in. */
+const MANIFEST_FILE = "manifest.json";
 /** Where `bun run sync:pgrust` writes the build outputs the bundle loads at run time. */
 const PUBLIC_PGRUST = resolve(REPO_ROOT, "public/pgrust");
 /** The vendored host tree, which is where the AGPL notice for the wasm module lives. */
 const VENDOR_PGRUST = resolve(REPO_ROOT, "src/vendor/pgrust");
+/** The pgrust commit `bun run sync:pgrust` last wrote; the same string the page's header shows. */
+const VERSION_FILE = resolve(VENDOR_PGRUST, "VERSION");
+/** The provenance file, whose assets block names a branch when the assets came from a release. */
+const SOURCE_MD = resolve(VENDOR_PGRUST, "SOURCE.md");
 
 const SYNC_HINT = "Run `bun run sync:pgrust` to lay the pgrust assets down.";
 const BUILD_HINT = "Run `bun run engine:build` (or drop --no-build).";
@@ -148,6 +176,46 @@ function megabytes(path: string): string {
   return `${(statSync(path).size / 1_048_576).toFixed(1)} MiB`;
 }
 
+/** How much of the pgrust commit goes in the name: enough to identify it, short enough to read. */
+const NAME_COMMIT_LENGTH = 8;
+
+/** What a drop-in is called when nothing has been synced and there is therefore no commit to name. */
+const UNVERSIONED_NAME = "pgrust store engine";
+
+function readIfPresent(path: string): string {
+  return existsSync(path) ? readFileSync(path, "utf8") : "";
+}
+
+/**
+ * The `name` the board's preference will show: `pgrust <commit> (<branch>)`.
+ *
+ * The commit is `src/vendor/pgrust/VERSION`, which is what `bun run sync:pgrust` wrote and what this
+ * repo's own page header already displays for the engine — so a person reading `External (pgrust
+ * df11a1dd …)` on somebody else's login screen sees the same string as on the bench. The branch
+ * cannot be read out of a `.wasm`; `SOURCE.md` records one when the assets came from a release, and
+ * otherwise the fork's default branch is what a local build was made from.
+ *
+ * It is a LABEL, not provenance: the AGPL statement travels as `pgrust/NOTICE` beside the binary,
+ * and `SOURCE.md` is where the full record lives. Hence the fallback rather than a refusal — a
+ * drop-in that works should not be blocked over the string above the radio button.
+ */
+function dropInName(): string {
+  const version = readIfPresent(VERSION_FILE).trim();
+  if (version === "") {
+    return UNVERSIONED_NAME;
+  }
+  const branch = readAssetsBranch(readIfPresent(SOURCE_MD)) ?? PGRUST_DEFAULT_BRANCH;
+  return `pgrust ${version.slice(0, NAME_COMMIT_LENGTH)} (${branch})`;
+}
+
+/** The manifest's two fields, exactly as the board parses them. */
+interface DropInManifest {
+  /** A plain file name INSIDE the drop-in directory — never a path, a scheme or a `..` climb. */
+  readonly factory: string;
+  /** The label the preference shows; the board falls back to `factory` if it is blank. */
+  readonly name: string;
+}
+
 /**
  * The URL path a directory will be served at, when that can be known.
  *
@@ -196,6 +264,9 @@ async function main(): Promise<void> {
   mkdirSync(assetRoot, { recursive: true });
 
   copyFileSync(bundle, join(options.into, BUNDLE_FILE));
+  const manifest: DropInManifest = { factory: BUNDLE_FILE, name: dropInName() };
+  const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
+  writeFileSync(join(options.into, MANIFEST_FILE), manifestText, "utf8");
   for (const asset of ENGINE_ASSETS) {
     copyFileSync(join(PUBLIC_PGRUST, asset), join(assetRoot, asset));
   }
@@ -207,11 +278,20 @@ async function main(): Promise<void> {
 
   console.log("");
   console.log(`Packaged the pgrust store engine into ${relative(process.cwd(), options.into) || "."}`);
+  console.log(`  ${MANIFEST_FILE.padEnd(24)} ${manifest.name}`);
   console.log(`  ${BUNDLE_FILE.padEnd(24)} ${megabytes(join(options.into, BUNDLE_FILE))}`);
   for (const asset of ENGINE_ASSETS) {
     console.log(`  pgrust/${asset.padEnd(17)} ${megabytes(join(assetRoot, asset))}`);
   }
   console.log(`  pgrust/host/             ${hostFiles} files`);
+
+  console.log("");
+  console.log(`${MANIFEST_FILE} is what the RUN-TIME route reads — with the directory served from the app's own`);
+  console.log("origin, the login screen offers this engine as a Store engine preference, no rebuild involved:");
+  console.log("");
+  for (const line of manifestText.trimEnd().split("\n")) {
+    console.log(`  ${line}`);
+  }
 
   const path = servedPath(options.into);
   console.log("");
@@ -227,7 +307,8 @@ async function main(): Promise<void> {
   console.log("  VITE_BOARD_ISOLATED=1");
   console.log("");
   console.log("Both are read at BUILD time (or dev-server start). The second serves COOP/COEP, which the");
-  console.log("threads build needs and without which the factory refuses to construct.");
+  console.log("threads build needs and without which the factory refuses to construct — and which the");
+  console.log("preference route needs too: an engine is only offered on a cross-origin-isolated page.");
 }
 
 await main();

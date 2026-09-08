@@ -37,6 +37,15 @@ export const PGRUST_REPOSITORY = "https://github.com/pgxsinkit/pgrust";
 export const PGRUST_UPSTREAM_REPOSITORY = "https://github.com/malisper/pgrust";
 
 /**
+ * The fork branch the wasm assets are built from.
+ *
+ * It cannot be read out of a built `.wasm`, so it is the default of `--branch` rather than a
+ * discovery — and it is the branch a drop-in names itself after (`scripts/package-store-engine.ts`)
+ * when `SOURCE.md` records no other one.
+ */
+export const PGRUST_DEFAULT_BRANCH = "spike/wasip1-threads";
+
+/**
  * The **pre-release** store bundle the broker columns load, which no published package corresponds
  * to.
  *
