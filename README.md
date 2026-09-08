@@ -426,6 +426,15 @@ indexed table in single statement` 586/702 against 322 — and strict costs the 
 noticeably more than it costs PGlite's, because there strict means a store-wide sync after every
 mutating broker request rather than after every awaited host sync.
 
+**And on a phone the postmaster used to be the one column that could not finish.** An iPhone Xs
+(4 GB, iOS 18.7.1) reloaded the page for memory when only `pgrust Postmaster OPFS repacked
+(relaxed)` and wa-sqlite were selected, while every PGlite column plus wa-sqlite completed all three
+Suites on the same phone. [The memory diet](docs/results/2026-09-08-webkit-memory-diet.md) measured
+it on real Safari 26.6.2 and took the Speedtest Suite's shared memory from 1101 to 657 MiB and the
+Concurrency Suite's from 979 to 367 MiB, at the same speed. Almost all of it was one thing:
+`max_stack_depth`, which is not a memory GUC anywhere else but on wasm sizes every child thread
+stack the postmaster carves out of its one shared memory.
+
 Things the harness turned up along the way are written up in [`docs/findings/`](docs/findings/).
 The first — [pgrust needs (statements × message size) memory for multi-statement
 queries](docs/findings/0001-pgrust-multi-statement-memory.md) — is why the pgrust column is currently
@@ -484,6 +493,27 @@ page offers no control that changes it. For
 automation only, the URL query `?rttIterations=N` — an integer from 1 to 1000, anything else ignored —
 shortens it, and says so everywhere: the environment header, the Suite itself and every Markdown
 export carry `RTT iterations: N (non-standard)`, so a shortened Run cannot be mistaken for a real one.
+
+### `?postmasterTuning=` — what the postmaster costs on other memory knobs
+
+The `pgrust Postmaster` columns are the only ones whose memory is a set of choices rather than a
+property of the Engine. A postmaster is a shared `WebAssembly.Memory` with a guest thread stack
+carved out of it for every child Postgres would have forked, and a live host Worker standing by for
+each of those threads, so three numbers decide what one Run costs a tab: the pool's base size, the
+memory's initial claim, and `max_stack_depth`, which on wasm sizes every child stack rather than
+merely guarding recursion. All three are Engine defaults, and `?postmasterTuning=` moves them for a
+Run without rebuilding the app:
+
+| Entry             | Moves                                                                                                                                                                                                                                  |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pool:<n>`        | Pool slots for the server itself, before the one added per Session. Default 8, the measured minimum: 7 refuses the spawn.                                                                                                              |
+| `initial:<bytes>` | The shared memory's initial claim. Default 256 MiB, which is also the wasm module's own declared minimum — a smaller claim is a `LinkError`, and a module linked smaller was measured as a boot that traps or takes the renderer down. |
+| `name=value`      | A GUC, appended to the postmaster's argv as `-c name=value` and therefore winning its duplicate.                                                                                                                                       |
+
+`?postmasterTuning=pool:12,max_stack_depth=60000` is the server this repo's tables were produced
+with before [the memory diet](docs/results/2026-09-08-webkit-memory-diet.md). Like the two overrides
+above it is never silent: the environment header and every Markdown export carry
+`postmaster tuning: … (non-standard)`.
 
 ## pgrust assets
 

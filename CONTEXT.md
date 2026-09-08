@@ -53,7 +53,7 @@ pgrust built for `wasm32-wasip1-threads` rather than `wasm32-wasip1`, from the s
 _Avoid_: threaded pgrust, pgrust MT, the SAB build
 
 **pgrust Postmaster**:
-The `wasm32-wasip1-threads` build again, started as `postgres --host-pipes` — which selects a transport and then falls through to the ordinary `PostmasterMain` — instead of as one `--stdio-wire-threaded` session. What runs is a whole server: a startup process, a checkpointer, a background writer, a WAL writer, a warm standby pool, and one real backend thread per Session. Its filesystem is always the Broker's, because a checkpointer with its own copy of the packed image could not see what the backends wrote. A separate Engine, never a mode of pgrust Threads: it is a different thing to boot, a different pool size (12 plus one slot per Session) and a different shutdown.
+The `wasm32-wasip1-threads` build again, started as `postgres --host-pipes` — which selects a transport and then falls through to the ordinary `PostmasterMain` — instead of as one `--stdio-wire-threaded` session. What runs is a whole server: a startup process, a checkpointer, a background writer, a WAL writer, a warm standby pool, and one real backend thread per Session. Its filesystem is always the Broker's, because a checkpointer with its own copy of the packed image could not see what the backends wrote. A separate Engine, never a mode of pgrust Threads: it is a different thing to boot, a different pool size (8 plus one slot per Session) and a different shutdown.
 _Avoid_: postmaster mode, multi-session pgrust, pgrust server
 
 **Session**:

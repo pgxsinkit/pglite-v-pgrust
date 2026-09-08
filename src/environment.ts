@@ -5,6 +5,8 @@
 
 import { describeConcurrencyClientsOverride, readConcurrencyClientsOverride } from "./concurrency-clients";
 import { detectOpfsSyncAccess } from "./opfs-sync-access";
+import type { PostmasterTuning } from "./postmaster-tuning";
+import { describePostmasterTuning, hasPostmasterTuning, readPostmasterTuning } from "./postmaster-tuning";
 import { describeRttIterations, readRttIterationsOverride } from "./rtt-iterations";
 
 declare const __PGLITE_VERSION__: string;
@@ -53,6 +55,13 @@ export interface EnvironmentInfo {
    * every number in that Suite means.
    */
   readonly concurrencyClientsOverride: number | null;
+  /**
+   * The pgrust Postmaster memory knobs requested through `?postmasterTuning=`, every one of them
+   * null when the URL moved nothing. Reported for the same reason as the two above: a postmaster on
+   * another pool size, another initial shared memory or another GUC is a different server, and its
+   * numbers must not be read as this repo's.
+   */
+  readonly postmasterTuning: PostmasterTuning;
 }
 
 /**
@@ -103,6 +112,7 @@ export async function readEnvironment(): Promise<EnvironmentInfo> {
     opfsSyncAccessReason: opfsSyncAccess.reason ?? null,
     rttIterationsOverride: readRttIterationsOverride(),
     concurrencyClientsOverride: readConcurrencyClientsOverride(),
+    postmasterTuning: readPostmasterTuning(),
   };
 }
 
@@ -123,6 +133,9 @@ export function formatEnvironmentLine(environment: EnvironmentInfo): string {
   }
   if (environment.concurrencyClientsOverride !== null) {
     parts.push(describeConcurrencyClientsOverride(environment.concurrencyClientsOverride));
+  }
+  if (hasPostmasterTuning(environment.postmasterTuning)) {
+    parts.push(describePostmasterTuning(environment.postmasterTuning));
   }
   return parts.join(" | ");
 }

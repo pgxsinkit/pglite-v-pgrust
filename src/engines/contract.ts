@@ -141,10 +141,12 @@ export interface PgrustPostmasterOpenOptions {
   /**
    * Extra `name=value` settings, each appended to the postmaster's argv as `-c name=value`.
    *
-   * No Configuration sets any: the fourteen columns must all run the same server, or their numbers
-   * are not comparable. It exists for `scripts/probe-idle-cpu.ts`, which asks what an idle server
-   * costs with its background writer, WAL writer and checkpointer turned down, and the only honest
-   * way to ask that is to start the same Engine twice with two argvs.
+   * No Configuration sets any of its own: the fourteen columns must all run the same server, or
+   * their numbers are not comparable. It exists for `scripts/probe-idle-cpu.ts`, which asks what an
+   * idle server costs with its background writer, WAL writer and checkpointer turned down — the only
+   * honest way to ask that is to start the same Engine twice with two argvs — and for the
+   * `?postmasterTuning=` URL (see `src/postmaster-tuning.ts`), which asks the same kind of question
+   * about memory and announces itself in the environment line of every table it produces.
    */
   readonly settings?: readonly string[];
   /**
@@ -155,6 +157,24 @@ export interface PgrustPostmasterOpenOptions {
    * parked guest thread rechecks its predicate on.
    */
   readonly env?: Readonly<Record<string, string>>;
+  /**
+   * Pool slots for the server's own children, before the one this Engine adds per Session.
+   *
+   * The Engine's own default is the number this repo's tables were produced with; this is here so a
+   * Run can be asked what it costs on another one (`?postmasterTuning=pool:N`, see
+   * `src/postmaster-tuning.ts`), because a slot is a live host Worker and a guest thread stack, and
+   * both of those are memory a phone has to find.
+   */
+  readonly poolBase?: number;
+  /**
+   * Bytes the one shared `WebAssembly.Memory` is created with, when the Engine's own default is not
+   * what is wanted.
+   *
+   * It may not go below the wasm module's own declared minimum — that is a link-time constant of
+   * the pgrust build (`--initial-memory` in `wasm/wasm-build.sh`) and a smaller claim is a
+   * `LinkError` at instantiation rather than a smaller memory.
+   */
+  readonly initialMemoryBytes?: number;
   /**
    * A **prepared store** to boot on: one `.repacked.tar.gz` holding the four files a repacked store
    * IS, written into this Configuration's OPFS store directory before the coordinator opens it.

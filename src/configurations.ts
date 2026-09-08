@@ -26,6 +26,15 @@
 import type { Configuration, EngineId, SqlDialect } from "./engines/contract";
 import { configurationDialect } from "./engines/contract";
 import { OPFS_DIRECTORY_PREFIX, opfsOwnedRootDirectory } from "./opfs";
+import { postmasterTuningOptions, readPostmasterTuning } from "./postmaster-tuning";
+
+/**
+ * The postmaster memory knobs this page was opened on, spread into both postmaster columns.
+ *
+ * Empty — and therefore invisible in these Configurations' options — unless the URL moved one, which
+ * is the only state any table this repo publishes was produced in. See `./postmaster-tuning.ts`.
+ */
+const POSTMASTER_TUNING = postmasterTuningOptions(readPostmasterTuning());
 
 /**
  * PGlite's own benchmark-page rewrite, shared by both Postgres builds' unlogged Configurations.
@@ -175,7 +184,7 @@ export const CONFIGURATIONS: readonly Configuration[] = [
     label: "pgrust Postmaster Memory (broker, pre-release store)",
     engine: "pgrust-postmaster",
     dataDir: "",
-    options: { pgrustPostmaster: { port: "memory", durability: "relaxed" } },
+    options: { pgrustPostmaster: { port: "memory", durability: "relaxed", ...POSTMASTER_TUNING } },
   },
   {
     // The postmaster's store on OPFS: the same four exclusively owned files the other OPFS repacked
@@ -185,7 +194,7 @@ export const CONFIGURATIONS: readonly Configuration[] = [
     label: "pgrust Postmaster OPFS repacked (relaxed, pre-release store)",
     engine: "pgrust-postmaster",
     dataDir: opfsOwnedRootDirectory("postmaster-opfs-repacked-relaxed"),
-    options: { pgrustPostmaster: { port: "opfs", durability: "relaxed" } },
+    options: { pgrustPostmaster: { port: "opfs", durability: "relaxed", ...POSTMASTER_TUNING } },
   },
   {
     id: "wasqlite-memory",

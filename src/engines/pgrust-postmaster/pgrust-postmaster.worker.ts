@@ -88,19 +88,39 @@ const HOST_BASE = new URL(`${ASSET_BASE}/host/`, ctx.location.href).href;
 const SYNC_HINT = "Run `bun run sync:pgrust` after building the pgrust wasm assets.";
 
 /**
- * The prewarmed `wasi` `thread-spawn` pool: twelve slots for the server, plus one per session.
+ * The prewarmed `wasi` `thread-spawn` pool: eight slots for the server, plus one per session.
  *
  * A postmaster claims far more threads than a wire session does — the startup process, the
  * checkpointer, the background writer, the WAL writer, the memory watchdog, the timeout timer, the
  * background-job dispatcher, the lease sweeper, and `max_parallel_workers` parked warm standbys —
  * and `thread-spawn` cannot create a worker on demand (it is microseconds from a futex park and may
- * not await), so an undersized pool is a hard `-EAGAIN` rather than a wait. Twelve is pgrust's own
- * postmaster-lane default; the sessions are what this Engine adds to it.
+ * not await), so an undersized pool is a hard `-EAGAIN` rather than a wait.
+ *
+ * Eight is the measured minimum rather than a guess: with one Session, seven refuses the spawn
+ * (`the prewarmed pool of 8 is exhausted`) and so do six and five, while eight boots and runs every
+ * Suite. It was twelve — pgrust's own postmaster-lane default — and each of the four slots that
+ * went was a live Worker of its own in a tab that has to find room for all of them.
+ * `?postmasterTuning=pool:12` puts them back (see `src/postmaster-tuning.ts`).
  */
-const POOL_BASE_SIZE = 12;
+const POOL_BASE_SIZE = 8;
 
 /** The warm standby pool the postmaster keeps, and pgrust's own browser harness's number. */
 const MAX_PARALLEL_WORKERS = 2;
+
+/**
+ * How deep a backend may recurse — and, on wasm, the size of every thread stack the postmaster
+ * carves out of the one shared memory.
+ *
+ * `defaultWireArgv()` pins 60000 kB, which is what the guest's MAIN stack is linked with and what a
+ * single-session wire lane needs. A postmaster is a different shape: `child_thread_stack_size()`
+ * has no rlimit to read on WASI, so it reserves `max(floor, max_stack_depth + 2MB)` for every child
+ * it spawns, and on wasm those stacks are bytes of the shared `WebAssembly.Memory` rather than
+ * address space. At 60000 kB that is 60.6 MiB × twelve children before the first statement; at
+ * 2048 kB — stock Postgres's own default, and now this Engine's — it is 4 MiB each, and the
+ * Speedtest Suite's peak shared memory falls from 1101 MiB to 657 MiB with no Benchmark reporting
+ * `stack depth limit exceeded`. `?postmasterTuning=max_stack_depth=60000` puts it back.
+ */
+const MAX_STACK_DEPTH_KB = 2048;
 
 /**
  * How many sessions one Run may open.
@@ -481,12 +501,14 @@ async function loadHostModule<T>(name: string): Promise<T> {
  * `defaultWireArgv()` is the shared source of the engine GUCs, so the postmaster column and the
  * session columns cannot drift apart on one. What changes is the dispatch (`--host-pipes`, which
  * picks a transport and then falls through to the ordinary postmaster), the trailing database name
- * (a postmaster's getopt rejects it), the two GUCs that make the host fd the only way in, and the
- * warm standby pool, which has to be bounded because a fixed host thread pool is what backs it.
+ * (a postmaster's getopt rejects it), the two GUCs that make the host fd the only way in, the warm
+ * standby pool, which has to be bounded because a fixed host thread pool is what backs it, and
+ * `max_stack_depth`, which on this Engine sizes every child's stack inside the shared memory.
  *
- * `extra` is appended last, so a caller's `-c` wins the duplicate: no Configuration passes any, and
- * the one caller that does (`scripts/probe-idle-cpu.ts`) is asking what the same server costs with
- * its periodic work turned down.
+ * `extra` is appended last, so a caller's `-c` wins the duplicate: no Configuration passes any of
+ * its own, and the two callers that do are `scripts/probe-idle-cpu.ts`, asking what the same server
+ * costs with its periodic work turned down, and the `?postmasterTuning=` URL, asking what it costs
+ * on other memory knobs.
  */
 function postmasterArgv(extra: readonly string[]): string[] {
   const argv = defaultWireArgv();
@@ -502,6 +524,8 @@ function postmasterArgv(extra: readonly string[]): string[] {
     "log_checkpoints=on",
     "-c",
     `max_parallel_workers=${MAX_PARALLEL_WORKERS}`,
+    "-c",
+    `max_stack_depth=${MAX_STACK_DEPTH_KB}`,
   );
   for (const setting of extra) {
     argv.push("-c", setting);
@@ -793,7 +817,7 @@ async function openEngine(dataDir: string, options: EngineOpenOptions | undefine
     throw new Error(`pgrust postmaster Engine on the memory port is a Memory Configuration; got dataDir "${dataDir}"`);
   }
 
-  const poolSize = POOL_BASE_SIZE + sessionCount;
+  const poolSize = (settings?.poolBase ?? POOL_BASE_SIZE) + sessionCount;
 
   const [host, sab, brokerFs] = await Promise.all([
     loadHostModule<ThreadsHostModule>("threads-host.js"),
@@ -807,7 +831,14 @@ async function openEngine(dataDir: string, options: EngineOpenOptions | undefine
     fetchAsset(`${ASSET_BASE}/vfs.json`).then(async (response) => (await response.json()) as VfsManifest),
   ]);
 
-  const memory = host.createSharedMemory();
+  // The initial claim is the whole of what a freshly booted postmaster costs before it has taken a
+  // single page of heap, so it is a knob rather than a constant — but only downward as far as the
+  // module's own declared minimum, which is why a too-small one is reported as what it is.
+  const initialMemoryBytes = settings?.initialMemoryBytes;
+  const memory =
+    initialMemoryBytes === undefined
+      ? host.createSharedMemory()
+      : host.createSharedMemory({ initialBytes: initialMemoryBytes });
   sharedMemory = memory;
   const exited = gate();
   const storageStopped = gate();

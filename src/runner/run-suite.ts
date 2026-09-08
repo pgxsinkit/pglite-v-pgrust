@@ -7,6 +7,7 @@
 
 import type { Configuration, Measurement } from "../engines/contract";
 import { applyModSql, configurationDialect } from "../engines/contract";
+import type { EngineStats } from "../engines/protocol";
 import { createEngineRunner } from "../engines/registry";
 import { mapScenarioSql } from "../engines/scenario";
 import { aggregateRun } from "../results/aggregate";
@@ -68,6 +69,16 @@ export interface RunOptions {
   readonly setupSql: string;
   /** Called as each Benchmark completes, so the table fills in progressively. */
   readonly onResult: (result: BenchmarkResult) => void;
+  /**
+   * Called once with what the Engine can say about the memory it holds, after the last Benchmark
+   * and before the Engine is closed — the only moment the answer is the Run's peak rather than a
+   * number taken off an Engine that has already let go of it. A `WebAssembly.Memory` only ever
+   * grows, so its size read here IS the high-water mark of the Run.
+   *
+   * Optional and never fatal: an Engine whose worker has already died to an earlier failure must
+   * still let the Run report the Benchmarks it did complete.
+   */
+  readonly onStats?: (configurationId: string, stats: EngineStats) => void;
   readonly signal?: AbortSignal;
 }
 
@@ -78,7 +89,7 @@ function assertNotAborted(signal: AbortSignal | undefined): void {
 }
 
 export async function runSuite(options: RunOptions): Promise<void> {
-  const { suite, configuration, setupSql, onResult, signal } = options;
+  const { suite, configuration, setupSql, onResult, onStats, signal } = options;
   const plan = planRun(suite, configuration, setupSql);
   const runner = createEngineRunner(configuration.engine);
   try {
@@ -103,6 +114,14 @@ export async function runSuite(options: RunOptions): Promise<void> {
         elapsedMs: aggregated.elapsedMs,
         ...(aggregated.detail === undefined ? {} : { detail: aggregated.detail }),
       });
+    }
+    if (onStats !== undefined) {
+      try {
+        onStats(configuration.id, await runner.stats());
+      } catch {
+        // A Run that completed every Benchmark is not a failed Run because the Engine could not
+        // describe its own memory afterwards.
+      }
     }
   } finally {
     await runner.close();

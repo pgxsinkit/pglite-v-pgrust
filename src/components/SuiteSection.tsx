@@ -7,6 +7,7 @@ import { BASELINE_CONFIGURATION_DIALECT, CONFIGURATIONS } from "../configuration
 import { configurationAvailability } from "../engines/availability";
 import type { Configuration } from "../engines/contract";
 import { configurationDialect } from "../engines/contract";
+import type { EngineStats } from "../engines/protocol";
 import type { EnvironmentInfo } from "../environment";
 import { formatEnvironmentLine } from "../environment";
 import type { GridCells, GridColumn, GridDetails, ResultsGrid } from "../results/grid";
@@ -88,6 +89,16 @@ export function SuiteSection({ suite, environment, configurations, baseline }: S
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
   /** Per-Configuration Run failures, keyed by Configuration id. */
   const [failures, setFailures] = useState<Readonly<Record<string, string>>>({});
+  /**
+   * What each Configuration's Engine said it was holding at the end of its Run, keyed by
+   * Configuration id.
+   *
+   * It is in the DOM rather than in the table because it is not a Measurement: a WebDriver lane
+   * (Safari has no CDP, so a memory probe cannot reach into the page the way the headless lane
+   * does) can read only what the page publishes, and the size of a shared `WebAssembly.Memory` is
+   * the one number that says how much of a phone's per-tab budget a Run actually claimed.
+   */
+  const [engineStats, setEngineStats] = useState<Readonly<Record<string, EngineStats>>>({});
 
   /**
    * The untimed setup a Configuration's Run is opened with: whatever is in the textarea when the
@@ -152,6 +163,7 @@ export function SuiteSection({ suite, environment, configurations, baseline }: S
     setCells({});
     setDetails({});
     setFailures({});
+    setEngineStats({});
     try {
       for (const configuration of configurations) {
         if (!configurationAvailability(configuration, environment).available) {
@@ -164,6 +176,9 @@ export function SuiteSection({ suite, environment, configurations, baseline }: S
             suite: runnableSuite,
             configuration,
             setupSql: setupFor(configuration),
+            onStats: (configurationId, stats) => {
+              setEngineStats((previous) => ({ ...previous, [configurationId]: stats }));
+            },
             onResult: (result) => {
               setCells((previous) => ({
                 ...previous,
@@ -259,6 +274,11 @@ export function SuiteSection({ suite, environment, configurations, baseline }: S
       {/* Exactly what "Copy as Markdown" writes to the clipboard, exposed for the headless lane. */}
       <pre hidden data-testid={`markdown-${suite.id}`}>
         {markdown}
+      </pre>
+
+      {/* Not a Measurement: what each Engine held at the end of its Run, for a lane with no CDP. */}
+      <pre hidden data-testid={`engine-stats-${suite.id}`}>
+        {JSON.stringify(engineStats)}
       </pre>
     </section>
   );
