@@ -34,6 +34,13 @@
  * never be. A caller's own extensions are merged over ours, so passing `live` explicitly is
  * harmless.
  *
+ * One upstream wart travels with it. PGlite's `live.query` registers its `table_change__…` listeners
+ * inside its own init transaction and has them call a `refresh` that is `const`-declared after that
+ * transaction, so a notification delivered in between throws `Cannot access 'R' before initialization`
+ * — from inside this bundle, but not of it: it reproduces on stock PGlite in memory with no bundler
+ * involved. It costs the one refresh it dropped. README, "The one console error that is not this
+ * engine's", has the reproduction and where the fix goes.
+ *
  * **It announces itself.** A store minted here logs one line and broadcasts one message on
  * {@link STORE_FACTORY_CHANNEL}, both carrying the store path, the OPFS directory and the server's
  * own `SELECT version()`. That is the only honest way for a page to know WHICH engine answered: a

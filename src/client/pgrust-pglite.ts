@@ -684,6 +684,11 @@ export class PgrustPGlite extends BasePGlite {
    * Fan one notification out to its listeners. `PGlite`'s own dispatch, and the pump's too: a
    * notification that arrived on a reply and one the idle pump took off the ring are the same event
    * and reach the same callbacks by the same route.
+   *
+   * A listener that throws does so in its own microtask, as it does under `PGlite`: one bad callback
+   * neither stops the others nor is swallowed here. The one known thrower is the `live` extension's
+   * own `refresh` temporal dead zone, which is upstream — README, "The one console error that is not
+   * this engine's".
    */
   #deliverNotification(message: messages.NotificationResponseMessage): void {
     const listeners = this.#notifyListeners.get(message.channel);

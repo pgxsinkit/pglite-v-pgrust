@@ -807,6 +807,41 @@ are not allowed`. `attachPgrustClient` stamps it for every `opfs://` store.
    `configured extent size 65536 does not match persisted extent size 8192`. A store minted through
    the seam is only ever readable through the seam.
 
+### The one console error that is not this engine's
+
+Driving the board on this engine logs, around a reload:
+
+```
+Cannot access 'R' before initialization
+    at http://localhost:5173/store-engine/pgrust-store-factory.js:16677:11
+```
+
+The frame is in the drop-in; the code is **PGlite's own `live` extension**, bundled into it. `live.query`
+registers its `table_change__<schema_oid>__<table_oid>` listeners _inside_ its init transaction, and the
+callback they close over calls `refresh` — which is `const`-declared **after** `await init()`. A
+notification for that channel delivered before that assignment runs, which is exactly what a
+`NotificationResponse` riding back on a reply inside that same transaction is, calls it in its temporal
+dead zone. `R` is `refresh`: the published package is minified and the bundler kept the name.
+
+None of it is the bundle and none of it is pgrust. The bundle evaluates clean in a fresh module worker
+on an isolated page, twice over, and the fault reproduces in bun on stock PGlite in memory — no
+bundler, no engine of ours — by calling the callback the moment `listen` registers it:
+
+```ts
+const original = pg.listen.bind(pg);
+pg.listen = async (channel, callback, tx) => {
+  const unsubscribe = await original(channel, callback, tx);
+  await callback(""); // ReferenceError: Cannot access 'R' before initialization.
+  return unsubscribe;
+};
+await pg.live.query("SELECT id FROM t ORDER BY id", []);
+```
+
+It costs one dropped refresh — the update that landed while that query was being set up waits for the
+next notification — and nothing else: the store is fine and the board boots. The fix is a hoist in
+`packages/pglite/src/live/index.ts`, declaring `refresh` before the `init` that closes over it, and it
+belongs in the PGlite fork this repo pins (`@electric-sql/pglite` → `@pgxsinkit/pglite`), not here.
+
 ### Prove it is actually the one that answered
 
 A store minted by this factory says so, on the console of the worker that minted it and on a
