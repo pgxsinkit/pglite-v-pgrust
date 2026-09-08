@@ -9,6 +9,7 @@
     "build": "vite build",
     "check": "bun run typecheck && bun run lint && bun run test",
     "dev": "vite",
+    "engine:build": "bun build src/client/pgrust-browser-factory.ts --target browser --format esm --outdir dist/store-engine --entry-naming pgrust-store-factory.js",
     "format": "oxfmt --ignore-path .gitignore . --check",
     "format:write": "oxfmt --ignore-path .gitignore . --write",
     "hooks:install": "git config core.hooksPath .githooks",
