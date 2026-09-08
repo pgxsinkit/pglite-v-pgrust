@@ -4,11 +4,11 @@ Copied byte-verbatim by `bun run sync:pgrust`. **Do not edit these files by hand
 script against an updated pgrust checkout instead. They are excluded from oxlint and oxfmt so
 they stay identical to their source.
 
-- Commit: `e8e8ee061d195dfff45224e4a1d2f5de8febfe46`
-- Version: `e8e8ee061d`
+- Commit: `df11a1dd2a308a200f53048ee551a72539cbda3e`
+- Version: `df11a1dd2a`
 - Source: `/home/anton/dev/tmp/pgrust`
 - Working tree: clean
-- Synced: 2026-09-08T02:49:01.483Z
+- Synced: 2026-09-08T09:41:29.067Z
 
 ## Files
 
@@ -26,6 +26,7 @@ they stay identical to their source.
 - `NOTICE`
 
 pgrust is AGPL-3.0-only; its `LICENSE` and `NOTICE` are vendored alongside the source.
+
 <!-- store-bundle:begin -->
 ## Pre-release store bundle in `public/pgrust/host/`
 

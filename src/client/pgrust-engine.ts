@@ -509,6 +509,12 @@ export async function startPgrustPostmaster(options: PgrustEngineOptions = {}): 
   const wake = SabPipe.create(WAKE_CAPACITY);
   registry.register(HOSTPIPES_WAKE_FD, { in: wake, out: wake });
 
+  // One host gate for every session, exactly as the browser boot has it: the agent that reads N
+  // backend-to-client rings holds ONE outstanding `Atomics.waitAsync` instead of N. The two boots
+  // share a transport, so they share this too — bun is not where the freeze it prevents was found,
+  // and a fd contract that differs between them by one word is how they start to drift.
+  const hostGate = SabPipe.createHostGate();
+
   const slots = Array.from({ length: sessionCount }, (_unused, index) => {
     const { inFd, outFd } = sessionFds(index);
     // One gate per session: the three rings a backend can be waiting on share a futex word, so its
@@ -516,7 +522,8 @@ export async function startPgrustPostmaster(options: PgrustEngineOptions = {}): 
     // Per session, never global — an idle backend wakes on its own traffic and on nothing else.
     const gate = SabPipe.createGate();
     const toGuest = SabPipe.create(SESSION_TO_GUEST_CAPACITY, { gate });
-    const fromGuest = SabPipe.create(SESSION_FROM_GUEST_CAPACITY, { gate });
+    // Only the ring the HOST reads carries the host gate: it is the one this driver parks on.
+    const fromGuest = SabPipe.create(SESSION_FROM_GUEST_CAPACITY, { gate, hostGate });
     registry.register(inFd, { in: toGuest });
     registry.register(outFd, { out: fromGuest });
     // Both ends of one ring on one fd, exactly as the postmaster's: written by any guest thread

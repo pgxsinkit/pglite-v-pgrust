@@ -23,11 +23,14 @@ export interface SabPipeDescriptor {
   readonly capacity: number;
   /** The group gate, when the ring was created with one; cloned by reference like the ring itself. */
   readonly gate?: SharedArrayBuffer | null;
+  /** The host gate, when the ring was created with one. */
+  readonly hostGate?: SharedArrayBuffer | null;
 }
 
-/** What a ring is created with: nothing, or the gate of the group it belongs to. */
+/** What a ring is created with: nothing, the gate of its group, and the gate of its host. */
 export interface SabPipeOptions {
   readonly gate?: SharedArrayBuffer | null;
+  readonly hostGate?: SharedArrayBuffer | null;
 }
 
 export declare class SabPipe {
@@ -37,6 +40,12 @@ export declare class SabPipe {
    * pipes — never global: an idle backend then wakes on its own traffic and on nothing else.
    */
   static createGate(): SharedArrayBuffer;
+  /**
+   * One futex word for every ring ONE non-blocking host pumps, so that host holds a single
+   * outstanding `Atomics.waitAsync` however many rings it drives. Per host agent, never per
+   * session, and never waited on by a guest.
+   */
+  static createHostGate(): SharedArrayBuffer;
   /** `capacity` must be a power of two. */
   static create(capacity?: number, options?: SabPipeOptions): SabPipe;
   /** Rehydrate the same ring in another agent from a transferred descriptor. */

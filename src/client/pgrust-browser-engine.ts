@@ -762,6 +762,12 @@ export async function startPgrustBrowserPostmaster(options: PgrustBrowserEngineO
     readonly fromGuest: SabPipe;
   }
 
+  // ONE HOST GATE FOR EVERY SESSION: the driver reads N backend-to-client rings at once and may
+  // not block, so without it it would hold N outstanding `Atomics.waitAsync` — which is the shape
+  // that intermittently freezes a WebKit agent for a second at a time (see `SabPipe`'s own note).
+  // The guest never waits on it, so no backend is woken by another session's byte.
+  const hostGate = sab.SabPipe.createHostGate();
+
   const slots: Slot[] = Array.from({ length: sessionCount }, (_unused, index) => {
     const { inFd, outFd } = host.sessionFds(index);
     // ONE GATE PER SESSION: the rings a backend can be waiting on share a futex word, so the host
@@ -769,7 +775,8 @@ export async function startPgrustBrowserPostmaster(options: PgrustBrowserEngineO
     // slicing between them. Per session, never global — an idle backend wakes on its own traffic.
     const sessionGate = sab.SabPipe.createGate();
     const toGuest = sab.SabPipe.create(SESSION_TO_GUEST_CAPACITY, { gate: sessionGate });
-    const fromGuest = sab.SabPipe.create(SESSION_FROM_GUEST_CAPACITY, { gate: sessionGate });
+    // Only the ring the HOST reads carries the host gate: it is the one this driver parks on.
+    const fromGuest = sab.SabPipe.create(SESSION_FROM_GUEST_CAPACITY, { gate: sessionGate, hostGate });
     registry.register(inFd, { in: toGuest });
     registry.register(outFd, { out: fromGuest });
     // Both ends of one ring on one fd, exactly as the postmaster's: any guest thread whose
