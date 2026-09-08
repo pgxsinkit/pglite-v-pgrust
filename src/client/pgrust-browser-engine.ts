@@ -49,7 +49,7 @@
 
 import { SHARED_MEMORY_REQUIREMENT_MESSAGE } from "../engines/availability";
 import type * as BrokerFs from "../vendor/pgrust/broker-fs.js";
-import type { RepackedChannel, RepackedDoorbell } from "../vendor/pgrust/broker-fs.js";
+import type { RepackedBundle, RepackedChannel, RepackedDoorbell } from "../vendor/pgrust/broker-fs.js";
 import type { VfsManifest } from "../vendor/pgrust/pgrust-wasi.js";
 import type * as SabPipes from "../vendor/pgrust/sab-pipe.js";
 import type { SabPipe } from "../vendor/pgrust/sab-pipe.js";
@@ -127,6 +127,31 @@ const STORE_CHANNEL_PAYLOAD_BYTES = 1 << 20;
 const CONNECTION_MAGIC = 0x50475048;
 /** The connection record is four little-endian 32-bit words. */
 const CONNECTION_RECORD_BYTES = 16;
+
+/**
+ * How many times the storage coordinator may be started before a still-owned store is given up on,
+ * and the linear backoff between attempts (500, 1000, 1500, … ms).
+ *
+ * Six attempts is ~7.5 s of patience, which is what a browser needs to reap a page's worth of
+ * workers after a navigation — the one moment a repacked store has two would-be owners.
+ */
+const DEFAULT_STORAGE_OPEN_ATTEMPTS = 6;
+const DEFAULT_STORAGE_RETRY_MS = 500;
+
+/** The `errorName` the coordinator reports when the store is already open somewhere else. */
+const STORE_OWNED_ERROR_NAME = "StoreOwnedError";
+
+/**
+ * The store is open somewhere else — the ONE storage failure that is worth waiting out.
+ *
+ * A repacked store owns its four OPFS files exclusively, and the owner releases them when its worker
+ * dies. After a page navigation that death happens a moment AFTER the next page has begun booting,
+ * so the new owner meets the old one. Distinct from every other storage failure, which says
+ * something true about the store and must be thrown at once.
+ */
+export class PgrustStoreOwnedError extends Error {
+  override readonly name = "PgrustStoreOwnedError";
+}
 
 const STORAGE_READY_TIMEOUT_MS = 180_000;
 const POOL_READY_TIMEOUT_MS = 120_000;
@@ -239,6 +264,13 @@ export interface PgrustBrowserEngineOptions {
   readonly prepareStore?: (store: PgrustStore) => Promise<void> | void;
   /** How long the guest gets to exit after the listener closes, before the workers go anyway. */
   readonly exitDeadlineMs?: number;
+  /**
+   * How many times to start the storage coordinator before giving up on a store its LAST owner has
+   * not released yet ({@link PgrustStoreOwnedError}). Six by default; 1 disables the wait.
+   */
+  readonly storageOpenAttempts?: number;
+  /** The linear backoff between those attempts, in milliseconds. 500 by default. */
+  readonly storageRetryMs?: number;
 }
 
 /**
@@ -510,11 +542,20 @@ export async function startPgrustBrowserPostmaster(options: PgrustBrowserEngineO
     loadHostModule<BrokerFsModule>(hostBase, "broker-fs.js"),
   ]);
 
-  const [wasmModule, image, manifest] = await Promise.all([
+  const [wasmModule, manifest] = await Promise.all([
     compileEngineModule(`${assetBase}postgres-threads.wasm`),
-    fetchAsset(`${assetBase}vfs.img`).then(async (response) => await response.arrayBuffer()),
     fetchAsset(`${assetBase}vfs.json`).then(async (response) => (await response.json()) as VfsManifest),
   ]);
+
+  /**
+   * The packed image, fetched fresh for every coordinator attempt.
+   *
+   * It is TRANSFERRED to the coordinator, so a failed attempt leaves a detached buffer and a retry
+   * has nothing to send. Re-fetching costs a browser-cache read rather than the 40 MiB copy that
+   * keeping a spare would cost for every boot that never retries.
+   */
+  const fetchImage = async (): Promise<ArrayBuffer> =>
+    await fetchAsset(`${assetBase}vfs.img`).then(async (response) => await response.arrayBuffer());
 
   // The prepared store, if there is one, goes in BEFORE the coordinator opens anything: after that
   // it owns four exclusive handles on the directory.
@@ -525,15 +566,13 @@ export async function startPgrustBrowserPostmaster(options: PgrustBrowserEngineO
   const exited = gate();
   const poolReady = gate();
   const postmasterReady = gate();
-  const storageStopped = gate();
-  const storageReady = gate();
   let exitCode: number | null = null;
 
   // ---- the storage coordinator, first and always -------------------------------------------
   // Its store must be seeded before the startup process can read a file, and once its blocking serve
   // loop is entered it never reaches its event loop again. It also takes ownership of the image.
   const bundleUrl = brokerFs.repackedBundleUrl(hostBase);
-  let bundle;
+  let bundle: RepackedBundle;
   try {
     bundle = await brokerFs.loadRepackedBundle(bundleUrl);
   } catch (error: unknown) {
@@ -543,91 +582,136 @@ export async function startPgrustBrowserPostmaster(options: PgrustBrowserEngineO
     );
   }
 
-  const doorbell: RepackedDoorbell = bundle.RepackedDoorbell.create();
-  // One channel per pool slot PLUS one for the process instance: the protocol is one request in
-  // flight per channel, so two agents may never share one.
-  const channels: RepackedChannel[] = Array.from({ length: poolSize + 1 }, (_unused, index) =>
-    bundle.RepackedChannel.create({ id: index + 1, doorbell }),
-  );
-  // And one more for THIS host, which is an agent like any other: it is how a datadir is read out of
-  // the store and written into it. Attached with the rest, because the coordinator can accept no
-  // channel once its blocking serve loop is entered.
-  const storeChannel: RepackedChannel = bundle.RepackedChannel.create({
-    id: channels.length + 1,
-    doorbell,
-    payloadBytes: STORE_CHANNEL_PAYLOAD_BYTES,
-  });
-
-  const storageWorker = host.makeWorker(host.storageWorkerUrl(hostBase), { name: "pgrust-postmaster-storage" });
-  host.onWorkerMessage(storageWorker, (raw: unknown) => {
-    const event = asRecord<StorageEvent>(raw);
-    switch (event.type) {
-      case "storage-ready":
-        // A `reset` was asked for, so a coordinator reporting it RESTORED a data directory found one
-        // this run did not put there. For a Measurement those would be a warm store's numbers under
-        // a cold store's label, which is worse than a failed column.
-        if (event.restored === true && storage.refuseExisting === true) {
-          storageReady.fail(
-            new Error(
-              `pgrust postmaster storage opened an existing data directory in "${storage.opfsDir ?? ""}" ` +
-                "despite being asked to reset it; this run would be measuring an earlier run's store",
-            ),
-          );
-          return;
-        }
-        options.onStorageReady?.(describeStorageReady(event), event);
-        storageReady.open();
-        return;
-      case "storage-stopped":
-        storageStopped.open();
-        return;
-      case "storage-error": {
-        const error = new Error(`pgrust postmaster storage ${event.errorName ?? "Error"}: ${event.message ?? ""}`);
-        storageReady.fail(error);
-        storageStopped.open();
-        return;
-      }
-      default:
-        return;
-    }
-  });
-  host.onWorkerError(storageWorker, (error: Error) => {
-    storageReady.fail(new Error(`pgrust postmaster storage worker threw: ${error.message}`));
-    storageStopped.open();
-  });
-
-  storageWorker.postMessage(
-    {
-      kind: "boot",
-      bundleUrl,
-      image,
-      manifest,
-      channels: [...channels.map((channel) => channel.transfer()), storeChannel.transfer()],
-      doorbell: doorbell.buffer,
-      options:
-        storage.port === "opfs"
-          ? {
-              port: "opfs",
-              opfsDir: storage.opfsDir,
-              durability: storage.durability ?? "relaxed",
-              reset: storage.reset === true,
-            }
-          : { port: "memory", durability: storage.durability ?? "relaxed" },
-    },
-    [image],
-  );
-
-  try {
-    await withTimeout(storageReady.promise, STORAGE_READY_TIMEOUT_MS, "the storage coordinator did not seed its store");
-  } catch (error: unknown) {
-    // A coordinator that never became ready may still hold four synchronous access handles on the
-    // directory the caller is about to remove. Terminating it is what releases them.
-    storageWorker.terminate();
-    storageStopped.open();
-    throw error;
+  interface Coordinator {
+    readonly worker: Worker;
+    readonly doorbell: RepackedDoorbell;
+    /** One per pool slot, plus one for the process instance. */
+    readonly channels: readonly RepackedChannel[];
+    /** This host's own channel: how a datadir is read out of the store and written into it. */
+    readonly storeChannel: RepackedChannel;
+    readonly stopped: Gate;
   }
 
-  // The store is open and seeded, and no postmaster exists yet: the one window in which a whole
+  /** Start one coordinator and wait for it to open and seed its store. Owns nothing on failure. */
+  async function attemptStorage(): Promise<Coordinator> {
+    const doorbell: RepackedDoorbell = bundle.RepackedDoorbell.create();
+    // One channel per pool slot PLUS one for the process instance: the protocol is one request in
+    // flight per channel, so two agents may never share one.
+    const channels: RepackedChannel[] = Array.from({ length: poolSize + 1 }, (_unused, index) =>
+      bundle.RepackedChannel.create({ id: index + 1, doorbell }),
+    );
+    // And one more for THIS host, which is an agent like any other. Attached with the rest, because
+    // the coordinator can accept no channel once its blocking serve loop is entered.
+    const storeChannel: RepackedChannel = bundle.RepackedChannel.create({
+      id: channels.length + 1,
+      doorbell,
+      payloadBytes: STORE_CHANNEL_PAYLOAD_BYTES,
+    });
+
+    const ready = gate();
+    const stopped = gate();
+    const worker = host.makeWorker(host.storageWorkerUrl(hostBase), { name: "pgrust-postmaster-storage" });
+    host.onWorkerMessage(worker, (raw: unknown) => {
+      const event = asRecord<StorageEvent>(raw);
+      switch (event.type) {
+        case "storage-ready":
+          // A `reset` was asked for, so a coordinator reporting it RESTORED a data directory found
+          // one this run did not put there. For a Measurement those would be a warm store's numbers
+          // under a cold store's label, which is worse than a failed column.
+          if (event.restored === true && storage.refuseExisting === true) {
+            ready.fail(
+              new Error(
+                `pgrust postmaster storage opened an existing data directory in "${storage.opfsDir ?? ""}" ` +
+                  "despite being asked to reset it; this run would be measuring an earlier run's store",
+              ),
+            );
+            return;
+          }
+          options.onStorageReady?.(describeStorageReady(event), event);
+          ready.open();
+          return;
+        case "storage-stopped":
+          stopped.open();
+          return;
+        case "storage-error": {
+          const message = `pgrust postmaster storage ${event.errorName ?? "Error"}: ${event.message ?? ""}`;
+          ready.fail(
+            event.errorName === STORE_OWNED_ERROR_NAME ? new PgrustStoreOwnedError(message) : new Error(message),
+          );
+          stopped.open();
+          return;
+        }
+        default:
+          return;
+      }
+    });
+    host.onWorkerError(worker, (error: Error) => {
+      ready.fail(new Error(`pgrust postmaster storage worker threw: ${error.message}`));
+      stopped.open();
+    });
+
+    const image = await fetchImage();
+    worker.postMessage(
+      {
+        kind: "boot",
+        bundleUrl,
+        image,
+        manifest,
+        channels: [...channels.map((channel) => channel.transfer()), storeChannel.transfer()],
+        doorbell: doorbell.buffer,
+        options:
+          storage.port === "opfs"
+            ? {
+                port: "opfs",
+                opfsDir: storage.opfsDir,
+                durability: storage.durability ?? "relaxed",
+                reset: storage.reset === true,
+              }
+            : { port: "memory", durability: storage.durability ?? "relaxed" },
+      },
+      [image],
+    );
+
+    try {
+      await withTimeout(ready.promise, STORAGE_READY_TIMEOUT_MS, "the storage coordinator did not seed its store");
+    } catch (error: unknown) {
+      // A coordinator that never became ready may still hold synchronous access handles on the
+      // directory. Terminating it is what releases them — and what lets a retry have them.
+      worker.terminate();
+      stopped.open();
+      throw error;
+    }
+    return { worker, doorbell, channels, storeChannel, stopped };
+  }
+
+  /**
+   * The coordinator, with patience for a store the LAST owner has not let go of yet.
+   *
+   * A repacked store is exclusively owned, and an owner releases it when its worker dies — which,
+   * after a page navigation, is a moment AFTER the next page has already started booting. Observed
+   * on pgxsinkit's board: a reload's mint refused with `StoreOwnedError` inside 300 ms of the
+   * reload, while the same store opened cleanly a few seconds later. So a store that is merely
+   * still-owned is waited out; every other failure is what it says it is and is thrown at once.
+   */
+  const attempts = Math.max(1, options.storageOpenAttempts ?? DEFAULT_STORAGE_OPEN_ATTEMPTS);
+  const retryMs = options.storageRetryMs ?? DEFAULT_STORAGE_RETRY_MS;
+  let coordinator: Coordinator | undefined;
+  for (let attempt = 1; coordinator === undefined; attempt += 1) {
+    try {
+      coordinator = await attemptStorage();
+    } catch (error: unknown) {
+      if (!(error instanceof PgrustStoreOwnedError) || attempt >= attempts) {
+        throw error;
+      }
+      options.onServerLog?.(
+        `pgrust postmaster storage: the store is still owned by its last opener; retrying (${attempt}/${attempts - 1})\n`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, retryMs * attempt));
+    }
+  }
+
+  const { worker: storageWorker, doorbell, channels, storeChannel, stopped: storageStopped } = coordinator;
+
   // datadir may be replaced. `loadDataDir` is what runs here.
   const store = new PgrustStore(new bundle.RepackedSyncClient(storeChannel), bundle);
   if (options.prepareStore !== undefined) {

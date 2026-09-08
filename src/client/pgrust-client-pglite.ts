@@ -638,6 +638,27 @@ export function pgrustGuestEnv(options: {
 }
 
 /**
+ * pgxsinkit's "this instance is a PROVABLY persistent OPFS store" brand.
+ *
+ * A well-known symbol (`Symbol.for`, so it crosses module copies), and the ONLY proof the toolkit
+ * accepts for an ADOPTED instance. It matters because of what the client does without it: a store
+ * minted through the seam and then adopted by the boot (`precreatedPglite` — the provision-then-attach
+ * accelerator) skips the pre-mint phase machine, so the toolkit runs its commitment barrier
+ * (`strictSync` -> sentinel -> `opfs-committed`) only when `resolveAdoptedCommitmentBarrier` is
+ * reached — and THAT is gated on this brand. Unbranded, the store's meta record stays at
+ * `opfs-candidate` for its whole life, and the NEXT boot reads that as a torn candidate and DELETES
+ * the directory. Observed exactly that way on the board: everything green, then a reload answering
+ * `Could not start the local sync engine: removeEntry … modifications are not allowed`.
+ *
+ * The toolkit's own doc for the brand says an opfs-repacked store "reports no `dataDir`", which is why
+ * nothing else can identify one. This engine's instances DO report `opfs://<name>` — but the gate
+ * keys on the brand, not on the URL, so an external factory that wants the commitment barrier has to
+ * stamp it. Only for the OPFS port: a `memory://` store is not persistent and must keep failing the
+ * toolkit's own non-persistent-store guard.
+ */
+const OPFS_REPACKED_PERSISTENT = Symbol.for("pgxsinkit.opfsRepackedPersistent");
+
+/**
  * Open one session on a booted engine and hand back the client that owns it.
  *
  * The last third of every pgrust factory, bun and browser alike: one session, one client, and a
@@ -656,6 +677,19 @@ export async function attachPgrustClient<TExtensions extends Extensions = Extens
       closeDeadlineMs: options.closeDeadlineMs ?? CLOSE_EXIT_DEADLINE_MS,
     });
     await instance.waitReady;
+    if (resolved.backend === "opfs") {
+      // Best-effort: an engine that could not be branded still works for one session, and the
+      // toolkit falls back to classifying the `dataDir` for its non-persistence guard.
+      try {
+        Object.defineProperty(instance, OPFS_REPACKED_PERSISTENT, {
+          value: true,
+          enumerable: false,
+          configurable: true,
+        });
+      } catch {
+        // A frozen/exotic instance; nothing else here depends on the brand.
+      }
+    }
     return instance as PgrustClientPGlite & PGliteInterfaceExtensions<TExtensions>;
   } catch (error: unknown) {
     // A client that never became ready still left a postmaster running and, on OPFS, four

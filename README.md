@@ -752,6 +752,32 @@ Its store client blocks in `Atomics.wait`, which a window's main thread may not 
 in-process (main-thread) engine home cannot host it — the elected dedicated worker of ADR-0049 can.
 Called on the main thread it throws saying so, instead of deadlocking.
 
+### Two things the seam's contract does not say, and both bite
+
+Found by running pgxsinkit's board on this engine end to end. Neither is engine-specific; anything
+answering that seam with a persistent OPFS store owes both.
+
+1. **Brand the instance `Symbol.for("pgxsinkit.opfsRepackedPersistent")`.** The toolkit runs its
+   commitment barrier — `strictSync()`, then a sentinel, then the store's meta record at
+   `opfs-committed` — on an ADOPTED store only when that brand is present (`resolveAdoptedCommitmentBarrier`
+   gates on it, because its own OPFS store reports no `dataDir` and nothing else identifies one). An
+   unbranded store stays at `opfs-candidate` for its whole life, and the NEXT boot reads that as a torn
+   candidate and **deletes the directory**. The symptom is a first visit that works perfectly and a
+   reload that says `Could not start the local sync engine: Failed to execute 'removeEntry' … modifications
+are not allowed`. `attachPgrustClient` stamps it for every `opfs://` store.
+
+2. **Be patient with a store its last owner has not released.** A repacked store owns its OPFS files
+   exclusively and releases them when its worker dies — which, after a reload, happens a moment AFTER
+   the next page has begun booting. The mint refuses with `StoreOwnedError` inside 300 ms of a reload
+   and succeeds a few seconds later, so the engine retries that one failure (six attempts, linear
+   backoff) and throws every other storage failure at once.
+
+   Getting this wrong is worse than it sounds: pgxsinkit answers a rejected seam mint by falling back
+   to **its own** opfs-repacked PGlite on the same directory — which opens the store with a 64 KiB
+   extent size where pgrust's coordinator writes 8 KiB, so the fallback dies on
+   `configured extent size 65536 does not match persisted extent size 8192`. A store minted through
+   the seam is only ever readable through the seam.
+
 ### Prove it is actually the one that answered
 
 A store minted by this factory says so, on the console of the worker that minted it and on a
