@@ -685,6 +685,89 @@ registered **only** where `window.crossOriginIsolated` is already `false`, so on
 alone installed. `bun run bench --plain` serves `dist/` without the headers on purpose and is the
 test of that path.
 
+## Using the engine from another app
+
+The pgrust postmaster in this repo is not only a benchmark column. It also answers **pgxsinkit's
+local-store seam**, so a pgxsinkit app — the `apps/board` demo above all — can be driven against
+pgrust instead of PGlite without a line of engine-specific code landing in that repo.
+
+The seam is one build-time variable. `VITE_BOARD_STORE_FACTORY=<absolute module URL>` makes the board
+`import()` that module and take its **default export** as
+`(storePath: string, backendOverride?: "memory") => Promise<ClientPGlite>`; every local store the app
+opens is then minted by it (see `apps/board/docs/local-store-seam.md` in pgxsinkit). It passes a plain
+store **name** and nothing else — no asset base, no storage layout — so the module owns all of that.
+`src/client/pgrust-browser-factory.ts` is that module on this engine:
+
+- **its own assets**, from `import.meta.url`: whatever URL the bundle is served from, `./pgrust/` sits
+  beside it;
+- **its own storage layout**: `opfs://<name>` opens the OPFS directory pgxsinkit's store-path contract
+  implies — `pgxsinkit/stores/<identity>` — so the store lands where the toolkit looks for one;
+- **its own boot**: the postmaster starts _inside the worker that called the factory_, with the thread
+  pool and the storage coordinator as nested workers. It is the same
+  `src/client/pgrust-browser-engine.ts` the `pgrust Postmaster` column runs — one boot, two drivers.
+
+### Package it
+
+```bash
+bun run sync:pgrust                                   # once: the wasm, the image, the host runtime
+bun run engine:package --into <app>/public/store-engine
+```
+
+That builds the bundle (`bun run engine:build` → `dist/store-engine/pgrust-store-factory.js`, one
+self-contained ESM file with PGlite's `BasePGlite`, the `live` extension and the wire codec inside it)
+and copies it plus everything it fetches at run time into the directory you name:
+
+```
+<dir>/pgrust-store-factory.js       the seam module — its default export is the factory
+<dir>/pgrust/postgres-threads.wasm  the wasm32-wasip1-threads Postgres
+<dir>/pgrust/vfs.img, vfs.json      the packed image a fresh store is seeded from
+<dir>/pgrust/host/                  pgrust's host runtime, loaded by URL and never bundled
+<dir>/pgrust/LICENSE, NOTICE        pgrust is AGPL-3.0; the notice travels with the binary
+```
+
+It then prints the exact variable to set. It is ~88 MB, so a `public/` directory that a repo ignores
+is the right place for it.
+
+### Serve it, and point the app at it
+
+```bash
+VITE_BOARD_STORE_FACTORY=http://localhost:5173/store-engine/pgrust-store-factory.js \
+VITE_BOARD_ISOLATED=1 bun run build      # in apps/board
+VITE_BOARD_ISOLATED=1 bun run preview    # 5173
+```
+
+Two things are not optional:
+
+- **Same origin.** The host runtime builds its workers with `new Worker(url)`, which refuses a
+  cross-origin script. Serving the directory from the app's own origin (a vite `public/`
+  subdirectory) is the whole answer; a cross-origin module would additionally need CORS and
+  `Cross-Origin-Resource-Policy: cross-origin` under the isolation headers.
+- **Cross-origin isolation.** `VITE_BOARD_ISOLATED=1` makes the app serve COOP `same-origin` +
+  COEP `require-corp` on **every** response, which is what puts `SharedArrayBuffer` and a shared
+  `WebAssembly.Memory` in the engine's worker as well as in the page. See
+  [Cross-origin isolation](#cross-origin-isolation).
+
+There is a third requirement the factory enforces rather than documents: it must run **in a worker**.
+Its store client blocks in `Atomics.wait`, which a window's main thread may not do, so pgxsinkit's
+in-process (main-thread) engine home cannot host it — the elected dedicated worker of ADR-0049 can.
+Called on the main thread it throws saying so, instead of deadlocking.
+
+### Prove it is actually the one that answered
+
+A store minted by this factory says so, on the console of the worker that minted it and on a
+`BroadcastChannel` named `pgrust-store-factory` that any page or worker can read:
+
+```js
+new BroadcastChannel("pgrust-store-factory").onmessage = (event) => console.log(event.data);
+// { kind: "pgrust-store-minted", storePath: "…", dataDir: "opfs://…",
+//   opfsDir: "pgxsinkit/stores/…", version: "PostgreSQL 18.0 on wasm32-wasip1-threads…",
+//   restored: false, elapsedMs: 4210 }
+```
+
+`version` is the server's own `SELECT version()` — the only honest way to know which engine answered,
+because a silent success looks exactly like the built-in PGlite one. `restored` is `false` on the
+first mint of an OPFS directory and `true` on every one after it, which is what a reload proves.
+
 ## GitHub Pages
 
 <https://pgxsinkit.github.io/pglite-v-pgrust/> — the same page, the same fourteen columns, nothing to
@@ -740,24 +823,26 @@ shared unauthenticated rate limit.
 
 Scripts are check-default: a bare verb never mutates files.
 
-| Script                  | What it does                                     |
-| ----------------------- | ------------------------------------------------ |
-| `bun run dev`           | Vite dev server on port 5580                     |
-| `bun run build`         | Production build into `dist/`                    |
-| `bun run preview`       | Serve the production build                       |
-| `bun run format`        | oxfmt, check only                                |
-| `bun run format:write`  | oxfmt, rewrite files                             |
-| `bun run lint`          | oxlint (type-aware), check only                  |
-| `bun run lint:fix`      | oxlint with autofixes applied                    |
-| `bun run typecheck`     | `tsc --noEmit`                                   |
-| `bun run test`          | `bun test src scripts` — unit tests only         |
-| `bun run check`         | typecheck + lint + test                          |
-| `bun run validate`      | format + check; installed as the pre-commit hook |
-| `bun run bench`         | Drive the page headlessly and capture the tables |
-| `bun run test:e2e`      | `bun test tests/e2e` — the bench lane, asserted  |
-| `bun run validate:full` | validate + test:e2e                              |
-| `bun run sync:pgrust`   | Vendor pgrust's host JS; fetch or copy assets    |
-| `bun run pgrust:bundle` | Package `public/pgrust/` for a release           |
+| Script                   | What it does                                     |
+| ------------------------ | ------------------------------------------------ |
+| `bun run dev`            | Vite dev server on port 5580                     |
+| `bun run build`          | Production build into `dist/`                    |
+| `bun run preview`        | Serve the production build                       |
+| `bun run format`         | oxfmt, check only                                |
+| `bun run format:write`   | oxfmt, rewrite files                             |
+| `bun run lint`           | oxlint (type-aware), check only                  |
+| `bun run lint:fix`       | oxlint with autofixes applied                    |
+| `bun run typecheck`      | `tsc --noEmit`                                   |
+| `bun run test`           | `bun test src scripts` — unit tests only         |
+| `bun run check`          | typecheck + lint + test                          |
+| `bun run validate`       | format + check; installed as the pre-commit hook |
+| `bun run bench`          | Drive the page headlessly and capture the tables |
+| `bun run test:e2e`       | `bun test tests/e2e` — the bench lane, asserted  |
+| `bun run validate:full`  | validate + test:e2e                              |
+| `bun run sync:pgrust`    | Vendor pgrust's host JS; fetch or copy assets    |
+| `bun run pgrust:bundle`  | Package `public/pgrust/` for a release           |
+| `bun run engine:build`   | Bundle the store-engine seam module into `dist/` |
+| `bun run engine:package` | Drop the store engine into another app's assets  |
 
 `bun install` runs `prepare`, which points `core.hooksPath` at `.githooks/`, so `bun run validate`
 gates every commit.
