@@ -98,6 +98,23 @@ export interface BenchOptions {
   /** Port for the local static server; 0 asks the OS for a free one. */
   readonly port: number;
   readonly headless: boolean;
+  /**
+   * The path prefix `dist/` is served under, matching the `BASE_PATH` it was built with.
+   *
+   * `/` for every ordinary run. `--base /pglite-v-pgrust/` drives the deployable build in the shape
+   * GitHub Pages serves it, which is the only way to check that every run-time URL — the pgrust
+   * assets, the host modules the threads Engines `import()`, the workers — really goes through
+   * `import.meta.env.BASE_URL` rather than the site root.
+   */
+  readonly base: string;
+  /**
+   * Whether the static server sends the two cross-origin isolation headers.
+   *
+   * On by default, and off for `--plain`, which models a host that cannot send them — GitHub Pages.
+   * There the page's own `coi-serviceworker` has to earn the isolation back, so a `--plain` run is
+   * the test of that: it reloads once and then reports `cross-origin isolated yes` like any other.
+   */
+  readonly isolationHeaders: boolean;
   /** Overall deadline for everything that happens in the browser. */
   readonly timeoutMs: number;
   readonly outputDir: string;
@@ -113,6 +130,8 @@ export const DEFAULT_BENCH_OPTIONS: BenchOptions = {
   // Never 5580: a dev server or another session's browser may be sitting on it.
   port: 0,
   headless: true,
+  base: "/",
+  isolationHeaders: true,
   // Three Suites against fourteen Configurations, five of which seed a whole data directory into a
   // cold store first. The default has to cover the run the default flags ask for.
   timeoutMs: 2_400_000,
@@ -151,6 +170,29 @@ function contentTypeFor(path: string): string {
 /** No WebSocket route is registered, so the server carries no per-socket data. */
 export type StaticServer = Server<undefined>;
 
+export interface StaticServerOptions {
+  /**
+   * The path prefix the site is mounted at, matching the `BASE_PATH` the build was made with.
+   * `/` by default; anything else is stripped off before a request becomes a file.
+   */
+  readonly base?: string;
+  /**
+   * Whether to send COOP + COEP. True by default. False models GitHub Pages, which cannot send
+   * them at all, and leaves the page's own service worker to put them back.
+   */
+  readonly isolationHeaders?: boolean;
+}
+
+/** `/`, or a prefix with exactly one slash at each end. */
+function normalizeBase(base: string | undefined): string {
+  const trimmed = (base ?? "/").trim();
+  if (trimmed === "" || trimmed === "/") {
+    return "/";
+  }
+  const leading = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  return leading.endsWith("/") ? leading : `${leading}/`;
+}
+
 /**
  * A static server for `dist/`, deliberately minimal: the build is already a plain static site.
  *
@@ -158,36 +200,54 @@ export type StaticServer = Server<undefined>;
  * serve it with the same two isolation headers — a probe that served it any other way would be
  * measuring a page the benchmark never runs on.
  */
-export function serveDist(distDir: string, port: number): StaticServer {
+export function serveDist(distDir: string, port: number, options: StaticServerOptions = {}): StaticServer {
+  const base = normalizeBase(options.base);
+  const isolation = options.isolationHeaders ?? true;
+  const headers: Readonly<Record<string, string>> = isolation ? CROSS_ORIGIN_ISOLATION_HEADERS : {};
   return Bun.serve({
     port,
     hostname: "127.0.0.1",
     development: false,
     fetch: async (request: Request): Promise<Response> => {
       const { pathname } = new URL(request.url);
-      const requested = decodeURIComponent(pathname === "/" ? "/index.html" : pathname);
+      if (!pathname.startsWith(base)) {
+        return new Response(`Not found: this build is served under ${base}`, { status: 404, headers });
+      }
+      const withinBase = pathname.slice(base.length - 1);
+      const requested = decodeURIComponent(withinBase === "/" ? "/index.html" : withinBase);
       const target = resolve(distDir, `.${requested}`);
       if (target !== distDir && !target.startsWith(`${distDir}/`)) {
-        return new Response("Forbidden", { status: 403, headers: CROSS_ORIGIN_ISOLATION_HEADERS });
+        return new Response("Forbidden", { status: 403, headers });
       }
       const file = Bun.file(target);
       if (!(await file.exists())) {
-        return new Response("Not found", { status: 404, headers: CROSS_ORIGIN_ISOLATION_HEADERS });
+        return new Response("Not found", { status: 404, headers });
       }
       return new Response(file, {
         headers: {
           "content-type": contentTypeFor(target),
           "cache-control": "no-store",
-          ...CROSS_ORIGIN_ISOLATION_HEADERS,
+          ...headers,
         },
       });
     },
   });
 }
 
-/** `vite build`, shared with `scripts/probe-memory.ts` so both lanes measure the same bundle. */
-export async function buildApp(): Promise<void> {
-  const child = Bun.spawn({ cmd: ["bun", "run", "build"], cwd: REPO_ROOT, stdout: "inherit", stderr: "inherit" });
+/**
+ * `vite build`, shared with `scripts/probe-memory.ts` so both lanes measure the same bundle.
+ *
+ * `BASE_PATH` is always set, never inherited: a lane that serves the build at `/` must not silently
+ * get a build addressed at `/pglite-v-pgrust/` because that variable was exported in the shell.
+ */
+export async function buildApp(base: string = "/"): Promise<void> {
+  const child = Bun.spawn({
+    cmd: ["bun", "run", "build"],
+    cwd: REPO_ROOT,
+    env: { ...process.env, BASE_PATH: normalizeBase(base) },
+    stdout: "inherit",
+    stderr: "inherit",
+  });
   const code = await child.exited;
   if (code !== 0) {
     throw new Error(`vite build failed with exit code ${code}`);
@@ -211,12 +271,12 @@ function launchOptionsFor(options: BenchOptions): LaunchOptions {
  * so `--configurations`/`--baseline` and a hand-edited link are the same mechanism.
  */
 function pageUrl(port: number, options: BenchOptions): string {
-  const base = options.rttIterations === null ? "" : `?${RTT_ITERATIONS_PARAM}=${options.rttIterations}`;
+  const query = options.rttIterations === null ? "" : `?${RTT_ITERATIONS_PARAM}=${options.rttIterations}`;
   const search =
     options.configurationIds === null && options.baselineId === null
-      ? base
-      : formatSelectionSearch(base, options.configurationIds, options.baselineId);
-  return `http://127.0.0.1:${port}/${search}`;
+      ? query
+      : formatSelectionSearch(query, options.configurationIds, options.baselineId);
+  return `http://127.0.0.1:${port}${normalizeBase(options.base)}${search}`;
 }
 
 /** A countdown against the overall deadline, so a stuck Run fails with a clear message. */
@@ -290,7 +350,7 @@ export async function runBench(overrides: Partial<BenchOptions> = {}): Promise<B
   }
 
   if (options.build) {
-    await buildApp();
+    await buildApp(options.base);
   }
 
   const distDir = resolve(REPO_ROOT, "dist");
@@ -304,7 +364,10 @@ export async function runBench(overrides: Partial<BenchOptions> = {}): Promise<B
   const suites: SuiteReport[] = [];
   let environmentLine = "";
 
-  const server = serveDist(distDir, options.port);
+  const server = serveDist(distDir, options.port, {
+    base: options.base,
+    isolationHeaders: options.isolationHeaders,
+  });
   try {
     const listeningPort = server.port;
     if (listeningPort === undefined) {
@@ -327,6 +390,16 @@ export async function runBench(overrides: Partial<BenchOptions> = {}): Promise<B
       });
 
       await page.goto(url, { waitUntil: "load", timeout: Math.min(remaining(), 120_000) });
+      if (!options.isolationHeaders) {
+        // Without the headers the first load is not isolated: `coi-serviceworker` registers, reloads
+        // the page once, and only the second load has them. Waiting for the reload here is what
+        // makes a --plain run a test of that mechanism rather than a race against it —
+        // `waitForFunction` re-evaluates in the document that comes back.
+        console.error("bench: no isolation headers sent; waiting for the service worker's reload");
+        await page.waitForFunction(() => globalThis.crossOriginIsolated, null, {
+          timeout: Math.min(remaining(), 120_000),
+        });
+      }
       environmentLine = (await readText(page, "environment-line", Math.min(remaining(), 60_000))).trim();
       console.error(`bench: ${environmentLine}`);
 
@@ -364,6 +437,8 @@ const USAGE = `Usage: bun run bench [options]
   --configurations <id,id,...>         Run only these Configurations; repeatable
   --baseline <id>                      Take every ratio against this Configuration
   --no-build                           Reuse the existing dist/ instead of rebuilding
+  --base <path>                        Build and serve under this path (default: /)
+  --plain                              Serve without COOP/COEP, as GitHub Pages does
   --port <N>                           Port for the local static server (default: a free one)
   --headed                             Show the browser window
   --timeout <ms>                       Overall in-browser deadline (default: 2400000)
@@ -480,6 +555,8 @@ export function parseBenchArguments(rawArgv: readonly string[]): CliInvocation {
     build?: boolean;
     port?: number;
     headless?: boolean;
+    base?: string;
+    isolationHeaders?: boolean;
     timeoutMs?: number;
     outputDir?: string;
   } = {};
@@ -521,6 +598,13 @@ export function parseBenchArguments(rawArgv: readonly string[]): CliInvocation {
         break;
       case "--no-build":
         options.build = false;
+        break;
+      case "--base":
+        index += 1;
+        options.base = normalizeBase(requireValue(argv, index, flag));
+        break;
+      case "--plain":
+        options.isolationHeaders = false;
         break;
       case "--port":
         index += 1;

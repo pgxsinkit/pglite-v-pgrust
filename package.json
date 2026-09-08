@@ -40,6 +40,7 @@
     "@pgxsinkit/client": "0.3.0",
     "@pgxsinkit/contracts": "0.3.0",
     "@pgxsinkit/pglite-opfs-repacked": "0.3.0",
+    "coi-serviceworker": "0.1.7",
     "drizzle-orm": "1.0.0-rc.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

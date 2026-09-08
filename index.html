@@ -5,6 +5,35 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>pglite-v-pgrust benchmarks</title>
+    <script>
+      /*
+       * Cross-origin isolation on a host that cannot send headers.
+       *
+       * Every server this repo owns sends COOP + COEP itself (`vite.config.ts`, `scripts/bench.ts`),
+       * and on those this block does nothing at all: `crossOriginIsolated` is already true, so the
+       * service worker is never even fetched. GitHub Pages sends no headers and has no way to, so
+       * there `coi-serviceworker` re-serves every response with the pair from inside the page — one
+       * reload on the first visit, and from then on the six pgrust Threads and Postmaster columns
+       * have the `SharedArrayBuffer` and shared `WebAssembly.Memory` they are gated on.
+       *
+       * `coepCredentialless: false` pins the header to `require-corp`, the one every browser that
+       * supports COEP at all has supported since it shipped — the library's default picks
+       * `credentialless` on non-Chromium engines, and on a Safari that does not know that value the
+       * page would silently come back not isolated. It costs nothing here: the worker sets
+       * `Cross-Origin-Resource-Policy: cross-origin` on everything it passes through, and this page
+       * loads no cross-origin subresource in the first place.
+       *
+       * The URL is resolved against `document.baseURI` rather than written absolute, because the
+       * deployed site lives under `/pglite-v-pgrust/` and a service worker only controls the
+       * directory it is served from.
+       */
+      window.coi = { coepCredentialless: () => false };
+      if (window.crossOriginIsolated === false && window.isSecureContext && "serviceWorker" in navigator) {
+        const loader = document.createElement("script");
+        loader.src = new URL("coi-serviceworker.js", document.baseURI).href;
+        document.head.appendChild(loader);
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

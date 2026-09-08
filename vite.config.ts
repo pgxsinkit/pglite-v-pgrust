@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import react from "@vitejs/plugin-react";
+import type { Connect, Plugin } from "vite";
 import { defineConfig } from "vite";
 
 import { describeDependencyVersion } from "./src/dependency-version";
@@ -76,8 +77,75 @@ const CROSS_ORIGIN_ISOLATION_HEADERS: Readonly<Record<string, string>> = {
   "Cross-Origin-Embedder-Policy": "require-corp",
 };
 
+/**
+ * The path prefix this build is served under: `BASE_PATH`, `/` by default.
+ *
+ * Everything the page fetches at run time is addressed through `import.meta.env.BASE_URL` — the
+ * pgrust wasm and vfs image, the vendored host JS the two threads Engines `import()` by URL, every
+ * worker — so one value here moves all of them. GitHub Pages serves a project site from
+ * `/<repo>/`, which is why this is a variable rather than a constant: `BASE_PATH=/pglite-v-pgrust/
+ * bun run build` produces the deployable tree, and a bare `bun run build` still produces the
+ * root-served one the local lanes use.
+ */
+function basePath(): string {
+  const configured = process.env["BASE_PATH"]?.trim() ?? "";
+  if (configured === "" || configured === "/") {
+    return "/";
+  }
+  const leading = configured.startsWith("/") ? configured : `/${configured}`;
+  return leading.endsWith("/") ? leading : `${leading}/`;
+}
+
+/** The service worker file name, at the base's root so its scope covers the whole app. */
+const COI_SERVICE_WORKER_FILE = "coi-serviceworker.js";
+
+/** The unminified `coi-serviceworker`, which carries its own MIT banner. */
+function readCoiServiceWorker(): string {
+  return readFileSync(createRequire(import.meta.url).resolve(`coi-serviceworker/${COI_SERVICE_WORKER_FILE}`), "utf8");
+}
+
+/**
+ * Serve `coi-serviceworker.js` from the base's root, on every server this config owns.
+ *
+ * GitHub Pages cannot set a response header, and the two headers above are the only way a browser
+ * hands out `SharedArrayBuffer`. `coi-serviceworker` closes that gap from inside the page: a service
+ * worker that re-serves every response with the pair, at the cost of one reload on the first visit.
+ * `index.html` registers it only where `crossOriginIsolated` is already `false`, so `bun run dev`,
+ * `bun run preview` and the bench lane — all of which send the real headers — never install it.
+ *
+ * It is emitted as a plain top-level asset rather than imported, because a service worker's scope is
+ * the directory it is served from: hashed into `assets/` it could not control `index.html`, and
+ * `Service-Worker-Allowed` is another header Pages will not send. Copied out of `node_modules` at
+ * build time so the dependency is the source of truth and no vendored copy can drift from it.
+ */
+function coiServiceWorker(): Plugin {
+  const serve: Connect.NextHandleFunction = (request, response, next) => {
+    const path = (request.url ?? "").split("?")[0] ?? "";
+    if (!path.endsWith(`/${COI_SERVICE_WORKER_FILE}`)) {
+      next();
+      return;
+    }
+    response.setHeader("content-type", "text/javascript; charset=utf-8");
+    response.setHeader("cache-control", "no-store");
+    response.end(readCoiServiceWorker());
+  };
+  return {
+    name: "coi-serviceworker",
+    generateBundle() {
+      this.emitFile({ type: "asset", fileName: COI_SERVICE_WORKER_FILE, source: readCoiServiceWorker() });
+    },
+    configureServer(server) {
+      server.middlewares.use(serve);
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(serve);
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react()],
+  base: basePath(),
+  plugins: [react(), coiServiceWorker()],
   define: {
     // Installed under the upstream name through an `npm:` alias, so the store package and this app
     // resolve one single PGlite: the pgx fork. The header still reports what is really installed.
