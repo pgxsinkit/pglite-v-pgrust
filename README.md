@@ -27,6 +27,9 @@ column against the `PGlite Memory` baseline and a "Copy as Markdown" button per 
 Times are milliseconds; lower is better — except one Concurrency row that reports a rate and says so
 in its own label.
 
+**Run it without cloning anything: <https://pgxsinkit.github.io/pglite-v-pgrust/>** — the same page,
+the same fourteen columns, on your own browser. See [GitHub Pages](#github-pages).
+
 ## Quick start from a clone
 
 Five commands. No sibling checkouts, no Rust toolchain, no pgxsinkit checkout:
@@ -80,6 +83,8 @@ What each column needs beyond that, all of it satisfied by a current Chromium, F
 Cross-origin isolation is not something you have to arrange: `vite.config.ts` sends both headers for
 `bun run dev` and `bun run preview`, and the bench lane's own static server sends them too, so a
 `cross-origin isolated no` in the header is a browser withholding them rather than a missing config.
+(The one host that cannot send them is [GitHub Pages](#github-pages), where a service worker does it
+instead, at the cost of one reload on the first visit.)
 The four broker and postmaster columns additionally load a pre-release build of the OPFS store, which
 [ships with the release](#download-a-published-build) — nothing else to fetch.
 
@@ -642,6 +647,65 @@ loads none — PGlite's `pglite.wasm` and `pglite.data`, wa-sqlite's `wa-sqlite.
 assets and every worker are all served from this origin. There is no CDN script, no hosted font and
 no remote image anywhere in `index.html` or in the built `dist/`.
 
+One host cannot send a header at all: [GitHub Pages](#github-pages). There `index.html` registers
+[`coi-serviceworker`](https://github.com/gzuidhof/coi-serviceworker), a service worker that re-serves
+every response with the same pair from inside the page, and the columns run on that instead. It is
+registered **only** where `window.crossOriginIsolated` is already `false`, so on `bun run dev`,
+`bun run preview` and the bench lane — all of which send the real headers — it is never fetched, let
+alone installed. `bun run bench --plain` serves `dist/` without the headers on purpose and is the
+test of that path.
+
+## GitHub Pages
+
+<https://pgxsinkit.github.io/pglite-v-pgrust/> — the same page, the same fourteen columns, nothing to
+install. Everything is measured in your browser; the site is static and stores nothing anywhere else.
+
+Two things about a first visit:
+
+- **It reloads once.** Pages cannot send a response header, so the page has to earn cross-origin
+  isolation from inside: `coi-serviceworker` installs on the first load and reloads once, and the
+  header then reads `cross-origin isolated yes` (see [above](#cross-origin-isolation)). Every later
+  visit is one load. The service worker exists only on hosts that send no headers — never on
+  `bun run dev`, `bun run preview` or the bench lane.
+- **The pgrust columns are a large download.** `postgres.wasm`, `postgres-threads.wasm` and
+  `vfs.img` are ~134 MB unpacked, fetched on first use and then cached by the browser. The eight
+  PGlite and wa-sqlite columns need none of it.
+
+On **Safari** the page is the diagnosis: every Configuration it cannot run says why in its own
+column header, and the ones it can run still run. Safari grants the OPFS synchronous access handle
+the four repacked-store columns need, and the service worker gives the six threads and postmaster
+columns their isolation; the two single-session `pgrust Memory` columns additionally need
+[JSPI](#browser-requirements), which is Safari 27+, and report themselves skipped where it is
+missing. The environment header states all three answers — `JSPI available|unavailable`,
+`cross-origin isolated yes|no`, `OPFS sync access available|unavailable` — and they travel with
+every "Copy as Markdown" export.
+
+### Deploying it
+
+`.github/workflows/pages.yml` runs on every push to `main` and on manual dispatch. It installs,
+runs `bun run sync:pgrust --release latest`, builds with `BASE_PATH=/pglite-v-pgrust/` and uploads
+`dist/`. It runs no test, no bench and no browser: a deploy that ran the Suites would be measuring a
+GitHub runner.
+
+`BASE_PATH` is why the deployed page works at all. A project site is served from `/<repo>/`, and
+every URL the page builds at run time — the pgrust assets, the vendored host modules the threads
+Engines `import()` by URL, every worker — goes through `import.meta.env.BASE_URL`. Locally,
+`bun run bench --base /pglite-v-pgrust/` builds and serves the same shape, which is how that stays
+true.
+
+The site is built from a **release**, not from a checkout, so publishing new pgrust assets is what
+puts a new pgrust build on the page:
+
+```sh
+bun run pgrust:bundle                        # package public/pgrust/ and print the gh command
+gh release create pgrust-assets/<commit> …   # what it printed, after reading NOTES.md
+git push origin main                         # or run the Pages workflow by hand
+```
+
+One setting, once: **Settings → Pages → Source: GitHub Actions**. The workflow needs no secret —
+`GITHUB_TOKEN` is the automatic one, and it is used only to keep the release-list API call off the
+shared unauthenticated rate limit.
+
 ## Development & contributing
 
 Scripts are check-default: a bare verb never mutates files.
@@ -714,6 +778,9 @@ bun run bench --suite concurrency            # the Concurrency Suite on its own
 bun run bench --browser firefox --no-build   # reuse the existing dist/
 bun run bench --help                         # every flag, and every Configuration id
 
+# exactly what GitHub Pages serves: a subpath build, and no isolation headers
+bun run bench --base /pglite-v-pgrust/ --plain --suite rtt --iterations 3
+
 # three columns, ratios against the OPFS one
 bun run bench --suite rtt \
   --configurations pglite-memory,pglite-opfs-repacked-relaxed,pgrust-postmaster-opfs-repacked-relaxed \
@@ -728,6 +795,8 @@ bun run bench --suite rtt \
 | `--configurations <id,id>` | Passes `?configurations=` to the page: only these columns, in Configuration order; repeatable |
 | `--baseline <id>`          | Passes `?baseline=` to the page: the column every ratio is taken against                      |
 | `--no-build`               | Reuse the existing `dist/` instead of rebuilding                                              |
+| `--base <path>`            | Build with that `BASE_PATH` and serve under it — the [Pages](#github-pages) shape             |
+| `--plain`                  | Serve without COOP/COEP, as Pages does; the page's service worker has to earn isolation back  |
 | `--port <N>`               | Port for the local static server; the default asks for a free one, never 5580                 |
 | `--headed`                 | Show the browser window                                                                       |
 | `--timeout <ms>`           | Overall in-browser deadline (default 2400000)                                                 |
@@ -850,6 +919,12 @@ Run — is defined in [CONTEXT.md](CONTEXT.md).
   copied out of a pgxsinkit checkout by `bun run sync:pgrust`. Either way its commit, branch and
   build recipe are recorded in `src/vendor/pgrust/SOURCE.md` and in the release's `manifest.json`. It
   is MIT licensed like the published package.
+- [`coi-serviceworker`](https://github.com/gzuidhof/coi-serviceworker), Copyright Guido Zuidhof and
+  contributors, MIT licensed, is what gives the deployed page [cross-origin
+  isolation](#cross-origin-isolation) on a host that cannot send headers. It is installed from npm
+  and copied unmodified — banner and all — from `node_modules/` into `dist/coi-serviceworker.js` at
+  build time, because a service worker only controls the directory it is served from and a hashed
+  asset would sit one directory too deep.
 
 ## License
 

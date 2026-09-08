@@ -130,14 +130,33 @@ async function fetchText(url: string, what: string): Promise<string> {
   return await response.text();
 }
 
+/**
+ * The one call that goes to the GitHub API, and its headers.
+ *
+ * The assets themselves are public files under `releases/download/`, which need no credential and
+ * are deliberately fetched without one. Resolving `latest` is an API call, and unauthenticated API
+ * calls are rate limited per source IP — 60 an hour, shared by every job on a GitHub Actions runner,
+ * which is exactly where this runs on a deploy. `GITHUB_TOKEN` (or `GH_TOKEN`) raises that limit
+ * when it is set, and its absence changes nothing: a workstation resolving one release an hour
+ * never reaches the limit anyway.
+ */
+function releaseListHeaders(): Readonly<Record<string, string>> {
+  const headers: Record<string, string> = {
+    accept: "application/vnd.github+json",
+    "user-agent": "pglite-v-pgrust sync:pgrust",
+  };
+  const token = process.env["GITHUB_TOKEN"]?.trim() ?? process.env["GH_TOKEN"]?.trim() ?? "";
+  if (token !== "") {
+    headers["authorization"] = `Bearer ${token}`;
+  }
+  return headers;
+}
+
 /** The releases of a repo, for `--release latest`. */
 export async function fetchReleaseList(repository: string, log: Log): Promise<readonly ReleaseSummary[]> {
   const url = releasesApiUrl(repository);
   log(`Resolving the newest ${RELEASE_TAG_PREFIX}* release from ${url}`);
-  const response = await fetchOrFail(url, "the release list", {
-    accept: "application/vnd.github+json",
-    "user-agent": "pglite-v-pgrust sync:pgrust",
-  });
+  const response = await fetchOrFail(url, "the release list", releaseListHeaders());
   return parseReleases(await response.json());
 }
 

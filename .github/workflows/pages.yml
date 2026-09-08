@@ -1,0 +1,68 @@
+# Deploy the benchmark page to GitHub Pages.
+#
+# The page is a static build; everything it measures happens in the visitor's browser. This workflow
+# therefore builds and uploads, and runs no test, no bench and no browser: a deploy that ran the
+# suites would be measuring a GitHub runner, which is the one machine nobody is interested in.
+#
+# The ~131 MB of pgrust wasm and vfs image are gitignored build outputs, so the build has to fetch
+# them first: `sync:pgrust --release latest` takes the newest `pgrust-assets/*` release of this repo
+# and verifies every file against its `SHA256SUMS` and `manifest.json`. Publishing a new release is
+# what makes a new pgrust build appear on the site; pushing to `main` republishes the page on
+# whatever the newest release is.
+#
+# `BASE_PATH` is the project-site prefix. A project site is served from `/<repo>/`, and every
+# run-time URL the page builds — the pgrust assets, the host modules the threads Engines `import()`,
+# every worker — goes through `import.meta.env.BASE_URL`, which is what this sets.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time, and never cancel one in flight: a half-uploaded 160 MB site is a broken site.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  BASE_PATH: /pglite-v-pgrust/
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          # Newest Bun, which is what mise.toml's `1.4` resolves to locally as well. Nothing here is
+          # timed, so there is no reason to pin a deploy to an older runtime than the one in use.
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      # Release assets are public downloads and need no credential; the token is only for the API
+      # call that resolves `latest`, whose unauthenticated rate limit is shared by every job on the
+      # runner's IP.
+      - name: Sync the pgrust assets from the newest release
+        run: bun run sync:pgrust --release latest
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - run: bun run build
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist
+
+      - id: deployment
+        uses: actions/deploy-pages@v5
