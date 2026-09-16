@@ -191,7 +191,7 @@ function nowSec() { return Math.floor(Date.now() / 1000); }
 const PREOPEN_FD = 3;
 const ALL_RIGHTS = 0xFFFFFFFFFFFFFFFFn;
 
-export function makeWasi({ image, manifest, vfs: existingVfs, stdinBytes, stdinStream, onStdout, onStderr, argv: argvOverride, env: envOverride, fdBase }) {
+export function makeWasi({ image, manifest, vfs: existingVfs, stdinBytes, stdinStream, onStdout, onStderr, argv: argvOverride, env: envOverride, fdBase, pipes }) {
   const vfs = existingVfs || new Vfs(image, manifest);
 
   const argv = argvOverride || [
@@ -234,6 +234,18 @@ export function makeWasi({ image, manifest, vfs: existingVfs, stdinBytes, stdinS
   // agents allocating from 4 would hand the SAME fd number to two different
   // files. See "PIPE FDS, AND THE FD NUMBER PLAN" in wasm/threads-host.js.
   let nextFd = Number.isSafeInteger(fdBase) && fdBase > PREOPEN_FD ? fdBase : PREOPEN_FD + 1;
+  // Host-provided pipe fds (the psql <-> postgres cross-connect; increment 2
+  // of the Rust-psql plan). `pipes` maps fd number ->
+  //   { kind:'piperead', stream }   stream = { ready, isEof, take, wait }
+  //   { kind:'pipewrite', onWrite } onWrite(Uint8Array)
+  // Convention: psql.wasm reads the server on fd 4 and writes it on fd 5
+  // (fd 3 is this host's "/" preopen). File fds allocate above them.
+  if (pipes) {
+    for (const [fd, h] of pipes) {
+      fds.set(fd, h);
+      if (fd >= nextFd) nextFd = fd + 1;
+    }
+  }
 
   let memory = null;
   const u8 = () => new Uint8Array(memory.buffer);
@@ -299,6 +311,7 @@ export function makeWasi({ image, manifest, vfs: existingVfs, stdinBytes, stdinS
   function doWrite(h, bytes) {
     if (h.kind === 'stdout') { onStdout(bytes.slice()); return bytes.length; }
     if (h.kind === 'stderr') { onStderr(bytes.slice()); return bytes.length; }
+    if (h.kind === 'pipewrite') { h.onWrite(bytes.slice()); return bytes.length; }
     if (h.kind !== 'file') return -E.BADF;
     const node = h.node;
     const at = h.append ? node.data.length : h.pos;
@@ -444,13 +457,15 @@ export function makeWasi({ image, manifest, vfs: existingVfs, stdinBytes, stdinS
       // (the browser-worker analog of the wasmtime host's blocking pipe).
       // Without JSPI this arm is never taken (worker.js falls back to the
       // --single engine); the fixed stdinBytes path below is unchanged.
-      if (h.kind === 'stdin' && stdinStream) {
+      const rstream = (h.kind === 'stdin' && stdinStream) ? stdinStream
+        : (h.kind === 'piperead' ? h.stream : null);
+      if (rstream) {
         const attempt = () => {
           const view = dv(); const mem = u8();
           let total = 0;
           for (const { ptr, len } of iovs(iovsPtr, iovsLen)) {
             if (len === 0) continue;
-            const chunk = stdinStream.take(len);
+            const chunk = rstream.take(len);
             if (!chunk || chunk.length === 0) break;
             mem.set(chunk, ptr);
             total += chunk.length;
@@ -459,8 +474,8 @@ export function makeWasi({ image, manifest, vfs: existingVfs, stdinBytes, stdinS
           view.setUint32(nreadPtr, total, true);
           return E.SUCCESS;
         };
-        if (stdinStream.ready() || stdinStream.isEof()) return attempt();
-        return stdinStream.wait().then(attempt);
+        if (rstream.ready() || rstream.isEof()) return attempt();
+        return rstream.wait().then(attempt);
       }
       let total = 0;
       const mem = u8();
@@ -655,9 +670,13 @@ export function makeWasi({ image, manifest, vfs: existingVfs, stdinBytes, stdinS
         const userdataLo = view.getUint32(sub, true);
         const userdataHi = view.getUint32(sub + 4, true);
         const tag = view.getUint8(sub + 8);
-        if (stdinStream && tag === 1 /* fd_read */) {
+        if (tag === 1 /* fd_read */) {
           const subFd = view.getUint32(sub + 16, true);
-          if (subFd === 0 && !stdinStream.ready() && !stdinStream.isEof()) continue;
+          if (stdinStream && subFd === 0 &&
+              !stdinStream.ready() && !stdinStream.isEof()) continue;
+          const ph = fds.get(subFd);
+          if (ph && ph.kind === 'piperead' &&
+              !ph.stream.ready() && !ph.stream.isEof()) continue;
         }
         const evt = outPtr + fired * 32;
         fired++;

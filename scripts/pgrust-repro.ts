@@ -20,9 +20,14 @@
  *    or `target/debug/postgres`) and an `initdb` (`/usr/lib/postgresql/18/bin`); without either it is
  *    reported as skipped rather than silently dropped, and the run still passes on the other two.
  *
- * Exit 0 on `VERDICT: pgrust-repro PASS` — PGlite answers both files, and every pgrust lane that ran
- * refused both with its own error. Exit 1 the moment any lane disagrees, INCLUDING a pgrust that
- * starts answering: a fixed gap is news, and this script is where it would show up first.
+ * **Both gaps are closed.** `malisper/pgrust#109` and `#110` were fixed upstream and arrived here
+ * with pgrust 0.3 (`79ad992ede`), so the note on each case now says `fixedIn` and the expectation
+ * has turned over: a pgrust lane must ANSWER both files, exactly as PGlite does. The SQL stays
+ * because that is what makes the fix checkable — a regression is one run away from being news
+ * again, and `marker` is kept so a refusal can say whether it is the same old gap or a new one.
+ *
+ * Exit 0 on `VERDICT: pgrust-repro PASS` — every lane that ran answered both files. Exit 1 the
+ * moment any lane disagrees, and this script is where that would show up first.
  *
  * Environment:
  *   PGRUST_DIR          pgrust checkout for the native lane (default ../pgrust)
@@ -57,7 +62,7 @@ const NATIVE_SCRATCH = path.join(REPO_ROOT, "tmp", "agents", "pgrust-repro");
 /** How long the native postmaster gets to announce itself before the lane is called dead. */
 const NATIVE_BOOT_TIMEOUT_MS = 60_000;
 
-/** One reduced reproduction: a file, and the words pgrust is expected to refuse it with. */
+/** One reduced reproduction: a file, the words pgrust refused it with, and which pgrust fixed it. */
 interface ReproCase {
   /** Short name, used for the scratch directory and the table. */
   readonly name: string;
@@ -65,11 +70,23 @@ interface ReproCase {
   readonly file: string;
   /** The distinguishing part of pgrust's error, so a DIFFERENT failure is not mistaken for this one. */
   readonly marker: string;
+  /** The pgrust that closed the gap. Set, the file must be ANSWERED; unset, it must be refused. */
+  readonly fixedIn?: string;
 }
 
 const CASES: readonly ReproCase[] = [
-  { name: "nullif", file: "scripts/pgrust-repro-nullif.sql", marker: "T_NullIfExpr not ported" },
-  { name: "acl-detoast", file: "scripts/pgrust-repro-acl-detoast.sql", marker: "detoast gap" },
+  {
+    name: "nullif",
+    file: "scripts/pgrust-repro-nullif.sql",
+    marker: "T_NullIfExpr not ported",
+    fixedIn: "0.3 (malisper/pgrust#109)",
+  },
+  {
+    name: "acl-detoast",
+    file: "scripts/pgrust-repro-acl-detoast.sql",
+    marker: "detoast gap",
+    fixedIn: "0.3 (malisper/pgrust#110)",
+  },
 ];
 
 /** What one engine did with one file. `skipped` is a lane that could not run, not a failure. */
@@ -370,12 +387,18 @@ async function runPgrustNative(): Promise<LaneResult> {
 
 /**
  * What each lane is expected to do with each file. PGlite must answer; a pgrust lane that RAN must
- * refuse with the case's own marker. A skipped lane says nothing either way.
+ * do what the case's note says — answer it, once `fixedIn` names the pgrust that closed the gap, and
+ * otherwise refuse it with the case's own marker. A skipped lane says nothing either way.
  */
 function disagreement(engineIsPgrust: boolean, reproCase: ReproCase, outcome: Outcome): string | null {
   if (outcome.kind === "skipped") return null;
   if (!engineIsPgrust) {
     return outcome.kind === "ok" ? null : `PGlite refused ${reproCase.file}: ${outcome.detail}`;
+  }
+  if (reproCase.fixedIn !== undefined) {
+    if (outcome.kind === "ok") return null;
+    const same = outcome.detail.includes(reproCase.marker) ? "the same gap, back" : "something else";
+    return `pgrust refused ${reproCase.file}, which ${reproCase.fixedIn} fixed — ${same}: ${outcome.detail}`;
   }
   if (outcome.kind === "ok") {
     return `pgrust ANSWERED ${reproCase.file} (${outcome.detail}) — the gap may be closed; re-check the note`;
