@@ -296,13 +296,30 @@ the same work in 27 % fewer, correspondingly larger function bodies. That is the
 tier up: same code, fewer and bigger compilation units. It also ends up with slightly MORE IR and
 more bytes than not doing it at all.
 
+And that is exactly what V8 charges for. `--js-flags=--trace-wasm-compilation-times` through
+Playwright's `DEBUG=pw:browser`, summed over one whole Suite run (tracing perturbs the timings, so
+read the ratio, not the wall):
+
+|                             | shipped `-Oz` | `-Oz -ocimfs=0` |
+| --------------------------- | ------------: | --------------: |
+| functions TurboFan compiled |           869 |             931 |
+| **TurboFan CPU**            | **14 546 ms** |    **6 167 ms** |
+| per function                |       16.7 ms |          6.6 ms |
+| functions Liftoff compiled  |         3 993 |           4 676 |
+| Liftoff CPU                 |        662 ms |          347 ms |
+| per function                |        166 µs |           74 µs |
+
+TurboFan does 2.36× the work on the inlined module for slightly FEWER functions — 2.5× per
+function — which is the 2.4× the row pays. The mechanism is no longer an inference: one-caller
+inlining makes fewer, larger functions, and both V8 tiers cost more than twice as much per function
+on them.
+
 ## 9. What is still open
 
-- **Why TurboFan hates 27 % fewer, larger functions.** The input shape is now measured; the cost
-  model is not. The plausible reading is that TurboFan's per-function cost grows faster than
-  linearly (register allocation, scheduling) and that fewer units parallelise worse across the
-  background compiler threads. `--trace-wasm-compilation-times` on both modules would settle it, and
-  that is what a Binaryen or V8 issue would need.
+- **Why TurboFan's per-function cost more than doubles.** The 2.5× is measured (§8); which part of
+  TurboFan pays it — register allocation, scheduling, or simply that a 2× body costs 4× — is not.
+  That is the one thing a V8 or Binaryen issue would still want, and it wants a reproducer smaller
+  than a 40 MB module.
 - **Whether it is TurboFan compile time specifically.** `chrome://tracing`'s `v8.wasm` category, or
   `--trace-wasm-compilation-times` / `--print-wasm-code-size`, would price the tier-up storm
   directly instead of inferring it from `--liftoff-only`.
