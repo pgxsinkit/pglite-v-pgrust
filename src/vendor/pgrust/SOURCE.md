@@ -4,11 +4,11 @@ Copied byte-verbatim by `bun run sync:pgrust`. **Do not edit these files by hand
 script against an updated pgrust checkout instead. They are excluded from oxlint and oxfmt so
 they stay identical to their source.
 
-- Commit: `53845b1675c96f041bdd11d2d736b8125b532ffb`
-- Version: `53845b1675`
+- Commit: `31b5259d223b87a23d230eaef9b1b26bed1e228d`
+- Version: `31b5259d22`
 - Source: `/home/anton/dev/tmp/pgrust`
 - Working tree: clean
-- Synced: 2026-09-16T04:40:33.848Z
+- Synced: 2026-09-18T14:33:56.408Z
 
 ## Files
 
@@ -55,8 +55,8 @@ Copied by `bun run sync:pgrust` from a local pgrust checkout. They are gitignore
 outputs; only this record of them is committed.
 
 - Source: `/home/anton/dev/tmp/pgrust`
-- Version: `53845b1675`
-- Copied: 2026-09-16T04:40:33.871Z
+- Version: `31b5259d22`
+- Copied: 2026-09-18T14:33:56.428Z
 
 pgrust is AGPL-3.0-only; these binaries were built locally from the checkout named above.
 <!-- pgrust-assets:end -->
