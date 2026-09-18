@@ -402,3 +402,63 @@ for the 1000-statement transcript, and a per-statement stats line. `tmp/agents/r
 mirror of `wasm/` whose `threads-host.js` counts WASI imports when `PGRUST_CENSUS` names a file
 (a parked worker never flushes `console.error`, hence the synchronous append). Nothing tracked in
 either repository was modified.
+
+## Adopted (2026-09-19)
+
+`wasm/wasm-build.sh` in pgrust now passes `--one-caller-inline-max-function-size=0` after the
+Binaryen level, from a new `PGRUST_WASM_OPT_EXTRA` whose default is exactly that (an empty value
+restores stock `-Oz`). Measured under the owner's rule — lowest browser Speedtest total summed over
+two interleaved rounds wins; two arms within 3% are settled by size; the module may not exceed
+46 431 092 raw bytes — order D2, NEW, D2, NEW against the same `pglite-memory` control, one module
+swap between runs and nothing else touched, headless Chromium 149, `pgrust-postmaster-opfs-repacked-relaxed`:
+
+| Benchmark                                                    |      D2 r1 |      D2 r2 |     NEW r1 |     NEW r2 |
+| ------------------------------------------------------------ | ---------: | ---------: | ---------: | ---------: |
+| 1: 1000 INSERTs                                              |     1279.2 |     1241.5 |  **507.9** |  **512.2** |
+| 2: 25000 INSERTs in a transaction                            |     1245.1 |     1285.5 |     1131.8 |     1102.3 |
+| 2.1: 25000 INSERTs in single statement                       |      495.9 |      506.5 |      461.7 |      455.9 |
+| 3: 25000 INSERTs into an indexed table                       |     2929.1 |     2945.6 |     2813.0 |     2807.8 |
+| 3.1: 25000 INSERTs into an indexed table in single statement |      627.0 |      677.1 |      616.8 |      603.2 |
+| 4: 100 SELECTs without an index                              |      380.2 |      400.1 |      397.3 |      372.9 |
+| 5: 100 SELECTs on a string comparison                        |      764.5 |      769.0 |      736.7 |      733.7 |
+| 6: Creating an index                                         |      146.5 |      152.2 |      139.2 |      143.4 |
+| 7: 5000 SELECTs with an index                                |      830.3 |      843.3 |      874.3 |      858.4 |
+| 8: 1000 UPDATEs without an index                             |      214.6 |      219.1 |      206.9 |      208.9 |
+| 9: 25000 UPDATEs with an index                               |     3052.0 |     3074.2 |     3093.9 |     3101.1 |
+| 10: 25000 text UPDATEs with an index                         |     4394.2 |     4343.0 |     4383.8 |     4456.9 |
+| 11: INSERTs from a SELECT                                    |     2020.9 |     2083.8 |     2066.6 |     2107.0 |
+| 12: DELETE without an index                                  |       48.5 |       49.8 |       50.4 |       58.2 |
+| 13: DELETE with an index                                     |      116.4 |      115.8 |      120.8 |      123.0 |
+| 14: A big INSERT after a big DELETE                          |      849.2 |      844.5 |      846.1 |      791.3 |
+| 15: A big DELETE followed by many small INSERTs              |      554.8 |      544.5 |      583.5 |      549.2 |
+| 16: DROP TABLE                                               |       25.3 |       29.4 |       30.0 |       26.4 |
+| **Suite total**                                              | **19 974** | **20 125** | **19 061** | **19 012** |
+| `pglite-memory` control                                      |      7 118 |      7 121 |      7 152 |      7 218 |
+
+**Verdict: NEW wins.** Two-round sums 38 072 against D2's 40 099 — **5.32% faster**, outside the
+3% band, so the size tie-break never has to be reached; NEW is the smaller module anyway, by
+122 820 raw bytes, and at 40 004 938 bytes it is 6 426 154 under the cap. Row 1 is 2.44× faster
+(508/512 ms against 1279/1242 ms), which is the whole finding. No row regresses beyond the
+round-to-round spread, and the control held to 1.4% across the four runs, so the session was steady.
+The threads module built from the script's new defaults is **byte-identical** to the `arm-DOZC0`
+module this finding measured, so the CPU-profile numbers above the fold are the numbers for what
+ships.
+
+Gate on the new threads module, all green: the six pgrust lanes (postmaster/broker;
+`tablespace-proof.sql` and `tablespace-inplace-proof.sql` under `stdio-wire-threaded`;
+`tablespace-host-proof.mjs`; the six `sab-pipe-host-gate` tests; `browser-profile-proof.sql`),
+`lifetime-smoke` PASS, the pgxsinkit suite on pgrust at **2073 pass / 0 fail** (its baseline, 330 s),
+the RTT lane 12 of 12, and the browser memory check at 273 219 584 bytes of shared memory
+(260.6 MiB) with the 43.0 MiB arena — no regression.
+
+Published as [`pgrust-assets/569d1612`](https://github.com/pgxsinkit/pglite-v-pgrust/releases/tag/pgrust-assets/569d1612),
+from pgrust [`569d16128c`](https://github.com/pgxsinkit/pgrust/commit/569d16128c5c269063401655711f6558ccaac1e2)
+on `spike/wasip1-threads`:
+
+| Module                  | previous raw |  published raw | gzip -9 -n | sha256                                                             |
+| ----------------------- | -----------: | -------------: | ---------: | ------------------------------------------------------------------ |
+| `postgres-threads.wasm` |   40 127 758 | **40 004 938** | 13 886 510 | `df17f7e24a33807501759c6e5ec136c9c037595e1f1c1418798ead81c4b853e0` |
+| `postgres.wasm`         |   39 343 973 | **39 160 862** | 13 899 026 | `0d772984de7242d8c66fb9fc869f974b011fe93f372a6ead88304ef006f4f247` |
+
+Both modules are smaller than the ones they replace. That is the shape of this whole finding: the
+work being removed was work done to make the browser's compiler's job harder.
