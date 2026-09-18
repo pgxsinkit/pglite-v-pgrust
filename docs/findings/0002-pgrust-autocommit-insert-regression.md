@@ -17,11 +17,10 @@ The cost is not in the code Binaryen emits but in what V8 does with it: with
 unoptimised module's 2.6 s. Row 1 is the first thing the guest runs after boot, so it is the row
 that pays for V8 compiling the module underneath it.
 
-Inside the pass it is **inlining** (§8). The same `-Oz` with inlining's three size thresholds set to
-zero — `wasm-opt -Oz -aimfs=0 -fimfs=0 -ocimfs=0` — runs row 1 in 515–517 ms, row 2 20 % faster,
-every other row level, and produces a module **122 826 bytes smaller** than the one that ships. At
-this size of module, Binaryen's inliner does not pay for itself in bytes and costs a 2.3× first
-workload.
+Inside the pass it is **one-caller inlining**, one flag (§8). `wasm-opt -Oz -ocimfs=0` runs row 1 in
+513–520 ms, row 2 20 % faster, every other row level, and produces a module **122 820 bytes smaller**
+than the one that ships. On a module this shape Binaryen's one-caller inliner does not pay for
+itself in bytes and costs a 2.4× first workload.
 
 **The module that ships today (`765b06fb`, adopted in `6209440`) has the defect**: it is the
 fat-LTO link plus `wasm-opt -Oz`, and it runs row 1 in 1168–1310 ms against its own pre-Binaryen
@@ -49,6 +48,7 @@ each as its own simple-query message:
 | `arm-D2`    | the same link **+ `wasm-opt -Oz`** = **the shipped module** `765b06fb` | 40 127 758 | 1206.0 / 1167.7 / 1234.9 / 1309.9 |
 | `arm-DO2NI` | the same link **+ `-O2` with the inliner off**                         | 41 134 428 | 522.4 / 519.4                     |
 | `arm-DOZNI` | the same link **+ `-Oz` with the inliner off**                         | 40 004 932 | 516.5 / 515.2                     |
+| `arm-DOZC0` | the same link **+ `-Oz -ocimfs=0`** (one-caller inlining off, only)    | 40 004 938 | 519.5 / 513.2                     |
 
 Each row is one bench invocation running that Configuration **alone** (see §2 on why that matters),
 machine idle (1-minute load 0.2–1.3), module swapped into `dist/pgrust/postgres-threads.wasm` and
@@ -269,12 +269,29 @@ Smaller, 2.3× faster on row 1, 20 % faster on row 2, level everywhere else. Thi
 run through the Speedtest Suite twice — it has not been through the pgxsinkit suite or the node
 proof lanes, so it is a candidate, not a verdict.
 
+**It is ONE of the three: one-caller inlining.** Each threshold dropped on its own, over the same
+link, at `-Oz`:
+
+| arm                                           |                                                                                                                bytes |       Test 1 (ms) |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------: | ----------------: |
+| `-Oz` (shipped)                               |                                                                                                           40 127 758 |   1204.8 / 1246.9 |
+| `-Oz -fimfs=0` (flexible inlining off)        | 40 127 758 — **byte-identical** to the shipped module (sha256 `765b06fb904d…`), so the flag is a no-op at this level |   1293.5 / 1204.8 |
+| `-Oz -ocimfs=0` (**one-caller inlining off**) |                                                                                                           40 004 938 | **519.5 / 513.2** |
+| `-Oz -aimfs=0 -fimfs=0 -ocimfs=0` (all three) |                                                                                                           40 004 932 |     516.5 / 515.2 |
+
+`-ocimfs=0` alone is six bytes off the all-three module and gets the whole win. Binaryen's
+one-caller inlining copies a function's entire body into its single caller and deletes the original;
+here it makes the module 122 820 bytes **bigger** and the first workload 2.4× slower. Always-inline
+(`-aimfs`, default max size 2) and flexible inlining (`-fimfs`, speed-only, inert at `-Oz`) are
+innocent.
+
 ## 9. What is still open
 
-- **Which inlining, and why TurboFan hates it.** The three thresholds were set to zero together;
-  which of always/flexible/one-caller inlining carries it, and whether the cost is function count,
-  function size or something about the shapes Binaryen's inliner leaves behind, is unmeasured. That
-  distinction is what a Binaryen or V8 issue would need.
+- **Why TurboFan hates it.** One-caller inlining is pinned as the trigger, but the cost model is
+  inferred: presumably it makes a smaller number of much larger functions, and TurboFan's cost grows
+  faster than linearly in function size. `--print-function-metrics` on the two modules (function
+  count and size histogram) plus a TurboFan compile-time trace would turn that into a measurement,
+  and that is what a Binaryen or V8 issue would need.
 - **Whether it is TurboFan compile time specifically.** `chrome://tracing`'s `v8.wasm` category, or
   `--trace-wasm-compilation-times` / `--print-wasm-code-size`, would price the tier-up storm
   directly instead of inferring it from `--liftoff-only`.
