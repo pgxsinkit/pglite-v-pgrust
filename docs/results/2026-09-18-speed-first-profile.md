@@ -323,3 +323,151 @@ that dominates the Suite.
 - **Nothing was adopted.** `[profile.wasm-release]` and the `-Oz` pass in `wasm/wasm-build.sh` are
   exactly as they were; the published module is back in the build tree and in `dist/` and `public/`
   here, sha256 `7737d8b3ab8360f73e960b124adefe51530d4524e02837cca4604489bf4280d9`.
+
+## Adopted (2026-09-19)
+
+The note above was written with nothing adopted. This section is what happened next: the owner set
+a rule, one more arm was measured under it, and the winner was built, gated and published.
+
+### The rule, as the owner stated it
+
+> Winner = lowest Speedtest total summed over both interleaved rounds, among arms that boot and
+> pass the full gate. If two arms are within 3% of each other, the SMALLER module wins. Hard cap:
+> raw threads module ≤ 46 431 092 B.
+
+A is in the rounds below as the same-session control, and the winner had to beat it by more than
+A's own round-to-round spread for anything to change.
+
+### The third arm: the Binaryen level on the fat-LTO link
+
+`wasm-opt -Oz` over `arm-D-raw.wasm` — the same 45 880 406-byte fat-LTO link arm D was optimised
+from, with exactly the feature flags `wasm/wasm-build.sh` passes for the threads target — took
+219 s and produced **D2**. It boots: `PGRUST_WASM_THREADS=arm-D2.wasm node
+wasm/run-node-wire-threads.mjs --dispatch postmaster --fs broker` → `VERDICT: postmaster-node PASS
+fs=broker`.
+
+Three arms, interleaved A, D, D2, A, D, D2, one module swap between runs and nothing else touched,
+each run started with the 1-minute load between 1.79 and 2.29:
+
+| Arm | cargo profile | Binaryen | raw | gzip -9 -n | Suite r1 | Suite r2 | **sum** |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| A — as published | `"s"` / `false` / 16 | `-Oz` | 37 210 023 | 12 820 980 | 23 153 | 23 355 | **46 508** |
+| D | 3 / `"fat"` / 1 | `-O3` | 40 635 385 | 14 112 911 | 20 159 | 20 315 | **40 475** |
+| **D2** | 3 / `"fat"` / 1 | `-Oz` | **40 127 758** | 14 039 196 | 20 197 | 20 199 | **40 396** |
+
+(The gzip column is `gzip -9 -n`; the tables earlier in this note were taken without `-n`, so they
+run 10–11 bytes higher — that is the filename gzip stores in its header, not a different module.)
+
+PGlite controls in the same six runs: 7156, 7290, 7203, 7244, 7248, 7208. No run reported a single
+Suite failure.
+
+Per row, better of the two rounds, A ÷ arm:
+
+| Benchmark | A | D | D× | D2 | D2× |
+| --- | --- | --- | --- | --- | --- |
+| 1: 1000 INSERTs | 1124.5 | 1180.1 | 0.95× | 1210.5 | 0.93× |
+| 2: 25000 INSERTs in a transaction | 1749.1 | 1297.2 | 1.35× | 1273.0 | 1.37× |
+| 2.1: 25000 INSERTs in single statement | 522.5 | 466.3 | 1.12× | 479.1 | 1.09× |
+| 3: 25000 INSERTs into an indexed table | 3284.4 | 2981.5 | 1.10× | 2932.3 | 1.12× |
+| 3.1: 25000 INSERTs indexed, single statement | 707.8 | 644.9 | 1.10× | 635.5 | 1.11× |
+| 4: 100 SELECTs without an index | 423.1 | 409.0 | 1.03× | 397.8 | 1.06× |
+| 5: 100 SELECTs on a string comparison | 755.4 | 782.7 | 0.97× | 768.3 | 0.98× |
+| 6: Creating an index | 144.2 | 139.3 | 1.04× | 139.8 | 1.03× |
+| 7: 5000 SELECTs with an index | 1092.5 | 840.2 | 1.30× | 846.0 | 1.29× |
+| 8: 1000 UPDATEs without an index | 263.8 | 211.8 | 1.25× | 213.4 | 1.24× |
+| 9: 25000 UPDATEs with an index | 3858.4 | 3093.1 | 1.25× | 3065.3 | 1.26× |
+| 10: 25000 text UPDATEs with an index | 5091.3 | 4387.8 | 1.16× | 4382.4 | 1.16× |
+| 11: INSERTs from a SELECT | 2175.7 | 2119.8 | 1.03× | 2060.3 | 1.06× |
+| 12: DELETE without an index | 55.6 | 53.5 | 1.04× | 49.9 | 1.12× |
+| 13: DELETE with an index | 151.9 | 120.1 | 1.26× | 120.7 | 1.26× |
+| 14: A big INSERT after a big DELETE | 937.1 | 787.3 | 1.19× | 851.6 | 1.10× |
+| 15: A big DELETE then many small INSERTs | 689.0 | 542.4 | 1.27× | 568.8 | 1.21× |
+| 16: DROP TABLE | 30.9 | 28.4 | 1.09× | 26.3 | 1.17× |
+
+### The choice the rule makes
+
+**D2.** D and D2 are **0.20%** apart on the two-round sum (40 475 against 40 396) — the same link,
+so this is the Binaryen level and nothing else — which is inside the rule's 3% and inside each
+arm's own round-to-round spread (A 0.9%, D 0.8%, D2 0.0%). So size decides, and `-Oz` is 507 627
+bytes smaller than `-O3`. The Binaryen level is still worth nothing measurable in speed; what it is
+worth is half a megabyte.
+
+Against the same-session control, D2 is **15.1% faster than A** over the two rounds (40 396 against
+46 508), which is sixteen times A's own 0.9% round-to-round spread, so the change is not a
+measurement artefact. The module is **6 303 334 bytes under the cap**.
+
+### The build change
+
+pgrust `723e822059` on `spike/wasip1-threads`, one commit: `wasm/wasm-build.sh` exports
+`CARGO_PROFILE_WASM_RELEASE_OPT_LEVEL=3`, `…_LTO=fat`, `…_CODEGEN_UNITS=1` under
+`PGRUST_WASM_PROFILE=wasm-release`, and takes the Binaryen level from `PGRUST_WASM_OPT_LEVEL`
+(default `-Oz`). All four are `${VAR:-default}`, so the size-first build is three variables away.
+`[profile.wasm-release]` in the root `Cargo.toml` is **untouched** — that file is upstream's, and
+the point of putting the settings in the script is that a squash rebase finds nothing of ours in
+it.
+
+Both modules were then rebuilt by the script with **nothing in the environment**:
+
+| Module | raw | gzip -9 -n | sha256 |
+| --- | --- | --- | --- |
+| `postgres-threads.wasm` | 40 127 758 | 14 039 196 | `765b06fb904d59713b16c5ce064361474731efc24dbe9fa6677318f4a0274cef` |
+| `postgres.wasm` | 39 343 973 | 14 073 961 | `e6ef0b4dff0256de9cd924a50253835ef4c59c4df1de2c15dc2804017a112e5b` |
+
+The threads module is **byte-identical to D2**, the arm that was measured, so the table above is
+the table for what ships. Build cost: 8 m 57 s for the single-session target's full recompile
+(a profile change invalidates every unit in the target directory), 6 m 01 s for a relink of
+`main_main` alone into the warm threads directory, plus 221 s and 230 s of `wasm-opt -Oz`. The pass
+now takes 12–13% off the link rather than the 27% it took off the `codegen-units = 16` one: fat LTO
+has already removed the duplicates it used to find.
+
+### The gate
+
+Every lane on the new threads module, in the pgrust checkout:
+
+| Lane | Result |
+| --- | --- |
+| `--dispatch postmaster --fs broker` | `VERDICT: postmaster-node PASS fs=broker` |
+| `--dispatch stdio-wire-threaded --fs broker --mount /pgeph=memory --sql wasm/tablespace-proof.sql` | `VERDICT: threads-node PASS fs=broker` |
+| `… --mount /pgdata/pg_tblspc=memory --sql wasm/tablespace-inplace-proof.sql` | `VERDICT: threads-node PASS fs=broker` |
+| `node wasm/tablespace-host-proof.mjs` | `VERDICT: tablespace-host-proof PASS` |
+| `node --test wasm/test/sab-pipe-host-gate.test.mjs` | `pass 6, fail 0` |
+| `… --sql wasm/browser-profile-proof.sql` | `VERDICT: threads-node PASS fs=broker` |
+
+And here:
+
+- **Lifetime smoke** (`tmp/agents/pr1/lifetime-smoke.ts`): all three cases ok — the aborted portal,
+  the held cursor's text in `pg_cursors`, the 5000-statement message (355 ms).
+- **pgxsinkit unit suite on this engine: 2073 pass, 0 fail in 352.9 s** — the same 2073 as the
+  baseline.
+- **Single-session module:** `bun run bench --no-build --suite rtt --iterations 1 --configurations
+  pgrust-memory` answers 12 of 12.
+- **Memory**, the controlled single-column lane
+  (`?configurations=pgrust-postmaster-opfs-repacked-relaxed&postmasterTuning=pool:8,max_stack_depth=2048`):
+  **273 088 512 B (260.4 MiB)**, against 273 940 480 B (261.3 MiB) last measured there. Not claimed
+  as a win — a 0.3% move in a number that is dominated by the 256 MiB shared memory the module
+  declares.
+
+### Published
+
+`pgrust-assets/723e8220` on `pgxsinkit/pglite-v-pgrust`, built from pgrust
+`723e8220599e393e3073850fb14b7c2cc8b8fe54`, upstream base `79ad992ede22bcf6ae0c4fdead6fb01eeac5a990`
+(PostgreSQL 18.6). The release notes list the effective build settings as part of the AGPL recipe,
+because `--profile wasm-release` no longer says it all: the manifest still reads `opt-level = "s"`
+and the script overrides it.
+
+### What is not claimed
+
+Everything the section above this one disclaims still applies, and nothing here widens it:
+
+- **One machine, one browser.** Headless Chromium 149 on an i7-1165G7 with 8 logical cores, Linux.
+  No Safari, no WebKit, no phone, no other CPU. A 15% Suite win here is not a 15% win there.
+- **One column, two rounds.** `pgrust-postmaster-opfs-repacked-relaxed` against `pglite-memory`,
+  two interleaved rounds. Enough to separate D2 from A by fifteen times the noise; NOT enough to
+  separate D2 from D, which is why the rule's tie-break decided that and not the stopwatch.
+- **The single-session module was rebuilt, not re-measured.** It carries the same settings and
+  passes the same smoke (12 of 12 RTT tests), but no Speedtest arm was run on it.
+- **Row 1 still costs.** 1000 single-statement autocommit INSERTs are 0.93× on the adopted module
+  against the published one, on top of the 1.8–2.3× the 0.3 line had already lost against 0.2. The
+  profile does not fix that row and makes it slightly worse; no cause was investigated here.
+- **Nothing about the trade was decided here.** The rule was the owner's, stated in advance, and
+  this section applied it.
