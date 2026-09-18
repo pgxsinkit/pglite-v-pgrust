@@ -279,19 +279,30 @@ link, at `-Oz`:
 | `-Oz -ocimfs=0` (**one-caller inlining off**) |                                                                                                           40 004 938 | **519.5 / 513.2** |
 | `-Oz -aimfs=0 -fimfs=0 -ocimfs=0` (all three) |                                                                                                           40 004 932 |     516.5 / 515.2 |
 
-`-ocimfs=0` alone is six bytes off the all-three module and gets the whole win. Binaryen's
-one-caller inlining copies a function's entire body into its single caller and deletes the original;
-here it makes the module 122 820 bytes **bigger** and the first workload 2.4× slower. Always-inline
+`-ocimfs=0` alone is six bytes off the all-three module and gets the whole win. Always-inline
 (`-aimfs`, default max size 2) and flexible inlining (`-fimfs`, speed-only, inert at `-Oz`) are
 innocent.
 
+What one-caller inlining does to the module (`wasm-opt --metrics`), measured:
+
+|                | shipped `-Oz` | `-Oz -ocimfs=0` |
+| -------------- | ------------: | --------------: |
+| functions      |        26 331 |      **33 568** |
+| total IR nodes |    15 508 789 |      15 422 734 |
+| bytes          |    40 127 758 |      40 004 938 |
+
+It folds 7 237 functions — 21.6 % of them — into their single callers, so the shipped module carries
+the same work in 27 % fewer, correspondingly larger function bodies. That is the input V8 has to
+tier up: same code, fewer and bigger compilation units. It also ends up with slightly MORE IR and
+more bytes than not doing it at all.
+
 ## 9. What is still open
 
-- **Why TurboFan hates it.** One-caller inlining is pinned as the trigger, but the cost model is
-  inferred: presumably it makes a smaller number of much larger functions, and TurboFan's cost grows
-  faster than linearly in function size. `--print-function-metrics` on the two modules (function
-  count and size histogram) plus a TurboFan compile-time trace would turn that into a measurement,
-  and that is what a Binaryen or V8 issue would need.
+- **Why TurboFan hates 27 % fewer, larger functions.** The input shape is now measured; the cost
+  model is not. The plausible reading is that TurboFan's per-function cost grows faster than
+  linearly (register allocation, scheduling) and that fewer units parallelise worse across the
+  background compiler threads. `--trace-wasm-compilation-times` on both modules would settle it, and
+  that is what a Binaryen or V8 issue would need.
 - **Whether it is TurboFan compile time specifically.** `chrome://tracing`'s `v8.wasm` category, or
   `--trace-wasm-compilation-times` / `--print-wasm-code-size`, would price the tier-up storm
   directly instead of inferring it from `--liftoff-only`.
