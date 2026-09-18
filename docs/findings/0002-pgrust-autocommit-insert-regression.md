@@ -1,4 +1,4 @@
-# pgrust wasm: `wasm-opt -Oz` after the link costs 2.3× on the FIRST workload after boot
+# pgrust wasm: `wasm-opt`'s inliner costs 2.3× on the FIRST workload after boot
 
 Found 2026-09-19 against pgrust `spike/wasip1-threads@31b5259d22` and `723e822059` (the shipped
 module), Chromium 149.0.7827.55 headless, Node 26.9.0 (V8) and bun (JavaScriptCore) on the same
@@ -17,10 +17,16 @@ The cost is not in the code Binaryen emits but in what V8 does with it: with
 unoptimised module's 2.6 s. Row 1 is the first thing the guest runs after boot, so it is the row
 that pays for V8 compiling the module underneath it.
 
+Inside the pass it is **inlining** (§8). The same `-Oz` with inlining's three size thresholds set to
+zero — `wasm-opt -Oz -aimfs=0 -fimfs=0 -ocimfs=0` — runs row 1 in 515–517 ms, row 2 20 % faster,
+every other row level, and produces a module **122 826 bytes smaller** than the one that ships. At
+this size of module, Binaryen's inliner does not pay for itself in bytes and costs a 2.3× first
+workload.
+
 **The module that ships today (`765b06fb`, adopted in `6209440`) has the defect**: it is the
 fat-LTO link plus `wasm-opt -Oz`, and it runs row 1 in 1168–1310 ms against its own pre-Binaryen
-link's 523–532 ms and its own `-O1` build's 520–533 ms (§7). `PGRUST_WASM_OPT_LEVEL=-O1` is a
-one-variable fix that costs 1.3 MB of module.
+link's 523–532 ms, its own `-O1` build's 520–533 ms (§7) and its own inliner-free `-Oz` build's
+515–517 ms (§8).
 
 ---
 
@@ -41,6 +47,8 @@ each as its own simple-query message:
 | `arm-DO1`   | the same link **+ `wasm-opt -O1`**                                     | 41 442 596 | 532.6 / 520.0 / 519.7             |
 | `arm-DO2`   | the same link **+ `wasm-opt -O2`**                                     | 41 056 758 | 1196.5 / 1243.1                   |
 | `arm-D2`    | the same link **+ `wasm-opt -Oz`** = **the shipped module** `765b06fb` | 40 127 758 | 1206.0 / 1167.7 / 1234.9 / 1309.9 |
+| `arm-DO2NI` | the same link **+ `-O2` with the inliner off**                         | 41 134 428 | 522.4 / 519.4                     |
+| `arm-DOZNI` | the same link **+ `-Oz` with the inliner off**                         | 40 004 932 | 516.5 / 515.2                     |
 
 Each row is one bench invocation running that Configuration **alone** (see §2 on why that matters),
 machine idle (1-minute load 0.2–1.3), module swapped into `dist/pgrust/postgres-threads.wasm` and
@@ -97,10 +105,10 @@ Read together:
 - Removing lazy compilation does not close the gap, so it is not a per-function _baseline_ compile
   cost either.
 
-Inference (not measured directly): `wasm-opt -O2` and above produce code TurboFan takes longer
-to compile — bigger functions after inlining, more merged/outlined control flow — and that
-compilation runs on background threads that this 8-thread machine has to share with the guest's own
-threads for exactly as long as row 1 lasts. Rows 2–16 run after the storm and get the benefit
+Inference (the mechanism, not measured directly): `wasm-opt`'s inliner (§8) produces code TurboFan
+takes longer to compile — bigger function bodies, and duplicated ones — and that compilation runs on
+background threads that this 8-thread machine has to share with the guest's own threads for exactly
+as long as row 1 lasts. Rows 2–16 run after the storm and get the benefit
 (`arm-D2` vs `arm-D-raw`: Test 7 840 vs 886, Test 9 3093 vs 3044, Test 10 4344 vs 4349 — a wash),
 except Test 2, which is 1130 vs 1373 in favour of the unoptimised module.
 
@@ -220,7 +228,7 @@ whole size win and none of the penalty. Both columns below are from one sitting,
 `-O1` is better or level everywhere except Test 7 and Test 10, which it loses by under 2 %, and it
 is 2.5× better on row 1 for 1.3 MB (3.3 %) more module. `wasm/wasm-build.sh` already has the knob:
 `PGRUST_WASM_OPT_LEVEL=-O1` (or `PGRUST_WASM_OPT=0` for the raw link, which costs 5.75 MB and is a
-touch slower still than `-O1` on row 1's neighbours).
+touch slower still than `-O1` on row 1's neighbours). §8 finds a better answer than either.
 
 **The cliff is between `-O1` and `-O2`**, and `-O2` buys almost nothing for it (interleaved, same
 sitting, 1-minute load 2.2–2.3):
@@ -233,12 +241,40 @@ sitting, 1-minute load 2.2–2.3):
 
 `-O2` is 386 KB smaller than `-O1` and 2.4× slower on row 1.
 
-## 8. What is still open
+## 8. It is Binaryen's INLINING, and turning it off is free
 
-- **Which Binaryen passes.** `-O0` and `-O1` are safe; `-O2`, `-O3` and `-Oz` are not. The pass-list
-  bisect between `-O1` and `-O2` — Binaryen's `-O2` adds inlining-with-optimisation and the heavier
-  propagation passes — would say which transformation is the one TurboFan chokes on, and that is the
-  finding worth reporting to Binaryen or V8.
+`-O2` differs from `-O1` by a handful of passes; inlining is the one. Same level, same everything,
+inlining's three size thresholds set to zero (`-aimfs=0 -fimfs=0 -ocimfs=0`):
+
+| arm                               |          bytes |       Test 1 (ms) |
+| --------------------------------- | -------------: | ----------------: |
+| `-O2`                             |     41 056 758 |            1315.5 |
+| `-O2 -aimfs=0 -fimfs=0 -ocimfs=0` |     41 134 428 | **522.4 / 519.4** |
+| `-Oz` (**the shipped module**)    |     40 127 758 |            1200.3 |
+| `-Oz -aimfs=0 -fimfs=0 -ocimfs=0` | **40 004 932** | **516.5 / 515.2** |
+
+At `-Oz`, inlining does not even pay for itself in bytes: the module WITHOUT it is 122 826 bytes
+**smaller**. The full row comparison against what ships today, one interleaved sitting:
+
+| row                                       | `-Oz` no inlining | `-Oz` = shipped |
+| ----------------------------------------- | ----------------: | --------------: |
+| **Test 1: 1000 INSERTs**                  | **516.5 / 515.2** |      **1200.3** |
+| Test 2: 25000 INSERTs in a transaction    |   1093.7 / 1117.7 |          1368.6 |
+| Test 7: 5000 SELECTs with an index        |     859.5 / 847.1 |           850.3 |
+| Test 9: 25000 UPDATEs with an index       |   3045.2 / 3036.1 |          3073.4 |
+| Test 10: 25000 text UPDATEs with an index |   4425.8 / 4313.2 |          4353.5 |
+| bytes                                     |        40 004 932 |      40 127 758 |
+
+Smaller, 2.3× faster on row 1, 20 % faster on row 2, level everywhere else. This arm has only been
+run through the Speedtest Suite twice — it has not been through the pgxsinkit suite or the node
+proof lanes, so it is a candidate, not a verdict.
+
+## 9. What is still open
+
+- **Which inlining, and why TurboFan hates it.** The three thresholds were set to zero together;
+  which of always/flexible/one-caller inlining carries it, and whether the cost is function count,
+  function size or something about the shapes Binaryen's inliner leaves behind, is unmeasured. That
+  distinction is what a Binaryen or V8 issue would need.
 - **Whether it is TurboFan compile time specifically.** `chrome://tracing`'s `v8.wasm` category, or
   `--trace-wasm-compilation-times` / `--print-wasm-code-size`, would price the tier-up storm
   directly instead of inferring it from `--liftoff-only`.
@@ -250,7 +286,7 @@ sitting, 1-minute load 2.2–2.3):
 - **Machine dependence.** 8 threads. On a 4-thread machine the compiler and the guest would contend
   harder; on 16 they would not.
 
-## 9. Reproduction
+## 10. Reproduction
 
 Browser (the decisive one, ~25 s per arm):
 
@@ -270,7 +306,24 @@ CONFIGS=pgrust-postmaster-opfs-repacked-relaxed TAG=lo ROUNDS=1 ARMS="A0 A" \
   ./tmp/agents/row1/browser-ab.sh
 ```
 
-Making the two ends of the A/B by hand (the Binaryen pass is the only difference):
+Making the arms by hand from ONE link — `arm-D-raw.wasm` is the pre-Binaryen link of the shipped
+module, so every arm below differs from it by the `wasm-opt` invocation alone:
+
+```bash
+cd /home/anton/dev/tmp/pgrust/tmp/agents/profiles
+FEAT="--enable-threads --enable-bulk-memory --enable-bulk-memory-opt --enable-call-indirect-overlong
+      --enable-exception-handling --enable-extended-const --enable-multivalue --enable-mutable-globals
+      --enable-nontrapping-float-to-int --enable-reference-types --enable-sign-ext"
+wasm-opt -Oz $FEAT arm-D-raw.wasm -o arm-D2.wasm                       # what ships: slow
+wasm-opt -Oz -aimfs=0 -fimfs=0 -ocimfs=0 $FEAT arm-D-raw.wasm -o arm-DOZNI.wasm   # smaller AND fast
+wasm-opt -O1 $FEAT arm-D-raw.wasm -o arm-DO1.wasm                      # fast
+wasm-opt -O2 $FEAT arm-D-raw.wasm -o arm-DO2.wasm                      # slow
+```
+
+(`-Oz` takes ~220 s on this machine, `-O1` ~32 s. The feature list is wasm-build.sh's; `--all-features`
+produces a module V8 refuses.)
+
+Making the two ends of the A/B through the build script instead:
 
 ```bash
 cd /home/anton/dev/tmp/pgrust
