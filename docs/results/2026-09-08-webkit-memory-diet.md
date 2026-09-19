@@ -1,5 +1,12 @@
 # The postmaster's memory diet — real Safari, and the knob that was the whole of it
 
+> **2026-09-19: the Safari timings and peak-RSS figures here are superseded.** The Mac moved to
+> Safari 27.0 / macOS 27.0 and the same Suites now run 6.8–9.7× faster on it — see
+> [2026-09-19, Safari 27.0](2026-09-19-safari-27-visible-window.md), which also measures a hidden
+> window at ~6× and cannot apportion the change between the browser and the window state. The knob
+> sweep, the `max_stack_depth` finding and the chosen defaults are unaffected: wasm memory is a
+> property of the guest, and this note's Chromium lane measured the same figures.
+
 - Date: 2026-09-08
 - Browser: **Safari 26.6.2** on macOS 26.6.2 (Apple M2, 8 cores, 16 GB), driven over WebDriver by
   `safaridriver`. Not Playwright's WebKit: this is the shipping engine, on the shipping OS.

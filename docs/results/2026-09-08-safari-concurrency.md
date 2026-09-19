@@ -1,5 +1,12 @@
 # The postmaster's Safari concurrency collapse — one waiter too many
 
+> **2026-09-19: §7's residuals are superseded.** On Safari 27.0 / macOS 27.0 the postmaster is not
+> ~3× slower than the Chromium lane, does not pay ~2 ms per statement, and reaches 8611 txn/s where
+> §6 recorded 503 — see [2026-09-19, Safari 27.0](2026-09-19-safari-27-visible-window.md), which also
+> measures a hidden window at ~6× and cannot apportion the change between the browser and the window
+> state. The host gate this note is about still ships and was in the build for both dates; §3–§5's
+> `Atomics.waitAsync` stall and `setTimeout` measurements were **not** re-tested on Safari 27.
+
 - Date: 2026-09-08
 - Browser under investigation: **Safari 26.6.2** on macOS 26.6.2 (Apple M2, 8 cores, 16 GB), driven
   over WebDriver by `safaridriver`. The shipping engine on the shipping OS, not Playwright's WebKit.

@@ -27,6 +27,7 @@
     "probe:prepared-store": "bun scripts/probe-prepared-store.ts",
     "probe:wasm-instantiate": "bun scripts/probe-wasm-instantiate.ts",
     "repro:pgrust": "bun scripts/pgrust-repro.ts",
+    "safari:drive": "bun scripts/safari-drive.ts",
     "scenario:pgxsinkit-factory": "bun scripts/pgxsinkit-factory-scenario.ts",
     "scenario:pgxsinkit-live": "bun scripts/pgxsinkit-live-scenario.ts",
     "sync:pgrust": "bun scripts/sync-pgrust.ts",
