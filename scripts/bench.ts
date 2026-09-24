@@ -16,6 +16,14 @@
  *   bun run bench --browser firefox --no-build     # reuse the existing dist/
  *   bun run bench --browser webkit                 # skips: Playwright's WebKit has no JSPI
  *   bun run bench --configurations pglite-memory,pgrust-memory --baseline pgrust-memory
+ *   bun run bench --suite speedtest --configurations pgrust-postmaster-opfs-repacked-relaxed \
+ *     --postmaster-tuning fsync=off,wal_buffers=4MB  # a non-standard pgrust Postmaster Run
+ *
+ * `--postmaster-tuning` is the page's own `?postmasterTuning=` (`src/postmaster-tuning.ts`), passed
+ * through verbatim: `pool:<n>`, `initial:<bytes>` and `name=value` GUCs, comma-separated. It moves
+ * the pgrust Postmaster columns only, and the page's environment line and every Markdown export say
+ * what was moved. An entry the page would silently drop is refused here instead, so a mistyped GUC
+ * cannot produce a Run on the defaults under a tuned Run's name.
  */
 
 import { mkdir } from "node:fs/promises";
@@ -28,6 +36,7 @@ import type { Server } from "bun";
 
 import { formatSelectionSearch, resolveConfigurationSelection } from "../src/configuration-selection";
 import { BASELINE_CANDIDATE_IDS, BASELINE_CONFIGURATION_ID, CONFIGURATION_IDS } from "../src/configurations";
+import { parsePostmasterTuning, POSTMASTER_TUNING_PARAM } from "../src/postmaster-tuning";
 import { MAX_RTT_ITERATIONS, MIN_RTT_ITERATIONS, RTT_ITERATIONS_PARAM } from "../src/rtt-iterations";
 import type { SuiteId } from "../src/suites/types";
 
@@ -97,6 +106,11 @@ export interface BenchOptions {
   readonly configurationIds: readonly string[] | null;
   /** The column every ratio is taken against, as `?baseline=<id>`; null leaves the page's default. */
   readonly baselineId: string | null;
+  /**
+   * The pgrust Postmaster knobs, as `?postmasterTuning=<value>`; null leaves the Engine's defaults,
+   * which is what every table this repo publishes was produced with.
+   */
+  readonly postmasterTuning: string | null;
   /** Whether to run `vite build` first. */
   readonly build: boolean;
   /** Port for the local static server; 0 asks the OS for a free one. */
@@ -130,6 +144,7 @@ export const DEFAULT_BENCH_OPTIONS: BenchOptions = {
   rttIterations: null,
   configurationIds: null,
   baselineId: null,
+  postmasterTuning: null,
   build: true,
   // Never 5580: a dev server or another session's browser may be sitting on it.
   port: 0,
@@ -275,7 +290,14 @@ function launchOptionsFor(options: BenchOptions): LaunchOptions {
  * so `--configurations`/`--baseline` and a hand-edited link are the same mechanism.
  */
 function pageUrl(port: number, options: BenchOptions): string {
-  const query = options.rttIterations === null ? "" : `?${RTT_ITERATIONS_PARAM}=${options.rttIterations}`;
+  const params = new URLSearchParams();
+  if (options.rttIterations !== null) {
+    params.set(RTT_ITERATIONS_PARAM, String(options.rttIterations));
+  }
+  if (options.postmasterTuning !== null) {
+    params.set(POSTMASTER_TUNING_PARAM, options.postmasterTuning);
+  }
+  const query = params.size === 0 ? "" : `?${params.toString()}`;
   const search =
     options.configurationIds === null && options.baselineId === null
       ? query
@@ -440,6 +462,8 @@ const USAGE = `Usage: bun run bench [options]
   --iterations <N>                     Non-standard RTT iterations, ${MIN_RTT_ITERATIONS}-${MAX_RTT_ITERATIONS}
   --configurations <id,id,...>         Run only these Configurations; repeatable
   --baseline <id>                      Take every ratio against this Configuration
+  --postmaster-tuning <entries>        pgrust Postmaster knobs, as the page's ?postmasterTuning=
+                                       (pool:<n>, initial:<bytes>, name=value GUCs; comma-separated)
   --no-build                           Reuse the existing dist/ instead of rebuilding
   --base <path>                        Build and serve under this path (default: /)
   --plain                              Serve without COOP/COEP, as GitHub Pages does
@@ -519,6 +543,33 @@ function parseConfigurationList(raw: string): readonly string[] {
 }
 
 /**
+ * Refuse a tuning string the page would only partly apply.
+ *
+ * The page drops every entry it cannot parse and runs the rest, which is right for a hand-edited
+ * link and wrong for a scripted Run: a dropped `shared_buffers=64MB` would be a Run on the defaults
+ * reported under the tuned Run's name. So the CLI parses it with the page's own parser and refuses
+ * any entry that did not survive.
+ */
+function parsePostmasterTuningArgument(raw: string, flag: string): string {
+  const entries = raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
+  if (entries.length === 0) {
+    throw new Error(`${flag} needs at least one entry`);
+  }
+  for (const entry of entries) {
+    const tuning = parsePostmasterTuning(`?${new URLSearchParams({ [POSTMASTER_TUNING_PARAM]: entry }).toString()}`);
+    if (tuning.poolBase === null && tuning.initialMemoryBytes === null && tuning.settings.length === 0) {
+      throw new Error(
+        `${flag} entry "${entry}" is not one the page accepts (pool:<n>, initial:<bytes> or a name=value GUC)`,
+      );
+    }
+  }
+  return entries.join(",");
+}
+
+/**
  * Refuse a selection the page could only silently correct.
  *
  * The page's own resolver decides, so the CLI and the page can never disagree about what an id
@@ -556,6 +607,7 @@ export function parseBenchArguments(rawArgv: readonly string[]): CliInvocation {
     rttIterations?: number;
     configurationIds?: readonly string[];
     baselineId?: string;
+    postmasterTuning?: string;
     build?: boolean;
     port?: number;
     headless?: boolean;
@@ -599,6 +651,10 @@ export function parseBenchArguments(rawArgv: readonly string[]): CliInvocation {
       case "--baseline":
         index += 1;
         options.baselineId = requireValue(argv, index, flag);
+        break;
+      case "--postmaster-tuning":
+        index += 1;
+        options.postmasterTuning = parsePostmasterTuningArgument(requireValue(argv, index, flag), flag);
         break;
       case "--no-build":
         options.build = false;

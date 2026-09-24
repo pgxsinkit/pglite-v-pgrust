@@ -46,6 +46,20 @@ describe("parseBenchArguments", () => {
     );
   });
 
+  test("passes pgrust Postmaster tuning through, and refuses an entry the page would drop", () => {
+    expect(DEFAULT_BENCH_OPTIONS.postmasterTuning).toBeNull();
+    expect(parseBenchArguments(["--postmaster-tuning", "fsync=off, wal_buffers=4MB"]).options.postmasterTuning).toBe(
+      "fsync=off,wal_buffers=4MB",
+    );
+    expect(parseBenchArguments(["--postmaster-tuning=pool:8,shared_buffers=64MB"]).options.postmasterTuning).toBe(
+      "pool:8,shared_buffers=64MB",
+    );
+    expect(() => parseBenchArguments(["--postmaster-tuning", "fsync=off,Shared-Buffers=64MB"])).toThrow(
+      "Shared-Buffers=64MB",
+    );
+    expect(() => parseBenchArguments(["--postmaster-tuning", "pool:0"])).toThrow("pool:0");
+  });
+
   // The default has to cover the run the default flags ask for: three Suites against fourteen
   // Configurations, five of which seed a whole data directory into a cold store first.
   test("allows the whole default run inside the default deadline", () => {
