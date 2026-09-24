@@ -1,5 +1,13 @@
 # Where the multiple lives: rows 11, 6 and 14 pay it in the OPFS store, not in pgrust or its wasm
 
+> **2026-09-24 (later): the OPFS rung here is the old lane's per-call bill.** Every browser Run here
+> went through `bun run bench` in its old, off-the-record context, where Chromium keeps OPFS in
+> memory in the browser process and every access-handle call is a round trip to it. On the on-disk
+> profile the lane now uses, rows 11, 6 and 14 cost PGlite OPFS 0.99×, 1.14× and 1.18× PGlite
+> Memory, and pgrust 1.74×, 1.39× and 1.37× PGlite OPFS; the rung itself was not re-measured — see
+> [2026-09-24, the persistent context](2026-09-24-persistent-context.md). No number here was
+> changed.
+
 - Date: 2026-09-24
 - Machine: i7-1165G7 (8 logical cores, `lscpu` max 2800 MHz), 30 GiB, Linux 7.0.0-34-generic. A
   qemu VM and a desktop Chrome took about one core throughout, and other agents' `tsc`, `bun test`

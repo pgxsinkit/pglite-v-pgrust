@@ -1,5 +1,12 @@
 # What an idle Engine costs, headless Chromium on Linux
 
+> **2026-09-24: this probe ran in an off-the-record context** (`browser.newContext()`), where
+> Chromium keeps OPFS in memory in the browser process and every access-handle call is a round trip
+> to it, and the CPU summed here includes that process. The OPFS rows, and the "real file handles"
+> reading of the postmaster's extra 160 CPU-ms a minute, describe that lane; `probe:idle-cpu` now
+> uses an on-disk profile and has not been re-run — see [2026-09-24, the persistent
+> context](2026-09-24-persistent-context.md). No number here was changed.
+
 - Date: 2026-09-07
 - Browser: Chromium 149.0.7827.55, the full `chromium` channel in new headless mode, a fresh browser
   per row

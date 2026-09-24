@@ -1,5 +1,12 @@
 # A Binaryen pass in the build: 14 MB off each module, and about 7% of the Speedtest
 
+> **2026-09-24: the browser Speedtests here ran in an off-the-record context** (`browser.newPage()`
+> and `bun run bench`), where Chromium keeps OPFS in memory in the browser process and every
+> access-handle call is a round trip to it. The module-against-module comparisons are within one
+> lane; the pgrust OPFS totals, and every percentage taken of them, carry that per-call bill — see
+> [2026-09-24, the persistent context](2026-09-24-persistent-context.md). No number here was
+> changed.
+
 - Date: 2026-09-16
 - Runtime: bun 1.4.2 and node 26.8.2 on Linux 7.0.0-31-generic (x86_64, 8 logical cores); the
   browser lanes in headless Chromium 149.0.7827.55 (the full build, not the headless shell)

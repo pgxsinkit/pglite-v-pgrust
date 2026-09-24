@@ -1,5 +1,12 @@
 # pgrust wasm: `wasm-opt`'s inliner costs 2.3× on the FIRST workload after boot
 
+> **2026-09-24: the Chromium Runs here were taken in the bench's old, off-the-record context**
+> (`bun run bench` and a scratch copy of it), where Chromium keeps OPFS in memory in the browser
+> process and every access-handle call is a round trip to it. The module A/Bs are within one lane;
+> the absolute figures and the ratios to PGlite carry that bill — row 1 on the adopted module is
+> 246–278 ms on an on-disk profile, against 526–536 ms in the old lane. See [2026-09-24, the
+> persistent context](../results/2026-09-24-persistent-context.md). No number here was changed.
+
 Found 2026-09-19 against pgrust `spike/wasip1-threads@31b5259d22` and `723e822059` (the shipped
 module), Chromium 149.0.7827.55 headless, Node 26.9.0 (V8) and bun (JavaScriptCore) on the same
 machine (i7-1165G7, 8 threads).

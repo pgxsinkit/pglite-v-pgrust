@@ -1,5 +1,13 @@
 # What each Engine costs in memory — Chromium, Linux
 
+> **2026-09-24: this probe ran in an off-the-record context** (`browser.newContext()`), where
+> Chromium keeps OPFS in memory in the browser process. The OPFS columns' store bytes were in that
+> process, which no column here counts, not "in OPFS files". The renderer figures do not depend on
+> it for the one column re-probed on an on-disk profile (PGlite OPFS, one untimed Run:
+> 184.3 → 749.6 MiB against 185.0 → 750.0); the warm-Run times carry the per-call bill — see
+> [2026-09-24, the persistent context](2026-09-24-persistent-context.md). No number here was
+> changed.
+
 - Date: 2026-09-07
 - Browser: Chromium 149.0.7827.55 (Playwright 152 bundle), **full build in new headless mode**
   (`channel: "chromium"`), Linux 7.0.0-30-generic, x86_64, i7-1165G7

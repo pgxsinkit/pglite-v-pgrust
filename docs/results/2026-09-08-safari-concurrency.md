@@ -7,6 +7,12 @@
 > state. The host gate this note is about still ships and was in the build for both dates; §3–§5's
 > `Atomics.waitAsync` stall and `setTimeout` measurements were **not** re-tested on Safari 27.
 
+> **2026-09-24: the Chromium control lane here ran in an off-the-record context,** where Chromium
+> keeps OPFS in memory in the browser process and every access-handle call is a round trip to it, so
+> its `Postmaster OPFS repacked (relaxed)` figures (§6) carry that per-call bill — see [2026-09-24,
+> the persistent context](2026-09-24-persistent-context.md). Whether the Safari sessions kept OPFS
+> in memory too is unknown.
+
 - Date: 2026-09-08
 - Browser under investigation: **Safari 26.6.2** on macOS 26.6.2 (Apple M2, 8 cores, 16 GB), driven
   over WebDriver by `safaridriver`. The shipping engine on the shipping OS, not Playwright's WebKit.

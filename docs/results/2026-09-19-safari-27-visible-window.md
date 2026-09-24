@@ -1,5 +1,13 @@
 # Safari 27.0, and the rule that a Run needs a window on screen
 
+> **2026-09-24: §1's Chromium comparison was taken in the bench's old, off-the-record context,**
+> where Chromium keeps OPFS in memory in the browser process and every access-handle call is a round
+> trip to it. On the on-disk profile the lane now uses, the postmaster runs the same Suite in
+> 11 849–12 117 ms (three Runs of four), 1.62–1.64× PGlite Memory: closer to PGlite than Safari's
+> 1.96×, which reverses §1's reading, and Safari's lead on the postmaster falls from 3.9× to about
+> 2.4× — see [2026-09-24, the persistent context](2026-09-24-persistent-context.md). Whether
+> safaridriver's session keeps OPFS in memory is unknown.
+
 - Date: 2026-09-19
 - Browser: **Safari 27.0** on **macOS 27.0 (26A428)**, driven over WebDriver by `safaridriver`. The
   shipping engine on the shipping OS, not Playwright's WebKit. The machine was reinstalled since the

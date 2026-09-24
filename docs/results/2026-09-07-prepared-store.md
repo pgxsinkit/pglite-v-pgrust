@@ -1,5 +1,12 @@
 # Four files, not four thousand: a prepared store against a datadir tarball
 
+> **2026-09-24: both browser legs ran in an off-the-record context** (`browser.newContext()`), where
+> Chromium keeps OPFS in memory in the browser process, so the "265.9 MiB written into OPFS in
+> 0.54 s" and both legs' OPFS time went to that memory, not to disk. `probe:prepared-store` now uses
+> an on-disk profile (`--ephemeral-context` for the old one) and has not been re-run — see
+> [2026-09-24, the persistent context](2026-09-24-persistent-context.md). No number here was
+> changed.
+
 - Date: 2026-09-07
 - Runtime: bun 1.4.2 on linux 7.0.0-30-generic (x64, 11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz)
 - Browser: Chromium 149.0.7827.55 (Playwright's `chromium` channel, headless)

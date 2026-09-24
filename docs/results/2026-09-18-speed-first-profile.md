@@ -1,5 +1,12 @@
 # Speed first: the cargo profile is worth 13% of the Suite, the Binaryen level nothing — and 0.3 lost row 1
 
+> **2026-09-24: every Speedtest and RTT number here was taken in the bench's old, off-the-record
+> context** (`browser.newContext()`), where Chromium keeps OPFS in memory in the browser process and
+> every access-handle call is a round trip to it. The profile-against-profile comparisons are within
+> one lane; the pgrust OPFS totals and their ratios to PGlite Memory carry that per-call bill — see
+> [2026-09-24, the persistent context](2026-09-24-persistent-context.md). No number here was
+> changed.
+
 - Date: 2026-09-18
 - Runtime: bun 1.4.2 and node 26.9.0 on Linux 7.0.0-31-generic (x86_64, i7-1165G7, 8 logical cores);
   every browser number in headless Chromium 149.0.7827.55 (the full build, not the headless shell)

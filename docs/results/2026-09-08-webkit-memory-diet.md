@@ -7,6 +7,13 @@
 > sweep, the `max_stack_depth` finding and the chosen defaults are unaffected: wasm memory is a
 > property of the guest, and this note's Chromium lane measured the same figures.
 
+> **2026-09-24: this note's Chromium lane ran in an off-the-record context,** where Chromium keeps
+> OPFS in memory in the browser process and every access-handle call is a round trip to it. §3's and
+> §6's Suite totals for the postmaster's OPFS column carry that per-call bill; the wasm-memory
+> figures are the guest's and do not — see [2026-09-24, the persistent
+> context](2026-09-24-persistent-context.md). Whether the Safari sessions kept OPFS in memory too is
+> unknown.
+
 - Date: 2026-09-08
 - Browser: **Safari 26.6.2** on macOS 26.6.2 (Apple M2, 8 cores, 16 GB), driven over WebDriver by
   `safaridriver`. Not Playwright's WebKit: this is the shipping engine, on the shipping OS.

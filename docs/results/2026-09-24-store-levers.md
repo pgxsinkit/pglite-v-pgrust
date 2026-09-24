@@ -1,5 +1,11 @@
 # Store levers: in the bench's off-the-record context every OPFS call is an IPC, and making fewer of them takes pgrust to 0.96× PGlite OPFS; on a disk-backed profile the 1.5× is not the store's
 
+> **2026-09-24 (later): `bun run bench` now runs §8's disk lane by default.** §3's off-the-record
+> context is kept as `--ephemeral-context`, so this note's "bench lane" figures (§4–§7, §10–§12) are
+> that lane's, and the owner's target was set in it. What the move changes on the three columns this
+> note used: [2026-09-24, the persistent context](2026-09-24-persistent-context.md). No number here
+> was changed.
+
 - Date: 2026-09-24
 - Machine: i7-1165G7 (8 logical cores), 30 GiB, Linux 7.0.0-34-generic, as in
   [the note this follows](2026-09-24-where-the-multiple-lives.md). A qemu VM took about one core

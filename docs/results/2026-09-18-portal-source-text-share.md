@@ -1,5 +1,11 @@
 # The copy finding 0001 let go: sharing the portal's source text takes 31% off the Suite
 
+> **2026-09-24: the browser Speedtests here ran in an off-the-record context** (`bun run bench` and
+> `browser.newPage()`), where Chromium keeps OPFS in memory in the browser process and every
+> access-handle call is a round trip to it. The module-against-module comparison is within one lane;
+> the pgrust OPFS totals, and the 31% taken of them, carry that per-call bill — see [2026-09-24, the
+> persistent context](2026-09-24-persistent-context.md). No number here was changed.
+
 - Date: 2026-09-18
 - Runtime: bun 1.4.2 and node v26.9.0 on Linux 7.0.0-31-generic (x86_64, 8 logical cores); the
   browser lanes in headless Chromium 149.0.7827.55

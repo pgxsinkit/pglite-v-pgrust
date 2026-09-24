@@ -1,5 +1,13 @@
 # pglite-v-pgrust benchmark run
 
+> **2026-09-24: this Run's OPFS columns were taken in the bench's old, off-the-record context,**
+> where Chromium keeps OPFS in memory in the browser process and every access-handle call is a round
+> trip to it. On the on-disk profile the lane now uses, PGlite OPFS repacked (relaxed) is 1.05×
+> PGlite Memory against the old lane's 1.68×, both measured on 2026-09-24 — see [2026-09-24, the
+> persistent context](2026-09-24-persistent-context.md), which re-measured that column and the
+> pgrust Postmaster OPFS one only. PGlite Memory measured the same in both lanes; no number here was
+> changed.
+
 - Browser: chromium
 - Started: 2026-09-06T10:24:39.367Z
 - Driver: bun run bench

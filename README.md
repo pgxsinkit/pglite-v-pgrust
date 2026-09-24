@@ -373,6 +373,14 @@ own line under the environment: `Concurrency clients: 4`.
 
 ## Results
 
+> **2026-09-24: every OPFS number in the runs below was taken in an off-the-record context.**
+> Until 2026-09-24 `bun run bench` ran the page in Playwright's `browser.newContext()`, where
+> Chromium keeps OPFS in memory in the browser process and every access-handle call is a round trip
+> to it. The lane now runs on an on-disk profile, where PGlite OPFS repacked (relaxed) is 1.05×
+> PGlite Memory rather than 1.68× and the postmaster 1.57× PGlite OPFS rather than 1.50× — see
+> [2026-09-24, the persistent context](docs/results/2026-09-24-persistent-context.md). The figures
+> below are unchanged.
+
 Committed runs live in [`docs/results/`](docs/results/) — the page's own Markdown export, one file per
 browser and date, produced by `bun run bench`. The current run
 ([2026-09-06, Chromium 152, Linux, fourteen columns](docs/results/2026-09-06-chromium-152-linux-fourteen-columns.md))
@@ -976,6 +984,14 @@ it in a real browser, presses each Suite's **Start**, waits for the Suite sectio
 The lane times nothing. Every Measurement is still taken inside the Engine's worker by the app
 itself, so a headless result and a hand-run result are the same result.
 
+The page runs in a **persistent** browser context on a fresh profile made for the Run under
+`tmp/bench-profiles/` (repo-local, on the real disk) and removed after it, so OPFS is files on disk
+as it is in anyone's own browser. Until 2026-09-24 the lane used Playwright's off-the-record
+`browser.newContext()` instead, where Chromium keeps OPFS in memory in the browser process and
+every access-handle call is a round trip to it; `--ephemeral-context` is that lane, kept so the
+older tables can be reproduced ([what changed](docs/results/2026-09-24-persistent-context.md)). The
+results file's header names the context a Run used.
+
 ```sh
 bun run bench                                # all three Suites, Chromium, fresh build
 bun run bench --suite rtt --iterations 5     # one Suite, deliberately short RTT Run
@@ -999,6 +1015,8 @@ bun run bench --suite rtt \
 | `--iterations <N>`         | Passes `?rttIterations=N` to the page; 1-1000                                                 |
 | `--configurations <id,id>` | Passes `?configurations=` to the page: only these columns, in Configuration order; repeatable |
 | `--baseline <id>`          | Passes `?baseline=` to the page: the column every ratio is taken against                      |
+| `--ephemeral-context`      | The pre-2026-09-24 lane: an off-the-record context, OPFS in memory in the browser process     |
+| `--keep-profile`           | Leave the persistent context's profile in `tmp/bench-profiles/` after the Run                 |
 | `--no-build`               | Reuse the existing `dist/` instead of rebuilding                                              |
 | `--base <path>`            | Build with that `BASE_PATH` and serve under it — the [Pages](#github-pages) shape             |
 | `--plain`                  | Serve without COOP/COEP, as Pages does; the page's service worker has to earn isolation back  |
@@ -1015,8 +1033,8 @@ CLI cannot know is which Configurations _this browser_ can run — the page drop
 the `Configurations (N of 14): … | Baseline: …` line of every table it exports.
 
 Each run writes `tmp/results/<ISO-timestamp>-<browser>.md` (gitignored) and prints the same content:
-the environment line, one table per Suite, and any Run failure the page reported — which is what
-turns a bare `failed` cell into a diagnosis.
+the browser context, the environment line, one table per Suite, and any Run failure the page
+reported — which is what turns a bare `failed` cell into a diagnosis.
 
 The browsers are Playwright's own builds, driven through its library API; there is no Playwright
 config and no second test runner. Install them once with `bunx playwright install chromium firefox`.
