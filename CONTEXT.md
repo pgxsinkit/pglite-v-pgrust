@@ -111,3 +111,7 @@ _Avoid_: timing, latency, elapsed, duration
 **Run**:
 One execution of one Suite against one Configuration, on a freshly opened Engine; it yields one Measurement per Benchmark. A Run may hold several **Sessions** — that is the postmaster's whole point — but it is never called one.
 _Avoid_: session, pass, execution
+
+**Arm**:
+One module variant under measurement, distinguished from the published module only by what its experiment changes. It is swapped into `dist/` for a Run and restored afterwards, and it is never the module behind a published number unless it is adopted.
+_Avoid_: variant, build, candidate
