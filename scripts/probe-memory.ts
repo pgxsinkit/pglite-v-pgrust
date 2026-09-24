@@ -15,7 +15,9 @@
  *  3. **the browser** — the renderer process's RSS and the live worker targets, over CDP.
  *
  * So each Configuration runs in a **fresh browser**: one page, therefore exactly one renderer, whose
- * RSS is then unambiguous. The Run is one warm pass of the RTT Suite (every Benchmark once, on an
+ * RSS is then unambiguous. Since 2026-09-24 that browser is a persistent context on a fresh on-disk
+ * profile, as `bun run bench`'s is (`openBenchContext` in `scripts/bench.ts`); `--ephemeral-context`
+ * is the off-the-record context every earlier probe ran in, where OPFS lives in the browser process. The Run is one warm pass of the RTT Suite (every Benchmark once, on an
  * Engine that has booted and run the Suite's setup) and the Engine is left open while the browser's
  * numbers are taken.
  *
@@ -32,7 +34,8 @@ import { chromium } from "@playwright/test";
 
 import type { MemoryProbeHandle, MemoryProbeResult, PageMemoryReport } from "../src/memory-probe";
 import { MEMORY_PROBE_GLOBAL } from "../src/memory-probe";
-import { buildApp, serveDist } from "./bench";
+import type { BrowserContextKind } from "./bench";
+import { BROWSER_CONTEXT_DESCRIPTIONS, buildApp, openBenchContext, serveDist } from "./bench";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -184,11 +187,15 @@ async function probeOne(
   url: string,
   configurationId: string,
   headless: boolean,
+  contextKind: BrowserContextKind,
 ): Promise<{ report: ConfigurationReport; browserVersion: string; environmentLine: string }> {
-  const browser = await chromium.launch({ headless, channel: BROWSER_CHANNEL });
+  const session = await openBenchContext(
+    chromium,
+    { headless, channel: BROWSER_CHANNEL },
+    { kind: contextKind, profileName: `probe-memory-${configurationId}`, keepProfile: false },
+  );
+  const { browser, page } = session;
   try {
-    const context = await browser.newContext();
-    const page = await context.newPage();
     const consoleErrors: string[] = [];
     page.on("pageerror", (error) => consoleErrors.push(error.message));
     await page.goto(url, { waitUntil: "load", timeout: 120_000 });
@@ -254,7 +261,7 @@ async function probeOne(
       environmentLine,
     };
   } finally {
-    await browser.close();
+    await session.close();
   }
 }
 
@@ -313,6 +320,8 @@ const USAGE = `Usage: bun run probe:memory [options]
   --no-build      Reuse the existing dist/ instead of rebuilding
   --port <N>      Port for the local static server (default: a free one)
   --headed        Show the browser window
+  --ephemeral-context
+                  The pre-2026-09-24 off-the-record context (default: a persistent one on disk)
   -h, --help      Print this message`;
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -324,6 +333,7 @@ async function main(argv: readonly string[]): Promise<number> {
   let build = true;
   let headless = true;
   let port = 0;
+  let contextKind: BrowserContextKind = "persistent";
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     switch (flag) {
@@ -340,6 +350,9 @@ async function main(argv: readonly string[]): Promise<number> {
       case "--port":
         index += 1;
         port = Number.parseInt(argv[index] ?? "0", 10);
+        break;
+      case "--ephemeral-context":
+        contextKind = "ephemeral";
         break;
       default:
         console.error(`Unknown argument "${flag ?? ""}"`);
@@ -366,7 +379,7 @@ async function main(argv: readonly string[]): Promise<number> {
     console.error(`probe-memory: serving ${distDir} at ${url}`);
     for (const configurationId of configurationIds) {
       console.error(`probe-memory: ${configurationId}…`);
-      const one = await probeOne(url, configurationId, headless);
+      const one = await probeOne(url, configurationId, headless, contextKind);
       reports.push(one.report);
       browserVersion = one.browserVersion;
       environmentLine = one.environmentLine;
@@ -383,6 +396,7 @@ async function main(argv: readonly string[]): Promise<number> {
 
   console.log("");
   console.log(`Chromium ${browserVersion}`);
+  console.log(`Browser context: ${BROWSER_CONTEXT_DESCRIPTIONS[contextKind]}`);
   console.log(environmentLine);
   console.log("");
   console.log(renderTable(reports));

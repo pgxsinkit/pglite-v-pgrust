@@ -43,7 +43,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { PGlite } from "@electric-sql/pglite";
-import type { Browser, Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
 import { chromium } from "@playwright/test";
 
 import { createPgrustPglite } from "../src/client/pgrust-factory";
@@ -55,7 +55,8 @@ import type {
   PreparedStoreProbeHandle,
 } from "../src/prepared-store-probe";
 import { PREPARED_STORE_PROBE_GLOBAL } from "../src/prepared-store-probe";
-import { buildApp, serveDist } from "./bench";
+import type { BrowserContextKind } from "./bench";
+import { BROWSER_CONTEXT_DESCRIPTIONS, buildApp, openBenchContext, serveDist } from "./bench";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -114,6 +115,12 @@ interface Options {
   readonly port: number;
   readonly keep: boolean;
   readonly skipPglite: boolean;
+  /**
+   * The browser context each leg's page lives in: `persistent` (a fresh on-disk profile, as
+   * `bun run bench` uses since 2026-09-24) unless `--ephemeral-context` asks for the off-the-record
+   * one every earlier Run of this probe used, where OPFS lives in the browser process.
+   */
+  readonly contextKind: BrowserContextKind;
 }
 
 const USAGE = `Usage: bun run probe:prepared-store [options]
@@ -124,6 +131,8 @@ const USAGE = `Usage: bun run probe:prepared-store [options]
   --port <N>        Port for the local static server (default: a free one)
   --headed          Show the browser window
   --keep            Leave the built store directory behind
+  --ephemeral-context
+                    The pre-2026-09-24 off-the-record context (default: a persistent one on disk)
   -h, --help        Print this message`;
 
 function parseOptions(argv: readonly string[]): Options | number {
@@ -137,6 +146,7 @@ function parseOptions(argv: readonly string[]): Options | number {
   let port = 0;
   let keep = false;
   let skipPglite = false;
+  let contextKind: BrowserContextKind = "persistent";
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     switch (flag) {
@@ -156,6 +166,9 @@ function parseOptions(argv: readonly string[]): Options | number {
       case "--keep":
         keep = true;
         break;
+      case "--ephemeral-context":
+        contextKind = "ephemeral";
+        break;
       case "--port":
         index += 1;
         port = Number.parseInt(argv[index] ?? "0", 10);
@@ -170,7 +183,7 @@ function parseOptions(argv: readonly string[]): Options | number {
     console.error("--target-mib needs a positive number of MiB");
     return 2;
   }
-  return { targetMib, build, headless, port, keep, skipPglite };
+  return { targetMib, build, headless, port, keep, skipPglite, contextKind };
 }
 
 function mib(bytes: number): string {
@@ -341,15 +354,25 @@ async function runLeg(page: Page, leg: Leg, request: PreparedStoreLegRequest): P
   );
 }
 
-/** One fresh browser per leg, so neither leg inherits the other's renderer, OPFS state or heap. */
+/**
+ * One fresh browser per leg, so neither leg inherits the other's renderer, OPFS state or heap — and,
+ * in a persistent context, each leg gets its own fresh profile, so neither inherits the other's
+ * files either.
+ */
 async function inBrowser<T>(
   url: string,
   headless: boolean,
+  contextKind: BrowserContextKind,
+  leg: Leg,
   body: (page: Page) => Promise<T>,
 ): Promise<{ readonly value: T; readonly browserVersion: string }> {
-  const browser: Browser = await chromium.launch({ headless, channel: BROWSER_CHANNEL });
+  const session = await openBenchContext(
+    chromium,
+    { headless, channel: BROWSER_CHANNEL },
+    { kind: contextKind, profileName: `probe-prepared-store-${leg}`, keepProfile: false },
+  );
+  const { browser, page } = session;
   try {
-    const page = await (await browser.newContext()).newPage();
     const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
     await page.goto(url, { waitUntil: "load", timeout: 120_000 });
@@ -360,7 +383,7 @@ async function inBrowser<T>(
     }
     return { value, browserVersion: browser.version() };
   } finally {
-    await browser.close();
+    await session.close();
   }
 }
 
@@ -418,6 +441,7 @@ function renderReport(
   browserVersion: string,
   environmentLine: string,
   targetMib: number,
+  contextKind: BrowserContextKind,
 ): string {
   const { prepared } = dataset;
   const preparedLeg = legs.find(([, leg]) => leg.seed !== null)?.[1] ?? null;
@@ -427,13 +451,17 @@ function renderReport(
   lines.push(`- Date: ${new Date().toISOString().slice(0, 10)}`);
   lines.push(`- Runtime: ${runtimeLine()}`);
   lines.push(`- Browser: Chromium ${browserVersion} (Playwright's \`chromium\` channel, headless)`);
+  lines.push(`- Browser context: ${BROWSER_CONTEXT_DESCRIPTIONS[contextKind]}`);
   lines.push(
     `- Engines: pgrust \`${prepared.manifest.pgrustAssetCommit}\` (\`PostmasterMain\` over host pipes, ` +
       `wasm32-wasip1-threads) and \`@electric-sql/pglite\` ${pgliteVersion()}, both on the ` +
       `\`opfs-repacked\` store (format version ${prepared.manifest.store.formatVersion}, limits profile ` +
       `${prepared.manifest.store.limitsProfileVersion}, ${prepared.manifest.store.extentSize}-byte extents)`,
   );
-  lines.push(`- Driver: \`bun run probe:prepared-store --target-mib ${targetMib}\``);
+  lines.push(
+    `- Driver: \`bun run probe:prepared-store --target-mib ${targetMib}` +
+      `${contextKind === "ephemeral" ? " --ephemeral-context" : ""}\``,
+  );
   lines.push(`- Page: ${environmentLine}`);
   lines.push("");
   lines.push("## The question");
@@ -614,7 +642,7 @@ async function main(argv: readonly string[]): Promise<number> {
     });
 
     console.error("probe-prepared-store: the prepared-store leg …");
-    const preparedRun = await inBrowser(url, options.headless, async (page) => {
+    const preparedRun = await inBrowser(url, options.headless, options.contextKind, "prepared", async (page) => {
       environmentLine = ((await page.locator('[data-testid="environment-line"]').textContent()) ?? "").trim();
       return await runLeg(page, "prepared", {
         ...request(PREPARED_TAR_NAME),
@@ -629,6 +657,8 @@ async function main(argv: readonly string[]): Promise<number> {
       const pgliteRun = await inBrowser(
         url,
         options.headless,
+        options.contextKind,
+        "pgliteDatadir",
         async (page) =>
           await runLeg(page, "pgliteDatadir", {
             ...request(PGLITE_TAR_NAME),
@@ -641,7 +671,7 @@ async function main(argv: readonly string[]): Promise<number> {
     await server.stop(true);
   }
 
-  const report = renderReport(dataset, legs, browserVersion, environmentLine, options.targetMib);
+  const report = renderReport(dataset, legs, browserVersion, environmentLine, options.targetMib, options.contextKind);
   console.log("");
   console.log(report);
 

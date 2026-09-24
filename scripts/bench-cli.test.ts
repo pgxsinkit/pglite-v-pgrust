@@ -60,6 +60,17 @@ describe("parseBenchArguments", () => {
     expect(() => parseBenchArguments(["--postmaster-tuning", "pool:0"])).toThrow("pool:0");
   });
 
+  // Since 2026-09-24 the lane's OPFS is on disk; the off-the-record lane every older OPFS number was
+  // taken in is only ever asked for by name.
+  test("runs in a persistent context by default, and the ephemeral one only by name", () => {
+    expect(DEFAULT_BENCH_OPTIONS.contextKind).toBe("persistent");
+    expect(DEFAULT_BENCH_OPTIONS.keepProfile).toBe(false);
+    expect(parseBenchArguments([]).options.contextKind).toBeUndefined();
+    expect(parseBenchArguments(["--ephemeral-context"]).options.contextKind).toBe("ephemeral");
+    expect(parseBenchArguments(["--keep-profile"]).options.keepProfile).toBe(true);
+    expect(() => parseBenchArguments(["--ephemeral-context", "--keep-profile"])).toThrow("--keep-profile");
+  });
+
   // The default has to cover the run the default flags ask for: three Suites against fourteen
   // Configurations, five of which seed a whole data directory into a cold store first.
   test("allows the whole default run inside the default deadline", () => {

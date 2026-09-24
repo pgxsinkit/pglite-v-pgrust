@@ -10,6 +10,17 @@
  * only runner in this repo), and progress is detected from the DOM — the Suite section publishes
  * `data-state="complete"` — rather than from a sleep.
  *
+ * The page lives in a **persistent** browser context on a fresh profile: `launchPersistentContext`
+ * on a user-data directory made for the Run under `tmp/bench-profiles/` (on the real disk) and
+ * removed after it unless `--keep-profile` is passed. That puts OPFS in files on disk, as it is in a
+ * user's own browser. Until 2026-09-24 the lane opened Playwright's `browser.newContext()` instead,
+ * an off-the-record context in which Chromium keeps OPFS in memory in the browser process and every
+ * access-handle call is one IPC to it — 0.2–0.4 ms a call whatever its size, a flush 3–5 µs — so
+ * every OPFS number the lane published before then is a per-call bill users do not pay
+ * (`docs/results/2026-09-24-store-levers.md` §3, `docs/results/2026-09-24-persistent-context.md`).
+ * `--ephemeral-context` is that pre-2026-09-24 lane, kept so the old tables can be reproduced and
+ * A/B'd; the results file's header says which context a Run used.
+ *
  * Usage:
  *   bun run bench                                  # all three Suites, Chromium, fresh build
  *   bun run bench --suite rtt --iterations 5       # a short, explicitly non-standard RTT Run
@@ -18,6 +29,8 @@
  *   bun run bench --configurations pglite-memory,pgrust-memory --baseline pgrust-memory
  *   bun run bench --suite speedtest --configurations pgrust-postmaster-opfs-repacked-relaxed \
  *     --postmaster-tuning fsync=off,wal_buffers=4MB  # a non-standard pgrust Postmaster Run
+ *   bun run bench --ephemeral-context              # the pre-2026-09-24 lane: OPFS in memory, one IPC per call
+ *   bun run bench --keep-profile                   # leave the Run's profile in tmp/bench-profiles/
  *
  * `--postmaster-tuning` is the page's own `?postmasterTuning=` (`src/postmaster-tuning.ts`), passed
  * through verbatim: `pool:<n>`, `initial:<bytes>` and `name=value` GUCs, comma-separated. It moves
@@ -26,11 +39,11 @@
  * cannot produce a Run on the defaults under a tuned Run's name.
  */
 
-import { mkdir } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { BrowserType, LaunchOptions, Page } from "@playwright/test";
+import type { Browser, BrowserContext, BrowserType, LaunchOptions, Page } from "@playwright/test";
 import { chromium, firefox } from "@playwright/test";
 import type { Server } from "bun";
 
@@ -48,6 +61,38 @@ const ALL_SUITE_IDS: readonly SuiteId[] = ["speedtest", "rtt", "concurrency"];
 export type BenchBrowser = "chromium" | "firefox" | "webkit";
 
 const BENCH_BROWSERS: readonly BenchBrowser[] = ["chromium", "firefox", "webkit"];
+
+/**
+ * The browser context a Run's page lives in.
+ *
+ * - `persistent` — the default since 2026-09-24: the browser type's own `launchPersistentContext` on
+ *   a fresh user-data directory under {@link BENCH_PROFILES_DIR}, so OPFS is files on disk, as it is
+ *   in a user's own profile. An access-handle call is then 12–16 µs and a flush 1.3–1.5 ms.
+ * - `ephemeral` — the pre-2026-09-24 lane, `browser.newContext()`: an off-the-record context, in
+ *   which Chromium keeps OPFS in memory in the browser process and every access-handle call is one
+ *   IPC to it, 0.2–0.4 ms whatever its size, with a flush at 3–5 µs. Every OPFS number this lane
+ *   published before 2026-09-24 was taken here; it is kept so they can be reproduced and A/B'd.
+ *
+ * The per-call and flush figures are timings (`docs/results/2026-09-24-store-levers.md` §3); why an
+ * off-the-record context costs that, read from Chromium's source and seen on disk, is
+ * `docs/results/2026-09-24-persistent-context.md` §1.
+ */
+export type BrowserContextKind = "persistent" | "ephemeral";
+
+/** How the results file's header names each context kind. */
+export const BROWSER_CONTEXT_DESCRIPTIONS: Readonly<Record<BrowserContextKind, string>> = {
+  persistent: "persistent (a fresh profile on disk: OPFS on disk)",
+  ephemeral:
+    "ephemeral (--ephemeral-context: the pre-2026-09-24 lane, OPFS in memory in the browser process, one IPC per call)",
+};
+
+/**
+ * Where persistent contexts' profiles are made: repo-local, gitignored, and on the real disk. Not the
+ * OS temp directory, which Playwright would use for an empty `userDataDir` and which is a tmpfs on
+ * the Linux box this repo's notes are measured on — a profile in RAM would put OPFS back in memory
+ * by another route.
+ */
+export const BENCH_PROFILES_DIR = resolve(REPO_ROOT, "tmp/bench-profiles");
 
 /**
  * Playwright's WebKit is a build of WebKit, not Safari: it does not ship JS Promise Integration,
@@ -111,6 +156,13 @@ export interface BenchOptions {
    * which is what every table this repo publishes was produced with.
    */
   readonly postmasterTuning: string | null;
+  /**
+   * The browser context the page lives in: `persistent` unless `--ephemeral-context`. See
+   * {@link BrowserContextKind}.
+   */
+  readonly contextKind: BrowserContextKind;
+  /** Leave a persistent context's profile in {@link BENCH_PROFILES_DIR} after the Run. */
+  readonly keepProfile: boolean;
   /** Whether to run `vite build` first. */
   readonly build: boolean;
   /** Port for the local static server; 0 asks the OS for a free one. */
@@ -145,6 +197,8 @@ export const DEFAULT_BENCH_OPTIONS: BenchOptions = {
   configurationIds: null,
   baselineId: null,
   postmasterTuning: null,
+  contextKind: "persistent",
+  keepProfile: false,
   build: true,
   // Never 5580: a dev server or another session's browser may be sitting on it.
   port: 0,
@@ -170,6 +224,9 @@ export interface SuiteReport {
 
 export interface BenchReport {
   readonly browser: BenchBrowser;
+  readonly contextKind: BrowserContextKind;
+  /** The persistent context's profile when `--keep-profile` left it on disk; null otherwise. */
+  readonly keptProfileDir: string | null;
   /** True when the browser was never launched; `reason` says why. */
   readonly skipped: boolean;
   readonly reason: string | null;
@@ -283,6 +340,98 @@ function launchOptionsFor(options: BenchOptions): LaunchOptions {
     : { headless: options.headless };
 }
 
+/** One launched browser, the context a Run's page lives in, and that page. */
+export interface BenchContext {
+  readonly kind: BrowserContextKind;
+  /** The browser, for what only it can answer: `version()` and a browser-level CDP session. */
+  readonly browser: Browser;
+  readonly context: BrowserContext;
+  /** The one page a Run drives. */
+  readonly page: Page;
+  /** The persistent context's profile directory; null for an ephemeral context. */
+  readonly userDataDir: string | null;
+  /** Close the browser, then remove the profile unless it was asked to be kept. */
+  readonly close: () => Promise<void>;
+}
+
+export interface BenchContextOptions {
+  readonly kind: BrowserContextKind;
+  /**
+   * The profile directory's name under {@link BENCH_PROFILES_DIR}, before a unique suffix: the
+   * Run's id, so a kept profile can be matched to the results file it produced.
+   */
+  readonly profileName: string;
+  readonly keepProfile: boolean;
+}
+
+/**
+ * Launch a browser and open the context a Run's page lives in.
+ *
+ * Shared with the probes that drive the same page in the same browser (`probe-memory.ts`,
+ * `probe-idle-cpu.ts`, `probe-prepared-store.ts`), so a probe's store is on the same kind of disk as
+ * the benchmark's. A persistent context opens with one blank page already in it; driving that page
+ * keeps the Run at one tab, as the ephemeral lane's single `newPage()` does.
+ */
+export async function openBenchContext(
+  browserType: BrowserType,
+  launchOptions: LaunchOptions,
+  options: BenchContextOptions,
+): Promise<BenchContext> {
+  if (options.kind === "ephemeral") {
+    const browser = await browserType.launch(launchOptions);
+    try {
+      const context = await browser.newContext();
+      const page = await context.newPage();
+      return {
+        kind: options.kind,
+        browser,
+        context,
+        page,
+        userDataDir: null,
+        close: async (): Promise<void> => await browser.close(),
+      };
+    } catch (thrown) {
+      await browser.close();
+      throw thrown;
+    }
+  }
+
+  await mkdir(BENCH_PROFILES_DIR, { recursive: true });
+  // `mkdtemp`, so the directory is guaranteed fresh: a profile left by an earlier Run is never reused.
+  const userDataDir = await mkdtemp(join(BENCH_PROFILES_DIR, `${options.profileName}-`));
+  const removeProfile = async (): Promise<void> => {
+    if (!options.keepProfile) {
+      await rm(userDataDir, { recursive: true, force: true });
+    }
+  };
+  let context: BrowserContext;
+  try {
+    context = await browserType.launchPersistentContext(userDataDir, launchOptions);
+  } catch (thrown) {
+    await removeProfile();
+    throw thrown;
+  }
+  const close = async (): Promise<void> => {
+    try {
+      // Closing a persistent context closes its browser.
+      await context.close();
+    } finally {
+      await removeProfile();
+    }
+  };
+  try {
+    const browser = context.browser();
+    if (browser === null) {
+      throw new Error(`${browserType.name()}: the persistent context reports no browser`);
+    }
+    const page = context.pages()[0] ?? (await context.newPage());
+    return { kind: options.kind, browser, context, page, userDataDir, close };
+  } catch (thrown) {
+    await close();
+    throw thrown;
+  }
+}
+
 /**
  * The page URL a run drives: every out-of-band choice as a query parameter, and nothing else.
  *
@@ -345,7 +494,13 @@ async function runOneSuite(page: Page, suiteId: SuiteId, remaining: () => number
 function renderResultsFile(report: BenchReport, startedAt: string): string {
   const blocks: string[] = [
     "# pglite-v-pgrust benchmark run",
-    [`- Browser: ${report.browser}`, `- Started: ${startedAt}`, `- Driver: bun run bench`].join("\n"),
+    [
+      `- Browser: ${report.browser}`,
+      `- Browser context: ${BROWSER_CONTEXT_DESCRIPTIONS[report.contextKind]}`,
+      ...(report.keptProfileDir === null ? [] : [`- Profile kept at: ${report.keptProfileDir}`]),
+      `- Started: ${startedAt}`,
+      `- Driver: bun run bench`,
+    ].join("\n"),
     report.environmentLine,
     ...report.suites.map((suite) => suite.markdown.trimEnd()),
   ];
@@ -366,6 +521,8 @@ export async function runBench(overrides: Partial<BenchOptions> = {}): Promise<B
   if (options.browser === "webkit") {
     return {
       browser: options.browser,
+      contextKind: options.contextKind,
+      keptProfileDir: null,
       skipped: true,
       reason: WEBKIT_SKIP_MESSAGE,
       environmentLine: "",
@@ -385,10 +542,13 @@ export async function runBench(overrides: Partial<BenchOptions> = {}): Promise<B
   }
 
   const startedAt = new Date().toISOString();
+  /** Names both the results file and the persistent context's profile directory. */
+  const runId = `${startedAt.replaceAll(":", "-")}-${options.browser}`;
   const remaining = createDeadline(options.timeoutMs);
   const consoleErrors: string[] = [];
   const suites: SuiteReport[] = [];
   let environmentLine = "";
+  let keptProfileDir: string | null = null;
 
   const server = serveDist(distDir, options.port, {
     base: options.base,
@@ -402,10 +562,20 @@ export async function runBench(overrides: Partial<BenchOptions> = {}): Promise<B
     const url = pageUrl(listeningPort, options);
     console.error(`bench: serving ${distDir} at ${url}`);
 
-    const browser = await browserTypeFor(options.browser).launch(launchOptionsFor(options));
+    const session = await openBenchContext(browserTypeFor(options.browser), launchOptionsFor(options), {
+      kind: options.contextKind,
+      profileName: runId,
+      keepProfile: options.keepProfile,
+    });
+    console.error(
+      `bench: browser context ${BROWSER_CONTEXT_DESCRIPTIONS[options.contextKind]}` +
+        (session.userDataDir === null ? "" : ` at ${session.userDataDir}`),
+    );
+    if (options.keepProfile) {
+      keptProfileDir = session.userDataDir;
+    }
     try {
-      const context = await browser.newContext();
-      const page = await context.newPage();
+      const { page } = session;
       page.on("console", (message) => {
         if (message.type() === "error") {
           consoleErrors.push(message.text());
@@ -434,16 +604,18 @@ export async function runBench(overrides: Partial<BenchOptions> = {}): Promise<B
         suites.push(await runOneSuite(page, suiteId, remaining));
       }
     } finally {
-      await browser.close();
+      await session.close();
     }
   } finally {
     await server.stop(true);
   }
 
   await mkdir(options.outputDir, { recursive: true });
-  const outputPath = resolve(options.outputDir, `${startedAt.replaceAll(":", "-")}-${options.browser}.md`);
+  const outputPath = resolve(options.outputDir, `${runId}.md`);
   const report: BenchReport = {
     browser: options.browser,
+    contextKind: options.contextKind,
+    keptProfileDir,
     skipped: false,
     reason: null,
     environmentLine,
@@ -464,6 +636,10 @@ const USAGE = `Usage: bun run bench [options]
   --baseline <id>                      Take every ratio against this Configuration
   --postmaster-tuning <entries>        pgrust Postmaster knobs, as the page's ?postmasterTuning=
                                        (pool:<n>, initial:<bytes>, name=value GUCs; comma-separated)
+  --ephemeral-context                  The pre-2026-09-24 lane: an off-the-record context, OPFS in
+                                       memory in the browser process, one IPC per call (default: a
+                                       persistent context on a fresh profile in tmp/bench-profiles/)
+  --keep-profile                       Leave the persistent context's profile on disk after the Run
   --no-build                           Reuse the existing dist/ instead of rebuilding
   --base <path>                        Build and serve under this path (default: /)
   --plain                              Serve without COOP/COEP, as GitHub Pages does
@@ -608,6 +784,8 @@ export function parseBenchArguments(rawArgv: readonly string[]): CliInvocation {
     configurationIds?: readonly string[];
     baselineId?: string;
     postmasterTuning?: string;
+    contextKind?: BrowserContextKind;
+    keepProfile?: boolean;
     build?: boolean;
     port?: number;
     headless?: boolean;
@@ -656,6 +834,12 @@ export function parseBenchArguments(rawArgv: readonly string[]): CliInvocation {
         index += 1;
         options.postmasterTuning = parsePostmasterTuningArgument(requireValue(argv, index, flag), flag);
         break;
+      case "--ephemeral-context":
+        options.contextKind = "ephemeral";
+        break;
+      case "--keep-profile":
+        options.keepProfile = true;
+        break;
       case "--no-build":
         options.build = false;
         break;
@@ -694,6 +878,9 @@ export function parseBenchArguments(rawArgv: readonly string[]): CliInvocation {
   }
   if (!help) {
     validateSelection(options.configurationIds ?? null, options.baselineId ?? null);
+    if (options.keepProfile === true && options.contextKind === "ephemeral") {
+      throw new Error("--keep-profile keeps a persistent context's profile; an --ephemeral-context Run has none");
+    }
   }
   return { help, options };
 }
@@ -721,6 +908,7 @@ async function main(rawArgv: readonly string[]): Promise<number> {
   }
 
   console.log("");
+  console.log(`Browser context: ${BROWSER_CONTEXT_DESCRIPTIONS[report.contextKind]}`);
   console.log(report.environmentLine);
   for (const suite of report.suites) {
     console.log("");
@@ -739,6 +927,10 @@ async function main(rawArgv: readonly string[]): Promise<number> {
     for (const message of report.consoleErrors) {
       console.log(`  ${message}`);
     }
+  }
+  if (report.keptProfileDir !== null) {
+    console.log("");
+    console.log(`Profile kept at ${report.keptProfileDir}`);
   }
   console.log("");
   console.log(`Results written to ${report.outputPath ?? "(nowhere)"}`);

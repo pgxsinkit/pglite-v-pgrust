@@ -25,6 +25,10 @@
  *    in pgrust; the scheduler already counts the same events, for every Engine, on both platforms.)
  *  * `Target.getTargets` — how many Worker targets are alive, which is what the CPU is spread over.
  *
+ * **Browser context.** Since 2026-09-24 the browser is a persistent context on a fresh on-disk
+ * profile, as `bun run bench`'s is (`openBenchContext` in `scripts/bench.ts`); `--ephemeral-context`
+ * is the off-the-record context every earlier row ran in, where OPFS lives in the browser process.
+ *
  * **Variants**, for the postmaster rows: `default` is the Engine as every Suite runs it; `quiet`
  * turns Postgres's periodic work down and pgrust's recheck cadence off; `background` is `default`
  * with a second tab in front, so the Engine's tab is hidden and the browser may throttle it.
@@ -43,7 +47,8 @@ import type {
   IdleProbeVisibilityEvent,
 } from "../src/idle-probe";
 import { IDLE_PROBE_GLOBAL } from "../src/idle-probe";
-import { buildApp, serveDist } from "./bench";
+import type { BrowserContextKind } from "./bench";
+import { BROWSER_CONTEXT_DESCRIPTIONS, buildApp, openBenchContext, serveDist } from "./bench";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -346,12 +351,16 @@ async function probeOne(
   column: Column,
   idleMs: number,
   headless: boolean,
+  contextKind: BrowserContextKind,
 ): Promise<{ report: ColumnReport; browserVersion: string; environmentLine: string }> {
-  const browser = await chromium.launch({ headless, channel: BROWSER_CHANNEL });
+  const session = await openBenchContext(
+    chromium,
+    { headless, channel: BROWSER_CHANNEL },
+    { kind: contextKind, profileName: `probe-idle-cpu-${column.id}`, keepProfile: false },
+  );
+  const { browser, context, page } = session;
   const notes: string[] = [];
   try {
-    const context = await browser.newContext();
-    const page = await context.newPage();
     page.on("pageerror", (error) => notes.push(`page error: ${error.message}`));
     await page.goto(url, { waitUntil: "load", timeout: 120_000 });
     await page.locator('[data-testid="environment-line"]').waitFor({ state: "attached", timeout: 60_000 });
@@ -459,7 +468,7 @@ async function probeOne(
       environmentLine,
     };
   } finally {
-    await browser.close();
+    await session.close();
   }
 }
 
@@ -527,6 +536,8 @@ const USAGE = `Usage: bun run probe:idle-cpu [options]
   --no-build        Reuse the existing dist/ instead of rebuilding
   --port <N>        Port for the local static server (default: a free one)
   --headed          Show the browser window
+  --ephemeral-context
+                    The pre-2026-09-24 off-the-record context (default: a persistent one on disk)
   -h, --help        Print this message
 
 Rows: ${COLUMNS.map((column) => column.id).join(", ")}`;
@@ -541,6 +552,7 @@ async function main(argv: readonly string[]): Promise<number> {
   let headless = true;
   let port = 0;
   let idleMs = DEFAULT_IDLE_MS;
+  let contextKind: BrowserContextKind = "persistent";
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     switch (flag) {
@@ -561,6 +573,9 @@ async function main(argv: readonly string[]): Promise<number> {
       case "--port":
         index += 1;
         port = Number.parseInt(argv[index] ?? "0", 10);
+        break;
+      case "--ephemeral-context":
+        contextKind = "ephemeral";
         break;
       default:
         console.error(`Unknown argument "${flag ?? ""}"`);
@@ -591,7 +606,7 @@ async function main(argv: readonly string[]): Promise<number> {
     console.error(`probe-idle-cpu: serving ${distDir} at ${url}`);
     for (const column of columns) {
       console.error(`probe-idle-cpu: ${column.id} — ${(idleMs / 1000).toFixed(0)} s idle window…`);
-      const one = await probeOne(url, column, idleMs, headless);
+      const one = await probeOne(url, column, idleMs, headless, contextKind);
       reports.push(one.report);
       browserVersion = one.browserVersion;
       environmentLine = one.environmentLine;
@@ -607,6 +622,7 @@ async function main(argv: readonly string[]): Promise<number> {
 
   console.log("");
   console.log(`Chromium ${browserVersion}`);
+  console.log(`Browser context: ${BROWSER_CONTEXT_DESCRIPTIONS[contextKind]}`);
   console.log(environmentLine);
   console.log("");
   console.log(renderTable(reports));
