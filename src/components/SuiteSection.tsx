@@ -16,6 +16,8 @@ import { toMarkdown } from "../results/markdown";
 import { applyRttIterations, describeRttIterations } from "../rtt-iterations";
 import { runSuite } from "../runner/run-suite";
 import type { Suite } from "../suites/types";
+import { WARMUP_EXPORT_LINE, WARMUP_LABEL } from "../suites/warmup";
+import { WARMUP_SQL } from "../suites/warmup-sql";
 import { ResultsTable } from "./ResultsTable";
 
 export interface SuiteSectionProps {
@@ -81,6 +83,11 @@ export function SuiteSection({ suite, environment, configurations, baseline }: S
     suite.initialSetupFor(baseline === null ? BASELINE_CONFIGURATION_DIALECT : configurationDialect(baseline)),
   );
   const [cells, setCells] = useState<GridCells>({});
+  /**
+   * Each Configuration's Warm-up, keyed by Configuration id: the line above the Benchmarks, kept
+   * out of `cells` so it can never be counted as one of them.
+   */
+  const [warmupCells, setWarmupCells] = useState<GridCells>({});
   /** The Detail of the cells that have one; keyed exactly as the cells are. */
   const [details, setDetails] = useState<GridDetails>({});
   const [runState, setRunState] = useState<RunState>("idle");
@@ -133,6 +140,7 @@ export function SuiteSection({ suite, environment, configurations, baseline }: S
     baselineColumnId: baseline?.id ?? "",
     cells,
     details,
+    warmup: { label: WARMUP_LABEL, cells: warmupCells },
   };
 
   /** Recomputed every render, so the exported element and the clipboard can never disagree. */
@@ -148,6 +156,7 @@ export function SuiteSection({ suite, environment, configurations, baseline }: S
     ),
     baselineLabel,
     ...(runnableSuite.headerLine === undefined ? {} : { suiteLine: runnableSuite.headerLine }),
+    warmupLine: WARMUP_EXPORT_LINE,
   });
 
   function recordFailure(configuration: Configuration, message: string): void {
@@ -161,6 +170,7 @@ export function SuiteSection({ suite, environment, configurations, baseline }: S
     setError(null);
     setCopyStatus(null);
     setCells({});
+    setWarmupCells({});
     setDetails({});
     setFailures({});
     setEngineStats({});
@@ -171,11 +181,16 @@ export function SuiteSection({ suite, environment, configurations, baseline }: S
         }
         setActiveColumnId(configuration.id);
         try {
-          // One Run per Configuration: a fresh worker, a fresh Engine, then the timed Benchmarks.
+          // One Run per Configuration: a fresh worker, a fresh Engine, its timed Warm-up, the
+          // untimed setup, then the timed Benchmarks.
           await runSuite({
             suite: runnableSuite,
             configuration,
             setupSql: setupFor(configuration),
+            warmupSql: WARMUP_SQL,
+            onWarmup: (result) => {
+              setWarmupCells((previous) => ({ ...previous, [result.configurationId]: result.elapsedMs }));
+            },
             onStats: (configurationId, stats) => {
               setEngineStats((previous) => ({ ...previous, [configurationId]: stats }));
             },

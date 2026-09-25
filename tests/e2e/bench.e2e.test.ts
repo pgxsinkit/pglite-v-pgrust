@@ -23,6 +23,7 @@ import { CONCURRENCY_CLIENTS, CONCURRENCY_SUITE, INTERLEAVED_ON_ONE_SESSION } fr
 import { RTT_STATEMENTS } from "../../src/suites/rtt/statements";
 import { SPEEDTEST_BENCHMARK_IDS } from "../../src/suites/speedtest/benchmarks";
 import type { Suite, SuiteId } from "../../src/suites/types";
+import { WARMUP_EXPORT_LINE, WARMUP_LABEL } from "../../src/suites/warmup";
 
 /**
  * Build plus three Suites against fourteen Configurations; generous, because it is a real browser.
@@ -168,11 +169,14 @@ const WASQLITE_COLUMNS: readonly ColumnPair[] = [
   },
 ];
 
-/** Taken from the Suite definitions rather than written down, so a new Benchmark cannot slip past. */
+/**
+ * Taken from the Suite definitions rather than written down, so a new Benchmark cannot slip past;
+ * one more for the Warm-up line every table leads with.
+ */
 const EXPECTED_ROW_COUNTS: Readonly<Record<SuiteId, number>> = {
-  speedtest: SPEEDTEST_BENCHMARK_IDS.length,
-  rtt: RTT_STATEMENTS.length,
-  concurrency: CONCURRENCY_SUITE.benchmarks.length,
+  speedtest: 1 + SPEEDTEST_BENCHMARK_IDS.length,
+  rtt: 1 + RTT_STATEMENTS.length,
+  concurrency: 1 + CONCURRENCY_SUITE.benchmarks.length,
 };
 
 const SUITE_IDS: readonly SuiteId[] = ["speedtest", "rtt", "concurrency"];
@@ -312,6 +316,20 @@ describe("bench lane", () => {
       expect(rows).toHaveLength(EXPECTED_ROW_COUNTS[suiteId]);
       const offenders = rows.filter((row) => row.length !== EXPECTED_CELLS_PER_ROW).map(describeRow);
       expect(offenders).toEqual([]);
+    });
+
+    // The Warm-up leads the table and is never one of its Benchmarks: every other row is a `Test`.
+    test(`${suiteId}: leads with the Warm-up line, says which script it was, and labels every other row a Test`, () => {
+      const rows = rowsFor(suiteId);
+      expect(rows[0]?.[0]).toBe(WARMUP_LABEL);
+      expect(
+        rows
+          .slice(1)
+          .filter((row) => !(row[0] ?? "").startsWith("Test "))
+          .map(describeRow),
+      ).toEqual([]);
+      const suite = report.suites.find((candidate) => candidate.suiteId === suiteId);
+      expect(suite?.markdown).toContain(WARMUP_EXPORT_LINE);
     });
 
     // Every assertion below indexes cells by position, so the positions have to be pinned to the

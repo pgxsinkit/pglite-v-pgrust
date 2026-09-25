@@ -19,6 +19,11 @@ two cannot:
   "at once" means is the Engine's answer, stated in each column's header and exactly what the Suite
   reports.
 
+Before any Suite's first Benchmark, every Engine runs one fixed **Warm-up** script
+([`src/suites/warmup.sql`](src/suites/warmup.sql)) once after it boots, so the first Benchmark no
+longer pays the Engine's first-use costs; the Warm-up is timed and shown as its own line above the
+Suite's rows, with a ratio like any row, and is never part of a Suite total.
+
 Each Engine runs in its own dedicated module worker, and every timing is taken **inside** that worker
 around the Engine call alone — the main-thread messaging is deliberately outside the measured window.
 Results are shown per Configuration (an Engine plus its storage and durability settings), with a ratio

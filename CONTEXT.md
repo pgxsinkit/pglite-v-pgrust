@@ -108,6 +108,10 @@ _Avoid_: test, case, step (a **Step** is one entry in a Client's program), query
 The wall time, taken inside the Engine's worker, from handing SQL to the Engine until decoded rows or a command tag are available in JS. Nothing outside that window counts. A Concurrency Benchmark's Measurement is a number computed from many such windows — a percentile, a wall time or a rate — every one of them taken inside the worker, and it carries its Detail with it.
 _Avoid_: timing, latency, elapsed, duration
 
+**Warm-up**:
+The timed phase every Engine runs once after it boots and before a Suite's first Benchmark: one fixed script, the same for every Engine and every Suite. It is reported as its own line above the Suite's rows, with a ratio against the Baseline like any row, and is never part of a Suite total. It exists so that an Engine's first-use costs are paid in the open, by every Engine alike, rather than by whichever Benchmark happens to come first.
+_Avoid_: warmup benchmark, bootstrap test, row 0
+
 **Run**:
 One execution of one Suite against one Configuration, on a freshly opened Engine; it yields one Measurement per Benchmark. A Run may hold several **Sessions** — that is the postmaster's whole point — but it is never called one.
 _Avoid_: session, pass, execution

@@ -491,7 +491,12 @@ async function runOneSuite(page: Page, suiteId: SuiteId, remaining: () => number
   };
 }
 
-function renderResultsFile(report: BenchReport, startedAt: string): string {
+/**
+ * The results file: the lane's own header, the page's environment line, then every Suite's export
+ * verbatim — its Warm-up line and Warm-up row included, so a file written by a Run with a Warm-up
+ * can be told from an older one without it — then whatever failed.
+ */
+export function renderResultsFile(report: BenchReport, startedAt: string): string {
   const blocks: string[] = [
     "# pglite-v-pgrust benchmark run",
     [

@@ -1,13 +1,21 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { findConfiguration } from "../configurations";
-import type { Configuration } from "../engines/contract";
+import type { Configuration, EngineRunner, Measurement } from "../engines/contract";
 import { configurationDialect } from "../engines/contract";
+import type { EngineStats } from "../engines/protocol";
+import type { ConcurrentScenario, ScenarioReport } from "../engines/scenario";
+import { buildConcurrencyBenchmarks, CONCURRENCY_CLIENTS, concurrencySetupFor } from "../suites/concurrency";
 import { RTT_SUITE } from "../suites/rtt";
-import { RTT_INITIAL_SETUP_POSTGRES, RTT_STATEMENTS } from "../suites/rtt/statements";
+import { RTT_INITIAL_SETUP_POSTGRES, RTT_STATEMENTS, rttInitialSetupFor } from "../suites/rtt/statements";
+import { SPEEDTEST_BENCHMARK_IDS, speedtestSqlFileName } from "../suites/speedtest/benchmarks";
 import type { Benchmark, Suite } from "../suites/types";
 import { benchmarkSql, isScenarioBenchmark } from "../suites/types";
-import { planRun } from "./run-suite";
+import { WARMUP_LABEL, WARMUP_SCRIPT_NAME } from "../suites/warmup";
+import type { BenchmarkResult, WarmupResult } from "./run-suite";
+import { planRun, runSuite } from "./run-suite";
 
 function configuration(id: string): Configuration {
   const found = findConfiguration(id);
@@ -161,5 +169,174 @@ describe("planRun, a Suite of Scenarios", () => {
   test("opens as many Sessions as the Scenario needs, and one for a Suite of statements", () => {
     expect(planRun(SCENARIO_SUITE, configuration("pgrust-postmaster-memory-broker"), "").sessions).toBe(2);
     expect(planRun(RTT_SUITE, configuration("pgrust-postmaster-memory-broker"), "").sessions).toBe(1);
+  });
+});
+
+/** The Warm-up as the bundle imports it, read from disk because `?raw` is a bundler feature. */
+const WARMUP_SQL = readFileSync(join(import.meta.dir, "../suites", WARMUP_SCRIPT_NAME), "utf8");
+
+/** Every statement of the Warm-up, one per line, comments dropped. */
+const WARMUP_STATEMENTS = WARMUP_SQL.split("\n").filter((line) => line.trim() !== "" && !line.startsWith("--"));
+
+/** Every SQL string any Suite runs, in both dialects: its setup, its Benchmarks, its Scenarios. */
+function everySuiteSql(): string {
+  const speedtest = SPEEDTEST_BENCHMARK_IDS.map((id) =>
+    readFileSync(join(import.meta.dir, "../suites/speedtest", speedtestSqlFileName(id)), "utf8"),
+  );
+  const rtt = [rttInitialSetupFor("postgres"), rttInitialSetupFor("sqlite"), ...RTT_STATEMENTS];
+  const concurrency = [
+    concurrencySetupFor("postgres"),
+    concurrencySetupFor("sqlite"),
+    JSON.stringify(buildConcurrencyBenchmarks(CONCURRENCY_CLIENTS, "postgres").map((entry) => entry.scenario)),
+    JSON.stringify(buildConcurrencyBenchmarks(CONCURRENCY_CLIENTS, "sqlite").map((entry) => entry.scenario)),
+  ];
+  return [...speedtest, ...rtt, ...concurrency].join("\n");
+}
+
+describe("the Warm-up script", () => {
+  test("builds one scratch table, works it, and drops it again", () => {
+    const creates = WARMUP_STATEMENTS.filter((statement) => statement.startsWith("CREATE TABLE"));
+    expect(creates).toEqual(["CREATE TABLE warmup_scratch(k INTEGER PRIMARY KEY, v INTEGER, t VARCHAR(100));"]);
+    expect(WARMUP_STATEMENTS[0]).toBe(creates[0]);
+    expect(WARMUP_STATEMENTS.at(-1)).toBe("DROP TABLE warmup_scratch;");
+    expect(WARMUP_STATEMENTS.filter((statement) => statement.startsWith("CREATE INDEX"))).toEqual([
+      "CREATE INDEX warmup_scratch_v ON warmup_scratch(v);",
+    ]);
+  });
+
+  test("inserts a few hundred rows one statement at a time, then a few dozen of each indexed kind", () => {
+    const count = (prefix: string): number =>
+      WARMUP_STATEMENTS.filter((statement) => statement.startsWith(prefix)).length;
+    expect(count("INSERT INTO warmup_scratch VALUES(")).toBe(500);
+    expect(count("SELECT ")).toBe(36);
+    expect(count("UPDATE ")).toBe(36);
+    // Thirty-six by key, and the one big DELETE.
+    expect(count("DELETE FROM warmup_scratch WHERE k = ")).toBe(36);
+    expect(count("DELETE ")).toBe(37);
+  });
+
+  // It runs before the setup and beside every Suite, so its table must be one no Suite ever names.
+  test("names a table no Suite touches, in either dialect", () => {
+    expect(everySuiteSql()).not.toContain("warmup_scratch");
+  });
+
+  test("is labelled so that no total over the `| Test` rows can count it", () => {
+    expect(WARMUP_LABEL).toBe("Warm-up");
+    expect(WARMUP_LABEL.startsWith("Test")).toBe(false);
+  });
+});
+
+describe("planRun, the Warm-up", () => {
+  test("hands every Configuration the same script, through its own rewrite", () => {
+    for (const id of ["pglite-memory", "pgrust-postmaster-opfs-repacked-relaxed", "wasqlite-memory"]) {
+      expect(planRun(RTT_SUITE, configuration(id), "", WARMUP_SQL).warmupSql).toBe(WARMUP_SQL);
+    }
+    const unlogged = planRun(RTT_SUITE, configuration("pglite-memory-unlogged"), "", WARMUP_SQL).warmupSql ?? "";
+    expect(unlogged).toContain("CREATE UNLOGGED TABLE warmup_scratch(");
+    expect(unlogged).not.toMatch(/(?<!UNLOGGED )CREATE TABLE/);
+  });
+
+  test("keeps the Warm-up out of the Benchmarks it plans", () => {
+    const plan = planRun(RTT_SUITE, configuration("pglite-memory"), "", WARMUP_SQL);
+    expect(plan.benchmarks.map(benchmarkSql)).toEqual([...RTT_STATEMENTS]);
+  });
+
+  test("plans no Warm-up for a caller that gave none", () => {
+    expect(planFor(RTT_SUITE, "pglite-memory").warmupSql).toBeNull();
+  });
+});
+
+/** An Engine that runs nothing and writes down, in order, everything it was asked. */
+class RecordingRunner implements EngineRunner {
+  readonly calls: string[] = [];
+  #elapsed = 0;
+
+  async open(config: Configuration, preamble: string, sessions = 1): Promise<void> {
+    this.calls.push(`open ${config.id} preamble=${JSON.stringify(preamble)} sessions=${sessions}`);
+  }
+
+  async exec(sql: string): Promise<void> {
+    this.calls.push(`exec ${sql}`);
+  }
+
+  async measure(sql: string): Promise<Measurement> {
+    this.calls.push(`measure ${sql}`);
+    this.#elapsed += 1;
+    return { elapsedMs: this.#elapsed };
+  }
+
+  async scalar(sql: string): Promise<{ readonly elapsedMs: number; readonly value: string | null }> {
+    this.calls.push(`scalar ${sql}`);
+    return { elapsedMs: 0, value: null };
+  }
+
+  async concurrent(scenario: ConcurrentScenario): Promise<ScenarioReport> {
+    this.calls.push(`concurrent ${scenario.id}`);
+    return { totalMs: 0, clients: [] };
+  }
+
+  async stats(): Promise<EngineStats> {
+    this.calls.push("stats");
+    return { wasmMemories: [] };
+  }
+
+  async close(): Promise<void> {
+    this.calls.push("close");
+  }
+}
+
+describe("runSuite, the Warm-up", () => {
+  const TWO_STATEMENTS: Suite = {
+    ...EDITABLE_SETUP_SUITE,
+    benchmarks: [
+      { id: "1", label: "Test 1: one", sql: "SELECT 1;" },
+      { id: "2", label: "Test 2: two", sql: "SELECT 2;" },
+    ],
+  };
+
+  async function run(setupSql: string): Promise<{
+    readonly calls: readonly string[];
+    readonly warmups: readonly WarmupResult[];
+    readonly results: readonly BenchmarkResult[];
+  }> {
+    const runner = new RecordingRunner();
+    const warmups: WarmupResult[] = [];
+    const results: BenchmarkResult[] = [];
+    await runSuite({
+      suite: TWO_STATEMENTS,
+      configuration: configuration("pglite-memory"),
+      setupSql,
+      warmupSql: "-- the warm-up\nSELECT 0;",
+      onWarmup: (result) => warmups.push(result),
+      onResult: (result) => results.push(result),
+      createRunner: () => runner,
+    });
+    return { calls: runner.calls, warmups, results };
+  }
+
+  test("boots the Engine bare, times the Warm-up, then runs the setup untimed, then the Benchmarks", async () => {
+    const { calls } = await run("CREATE TABLE t (a int);");
+    expect(calls).toEqual([
+      'open pglite-memory preamble="" sessions=1',
+      "measure -- the warm-up\nSELECT 0;",
+      "exec CREATE TABLE t (a int);",
+      "measure SELECT 1;",
+      "measure SELECT 2;",
+      "close",
+    ]);
+  });
+
+  test("reports the Warm-up once, on its own callback, and never as a Benchmark's result", async () => {
+    const { warmups, results } = await run("CREATE TABLE t (a int);");
+    expect(warmups).toEqual([{ configurationId: "pglite-memory", elapsedMs: 1 }]);
+    expect(results.map((result) => [result.benchmarkId, result.elapsedMs])).toEqual([
+      ["1", 2],
+      ["2", 3],
+    ]);
+  });
+
+  test("skips an empty setup, as opening with an empty preamble always did", async () => {
+    const { calls } = await run("  \n");
+    expect(calls.some((call) => call.startsWith("exec"))).toBe(false);
   });
 });

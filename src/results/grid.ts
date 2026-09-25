@@ -37,12 +37,29 @@ export type GridCells = Readonly<Record<string, number>>;
 /** Cell Details, keyed exactly as the cells are; most cells have none. */
 export type GridDetails = Readonly<Record<string, MeasurementDetail>>;
 
+/**
+ * The **Warm-up** line: one Measurement per column, shown above the Benchmarks with a ratio like any
+ * row, and never one of them.
+ *
+ * Its cells are keyed by column id alone and kept apart from `cells`, so nothing that walks the
+ * Benchmarks' rows — a row count, a Suite total — can pick the Warm-up up by accident. Its label
+ * never starts with `Test`, for the same reason one step further on: every table this repo's notes
+ * total is totalled over its `| Test` rows.
+ */
+export interface GridWarmup {
+  readonly label: string;
+  /** The Warm-up's Measurement per column, keyed by column id; a missing key means "not measured yet". */
+  readonly cells: GridCells;
+}
+
 export interface ResultsGrid {
   readonly rows: readonly GridRow[];
   readonly columns: readonly GridColumn[];
   readonly baselineColumnId: string;
   readonly cells: GridCells;
   readonly details?: GridDetails;
+  /** Absent for a grid that has no Warm-up line; every Suite Run has one. */
+  readonly warmup?: GridWarmup;
 }
 
 export function cellKey(columnId: string, rowId: string): string {
@@ -51,6 +68,11 @@ export function cellKey(columnId: string, rowId: string): string {
 
 export function readCell(cells: GridCells, columnId: string, rowId: string): number | undefined {
   return cells[cellKey(columnId, rowId)];
+}
+
+/** One column's Warm-up Measurement, if the grid has a Warm-up line and that column has run it. */
+export function readWarmup(grid: ResultsGrid, columnId: string): number | undefined {
+  return grid.warmup?.cells[columnId];
 }
 
 export function readDetail(grid: ResultsGrid, columnId: string, rowId: string): MeasurementDetail | undefined {

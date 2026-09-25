@@ -140,3 +140,69 @@ describe("toMarkdown, a Suite that reports more than one number per cell", () =>
     expect(lines[6]?.startsWith("| Benchmark |")).toBe(true);
   });
 });
+
+describe("toMarkdown, a grid with a Warm-up line", () => {
+  const WARMUP_LINE = "Warm-up: warmup.sql, timed once per Run";
+  const withWarmup: ResultsGrid = {
+    ...GRID,
+    warmup: {
+      label: "Warm-up",
+      cells: { "pglite-memory": 40, "pglite-memory-unlogged": 30 },
+    },
+  };
+  const markdown = toMarkdown(withWarmup, { ...OPTIONS, warmupLine: WARMUP_LINE });
+  const lines = markdown.split("\n");
+
+  test("says which Warm-up the Run had, above the table", () => {
+    expect(lines[2]).toBe(OPTIONS.environmentLine);
+    expect(lines[4]).toBe(WARMUP_LINE);
+    expect(lines[6]?.startsWith("| Benchmark |")).toBe(true);
+  });
+
+  test("puts the Warm-up first, with a ratio against the Baseline like any row", () => {
+    expect(lines[8]).toBe("| Warm-up | 40.000 | 30.000 | 0.75× | skipped | – |");
+    expect(lines[9]).toBe("| Test 1: 1000 INSERTs | 16.000 | 8.000 | 0.50× | skipped | – |");
+  });
+
+  // Every Suite total this repo takes from a pasted table is a sum over its `| Test` rows.
+  test("stays out of a total taken over the Benchmark rows", () => {
+    const total = (text: string): number =>
+      text
+        .split("\n")
+        .filter((line) => line.startsWith("| Test"))
+        .reduce((sum, line) => sum + Number(line.split("|")[2]), 0);
+    expect(lines[8]?.startsWith("| Test")).toBe(false);
+    expect(total(markdown)).toBe(16 + 292);
+    expect(total(markdown)).toBe(total(toMarkdown(GRID, OPTIONS)));
+  });
+
+  test("leaves every Benchmark row byte-identical to the same grid without a Warm-up", () => {
+    const benchmarkRows = (text: string): readonly string[] =>
+      text.split("\n").filter((line) => line.startsWith("| Test"));
+    expect(benchmarkRows(markdown)).toEqual(benchmarkRows(toMarkdown(GRID, OPTIONS)));
+  });
+
+  test("reports a failed column's Warm-up as failed, not as a number it never took", () => {
+    const failed = toMarkdown(
+      {
+        ...withWarmup,
+        columns: withWarmup.columns.map((column) =>
+          column.id === "pgrust-memory"
+            ? { ...column, available: false, unavailableReason: "boom", failed: true }
+            : column,
+        ),
+      },
+      OPTIONS,
+    );
+    expect(failed.split("\n")[6]).toBe("| Warm-up | 40.000 | 30.000 | 0.75× | failed | – |");
+  });
+
+  test("shows the placeholder until a column has run its Warm-up", () => {
+    const pending = toMarkdown({ ...withWarmup, warmup: { label: "Warm-up", cells: {} } }, OPTIONS);
+    expect(pending.split("\n")[6]).toBe("| Warm-up | – | – | – | skipped | – |");
+  });
+
+  test("writes no Warm-up row for a grid that has none", () => {
+    expect(toMarkdown(GRID, OPTIONS)).not.toContain("| Warm-up |");
+  });
+});

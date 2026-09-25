@@ -354,6 +354,13 @@ export interface EngineRunner {
    * session per Client, and everything else needs the one every Engine has anyway.
    */
   open(config: Configuration, preamble: string, sessions?: number): Promise<void>;
+  /**
+   * Execute one SQL string untimed, on the first session.
+   *
+   * What `open` does with its preamble, for a caller that has to put something between the boot and
+   * the setup: a Suite Run opens with no preamble, times its Warm-up, and only then runs its setup.
+   */
+  exec(sql: string): Promise<void>;
   /** Execute one SQL string and return its Measurement. */
   measure(sql: string): Promise<Measurement>;
   /**

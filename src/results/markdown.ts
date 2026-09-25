@@ -5,7 +5,7 @@
 
 import { EMPTY_CELL, formatDetail, formatMs, formatRatio } from "./format";
 import type { GridColumn, ResultsGrid } from "./grid";
-import { hasRatioColumn, readCell, rowDetails, unmeasuredCellText } from "./grid";
+import { hasRatioColumn, readCell, readWarmup, rowDetails, unmeasuredCellText } from "./grid";
 
 export interface MarkdownExportOptions {
   readonly title: string;
@@ -23,6 +23,12 @@ export interface MarkdownExportOptions {
    * Concurrency Suite. Absent for a Suite with nothing to add.
    */
   readonly suiteLine?: string;
+  /**
+   * The line that says this Run had a Warm-up, and which script it was, above the table whose first
+   * row is that Warm-up's. An export without it is from before the Warm-up existed, when every
+   * Suite's first Benchmark paid the Engine's first-use costs itself.
+   */
+  readonly warmupLine?: string;
 }
 
 function row(cells: readonly string[]): string {
@@ -56,10 +62,19 @@ export function markdownHeaderCells(grid: ResultsGrid, baselineLabel: string): r
   return cells;
 }
 
-function bodyRowCells(grid: ResultsGrid, rowId: string, rowLabel: string): readonly string[] {
+/**
+ * One body row: its label, then every column's number (or why it has none) and, after every column
+ * but the Baseline, the ratio. A Benchmark's row and the Warm-up line are the same shape; only where
+ * their numbers are read from differs, which is what `read` says.
+ */
+function bodyRowCells(
+  grid: ResultsGrid,
+  rowLabel: string,
+  read: (columnId: string) => number | undefined,
+): readonly string[] {
   const cells: string[] = [escapeCell(rowLabel)];
   for (const column of grid.columns) {
-    const value = readCell(grid.cells, column.id, rowId);
+    const value = read(column.id);
     if (!column.available && value === undefined) {
       cells.push(unmeasuredCellText(column));
       if (hasRatioColumn(grid, column.id)) {
@@ -69,7 +84,7 @@ function bodyRowCells(grid: ResultsGrid, rowId: string, rowLabel: string): reado
     }
     cells.push(formatMs(value));
     if (hasRatioColumn(grid, column.id)) {
-      cells.push(formatRatio(value, readCell(grid.cells, grid.baselineColumnId, rowId)));
+      cells.push(formatRatio(value, read(grid.baselineColumnId)));
     }
   }
   return cells;
@@ -101,9 +116,18 @@ export function toMarkdown(grid: ResultsGrid, options: MarkdownExportOptions): s
   if (options.suiteLine !== undefined) {
     lines.push(options.suiteLine, "");
   }
+  if (options.warmupLine !== undefined) {
+    lines.push(options.warmupLine, "");
+  }
   lines.push(row(header), row(header.map(() => "---")));
+  // The Warm-up is the table's first row and never one of its Benchmarks: its label does not start
+  // with `Test`, which is what every total taken from a pasted table sums over.
+  const warmup = grid.warmup;
+  if (warmup !== undefined) {
+    lines.push(row(bodyRowCells(grid, warmup.label, (columnId) => readWarmup(grid, columnId))));
+  }
   for (const gridRow of grid.rows) {
-    lines.push(row(bodyRowCells(grid, gridRow.id, gridRow.label)));
+    lines.push(row(bodyRowCells(grid, gridRow.label, (columnId) => readCell(grid.cells, columnId, gridRow.id))));
   }
   const details = detailLines(grid);
   if (details.length > 0) {

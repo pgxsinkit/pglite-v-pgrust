@@ -3,9 +3,15 @@
  *
  * The worker is created here and terminated here, which is also how a Memory Configuration's state is
  * cleared between Runs — the data directory lives in the worker heap and dies with it.
+ *
+ * In order: the Engine boots and its store opens; the **Warm-up** runs, timed; the Suite's untimed
+ * setup runs; then the Benchmarks. The Warm-up comes before the setup in every Suite, so its line
+ * measures the same thing in all three — the first SQL an Engine runs after boot — and so the
+ * Concurrency Suite's 100 000-row setup cannot pay the first-use costs untimed and leave its Warm-up
+ * line measuring an Engine that is already warm.
  */
 
-import type { Configuration, Measurement } from "../engines/contract";
+import type { Configuration, EngineId, EngineRunner, Measurement } from "../engines/contract";
 import { applyModSql, configurationDialect } from "../engines/contract";
 import type { EngineStats } from "../engines/protocol";
 import { createEngineRunner } from "../engines/registry";
@@ -16,6 +22,11 @@ import { isScenarioBenchmark, suiteSessions } from "../suites/types";
 
 /** Every SQL string one Run will execute, with the Configuration's rewrite already applied. */
 export interface RunPlan {
+  /**
+   * The Warm-up, as the Engine will see it; null for a plan that was not given one (the probes,
+   * which reuse a Suite's setup and Benchmarks but are not Suite Runs).
+   */
+  readonly warmupSql: string | null;
   /** The untimed setup or preamble, as the Engine will see it. */
   readonly setupSql: string;
   /** The Suite's Benchmarks, each carrying the SQL this Configuration will actually be handed. */
@@ -38,11 +49,20 @@ export interface RunPlan {
  * its Benchmarks differently for SQLite (the Concurrency Suite does) still has to be handed to a
  * Configuration's own rewrite, and a Configuration that has none gets the dialect's spelling
  * untouched.
+ *
+ * The Warm-up is rewritten too, for the same reason as the setup: an unlogged column whose Warm-up
+ * created a logged table would warm a path its Benchmarks never take.
  */
-export function planRun(suite: Suite, configuration: Configuration, setupSql: string): RunPlan {
+export function planRun(
+  suite: Suite,
+  configuration: Configuration,
+  setupSql: string,
+  warmupSql: string | null = null,
+): RunPlan {
   const rewrite = (sql: string): string => applyModSql(configuration, sql);
   const benchmarks = suite.benchmarksFor?.(configurationDialect(configuration)) ?? suite.benchmarks;
   return {
+    warmupSql: warmupSql === null ? null : rewrite(warmupSql),
     setupSql: rewrite(setupSql),
     benchmarks: benchmarks.map((benchmark) =>
       isScenarioBenchmark(benchmark)
@@ -62,11 +82,30 @@ export interface BenchmarkResult {
   readonly detail?: Measurement["detail"];
 }
 
+/**
+ * What one Run's Warm-up took: one Measurement, never aggregated and never a Benchmark's.
+ *
+ * Reported through its own callback rather than as a `BenchmarkResult` with a reserved id, so
+ * nothing that collects Benchmark results — a row, a total — can collect it by accident.
+ */
+export interface WarmupResult {
+  readonly configurationId: string;
+  /** The Warm-up's wall time in milliseconds, taken inside the worker as a Benchmark's is. */
+  readonly elapsedMs: number;
+}
+
 export interface RunOptions {
   readonly suite: Suite;
   readonly configuration: Configuration;
   /** The preamble (Speedtest) or initial setup (RTT, Concurrency) run untimed before the first Benchmark. */
   readonly setupSql: string;
+  /**
+   * The Warm-up script, run once and timed after the Engine opens and before `setupSql`, on the
+   * first Session. The same text for every Suite and every Engine: `src/suites/warmup.sql`.
+   */
+  readonly warmupSql: string;
+  /** Called once, when the Warm-up completes, before the setup and the first Benchmark. */
+  readonly onWarmup: (result: WarmupResult) => void;
   /** Called as each Benchmark completes, so the table fills in progressively. */
   readonly onResult: (result: BenchmarkResult) => void;
   /**
@@ -80,6 +119,8 @@ export interface RunOptions {
    */
   readonly onStats?: (configurationId: string, stats: EngineStats) => void;
   readonly signal?: AbortSignal;
+  /** Where the Engine comes from; the worker-backed registry unless a test hands in its own. */
+  readonly createRunner?: (engine: EngineId) => EngineRunner;
 }
 
 function assertNotAborted(signal: AbortSignal | undefined): void {
@@ -89,11 +130,21 @@ function assertNotAborted(signal: AbortSignal | undefined): void {
 }
 
 export async function runSuite(options: RunOptions): Promise<void> {
-  const { suite, configuration, setupSql, onResult, onStats, signal } = options;
-  const plan = planRun(suite, configuration, setupSql);
-  const runner = createEngineRunner(configuration.engine);
+  const { suite, configuration, setupSql, warmupSql, onWarmup, onResult, onStats, signal } = options;
+  const plan = planRun(suite, configuration, setupSql, warmupSql);
+  const runner = (options.createRunner ?? createEngineRunner)(configuration.engine);
   try {
-    await runner.open(configuration, plan.setupSql, plan.sessions);
+    // Booted with no preamble, so the Warm-up is the first SQL the Engine runs.
+    await runner.open(configuration, "", plan.sessions);
+    if (plan.warmupSql !== null) {
+      assertNotAborted(signal);
+      const warmup = await runner.measure(plan.warmupSql);
+      onWarmup({ configurationId: configuration.id, elapsedMs: warmup.elapsedMs });
+    }
+    if (plan.setupSql.trim() !== "") {
+      assertNotAborted(signal);
+      await runner.exec(plan.setupSql);
+    }
     for (const benchmark of plan.benchmarks) {
       assertNotAborted(signal);
       const measurements: Measurement[] = [];

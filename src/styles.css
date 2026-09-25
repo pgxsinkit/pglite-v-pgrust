@@ -207,6 +207,12 @@ th .mode {
   font-weight: 600;
 }
 
+/* The Warm-up line: above the Benchmarks and never one of them, so it reads as set apart. */
+tr.warmup td {
+  font-style: italic;
+  border-bottom-width: 2px;
+}
+
 /*
  * The Detail of one Benchmark, folded away under its row: a cell stays one number, and everything
  * that number was computed from is one click away.

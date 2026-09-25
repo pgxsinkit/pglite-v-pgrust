@@ -8,7 +8,11 @@
 import { describe, expect, test } from "bun:test";
 
 import { CONFIGURATION_IDS } from "../src/configurations";
-import { DEFAULT_BENCH_OPTIONS, parseBenchArguments } from "./bench";
+import { cellKey } from "../src/results/grid";
+import { toMarkdown } from "../src/results/markdown";
+import { WARMUP_EXPORT_LINE, WARMUP_LABEL } from "../src/suites/warmup";
+import type { BenchReport } from "./bench";
+import { DEFAULT_BENCH_OPTIONS, parseBenchArguments, renderResultsFile } from "./bench";
 
 describe("parseBenchArguments", () => {
   test("runs all three Suites by default, in page order", () => {
@@ -76,5 +80,45 @@ describe("parseBenchArguments", () => {
   test("allows the whole default run inside the default deadline", () => {
     expect(DEFAULT_BENCH_OPTIONS.timeoutMs).toBeGreaterThanOrEqual(2_400_000);
     expect(parseBenchArguments(["--timeout", "900000"]).options.timeoutMs).toBe(900_000);
+  });
+});
+
+describe("renderResultsFile", () => {
+  // The page's export, as the lane reads it off the page: a Warm-up line above the table and the
+  // Warm-up as its first row.
+  const markdown = toMarkdown(
+    {
+      rows: [{ id: "1", label: "Test 1: 1000 INSERTs" }],
+      columns: [{ id: "pglite-memory", label: "PGlite Memory", available: true }],
+      baselineColumnId: "pglite-memory",
+      cells: { [cellKey("pglite-memory", "1")]: 60 },
+      warmup: { label: WARMUP_LABEL, cells: { "pglite-memory": 45 } },
+    },
+    {
+      title: "Speedtest Suite",
+      environmentLine: "environment",
+      baselineLabel: "PGlite Memory",
+      warmupLine: WARMUP_EXPORT_LINE,
+    },
+  );
+  const report: BenchReport = {
+    browser: "chromium",
+    contextKind: "persistent",
+    keptProfileDir: null,
+    skipped: false,
+    reason: null,
+    environmentLine: "environment",
+    suites: [{ suiteId: "speedtest", markdown, failures: "" }],
+    outputPath: null,
+    consoleErrors: [],
+  };
+
+  test("carries each Suite's Warm-up line and row, and keeps it out of the `| Test` rows", () => {
+    const written = renderResultsFile(report, "2026-09-25T00:00:00.000Z");
+    expect(written).toContain(WARMUP_EXPORT_LINE);
+    expect(written).toContain("| Warm-up | 45.000 |");
+    expect(written.split("\n").filter((line) => line.startsWith("| Test"))).toEqual([
+      "| Test 1: 1000 INSERTs | 60.000 |",
+    ]);
   });
 });

@@ -4,7 +4,7 @@ import { Fragment } from "react";
 import type { MeasurementDetail } from "../engines/contract";
 import { formatDetail, formatMs, formatRatio } from "../results/format";
 import type { GridColumn, ResultsGrid } from "../results/grid";
-import { gridColumnSpan, hasRatioColumn, readCell, rowDetails, unmeasuredCellText } from "../results/grid";
+import { gridColumnSpan, hasRatioColumn, readCell, readWarmup, rowDetails, unmeasuredCellText } from "../results/grid";
 
 export interface ResultsTableProps {
   readonly grid: ResultsGrid;
@@ -35,29 +35,49 @@ export function ResultsTable({ grid, baselineLabel, activeColumnId }: ResultsTab
         </tr>
       </thead>
       <tbody>
+        {grid.warmup === undefined ? null : (
+          <tr className="warmup">
+            <td>{grid.warmup.label}</td>
+            <RowValueCells grid={grid} read={(columnId) => readWarmup(grid, columnId)} />
+          </tr>
+        )}
         {grid.rows.map((row) => (
           <Fragment key={row.id}>
             <tr>
               <td>{row.label}</td>
-              {grid.columns.map((column) => {
-                const value = readCell(grid.cells, column.id, row.id);
-                const baseline = readCell(grid.cells, grid.baselineColumnId, row.id);
-                const className = column.available ? undefined : "unavailable";
-                return (
-                  <ValueCells
-                    key={column.id}
-                    className={className}
-                    text={column.available || value !== undefined ? formatMs(value) : unmeasuredCellText(column)}
-                    ratio={hasRatioColumn(grid, column.id) ? formatRatio(value, baseline) : null}
-                  />
-                );
-              })}
+              <RowValueCells grid={grid} read={(columnId) => readCell(grid.cells, columnId, row.id)} />
             </tr>
             <DetailRow grid={grid} rowId={row.id} rowLabel={row.label} />
           </Fragment>
         ))}
       </tbody>
     </table>
+  );
+}
+
+interface RowValueCellsProps {
+  readonly grid: ResultsGrid;
+  /** Where this row's numbers come from: a Benchmark's cells, or the Warm-up line's. */
+  readonly read: (columnId: string) => number | undefined;
+}
+
+/** Every column's number and ratio for one row; the Warm-up line and a Benchmark's row alike. */
+function RowValueCells({ grid, read }: RowValueCellsProps): JSX.Element {
+  return (
+    <>
+      {grid.columns.map((column) => {
+        const value = read(column.id);
+        const className = column.available ? undefined : "unavailable";
+        return (
+          <ValueCells
+            key={column.id}
+            className={className}
+            text={column.available || value !== undefined ? formatMs(value) : unmeasuredCellText(column)}
+            ratio={hasRatioColumn(grid, column.id) ? formatRatio(value, read(grid.baselineColumnId)) : null}
+          />
+        );
+      })}
+    </>
   );
 }
 

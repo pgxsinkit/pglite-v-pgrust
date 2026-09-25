@@ -47,8 +47,12 @@ export class WorkerEngineRunner implements EngineRunner {
     await this.#waitForReady(worker, config.label);
     await this.#call({ kind: "open", ...toOpenSettings(config, sessions) });
     if (preamble.trim() !== "") {
-      await this.#call({ kind: "exec", sql: preamble });
+      await this.exec(preamble);
     }
+  }
+
+  async exec(sql: string): Promise<void> {
+    await this.#call({ kind: "exec", sql });
   }
 
   async measure(sql: string): Promise<Measurement> {
