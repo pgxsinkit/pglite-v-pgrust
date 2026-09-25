@@ -1,5 +1,11 @@
 # Prepared statements: a reused generic plan halves pgrust's per-statement cost on the index rows and takes it from 1.74–1.80× PGlite to 1.34–1.45× (1.09–1.20× in Chromium on disk)
 
+> **Later the same day: the leak of §8 is fixed.** pgrust `3624f82cf0` gives `PortalDefineQuery`'s
+> copy of the source text back to the portal and frees it at `PortalDrop`: every path §8 measured now
+> keeps 0 bytes, and A's Run through row 9 completes. See
+> [Adopted (2026-09-25)](#adopted-2026-09-25-the-leak-of-8-is-fixed-in-the-engine). Nothing above
+> was changed.
+
 - Date: 2026-09-25
 - Machine: i7-1165G7 (8 logical cores), 30 GiB, Linux 7.0.0-34-generic. An incus VM (`dev101`, qemu,
   not started by this probe) came up at 10:30 and took two cores while it booted, which held the
@@ -654,4 +660,214 @@ bun tmp/agents/prepared/deltas.ts A2 > tmp/agents/prepared/deltas-A2.md
 bun tmp/agents/prepared/deltas.ts Bn > tmp/agents/prepared/deltas-Bn.md
 bun tmp/agents/profile3/callers3.ts --runs tmp/agents/prepared/prof/arm-Bn-prof:tmp/agents/prepared/results/node-arm-Bn-prof.json \
   --rows r2-9,r3-9 --leaf '^(clock_time_get|dv)$' --depth 6
+```
+
+## Adopted (2026-09-25): the leak of §8 is fixed in the engine
+
+Later the same day. Two commits on pgxsinkit/pgrust `spike/wasip1-threads`, on top of `569d16128c`,
+are now the engine this repo runs: `src/vendor/pgrust/VERSION` is `3624f82cf0`, both modules were
+rebuilt and synced into `public/pgrust/` by `bun run sync:pgrust`, and `bun run pgrust:bundle`
+packaged them as `pgrust-assets/3624f82c` (built locally; not published by this change).
+
+- **`ba304a4e65` portalmem: `PortalDefineQuery`'s copy of the source text belongs to the portal
+  again, and `PortalDrop` frees it.** `PortalData.sourceText` becomes `Option<PortalSourceText>`,
+  either `Owned(PgString)` or `Shared(&str)`. `PortalDefineQuery` (Bind, `EXECUTE`,
+  `DECLARE CURSOR`, SPI cursors) stores an owned copy; `PortalDrop` and the discard of a parked shell
+  clear it, so it is freed on every drop path, abort included (`AtCleanup_Portals` drops through
+  `PortalDrop`), and a shell that parks keeps its text for the retained Bind that reuses it. That is
+  v0.3's ownership with C's lifetime: C's callers copy into `portalContext`, which `PortalDrop`
+  deletes. `PortalDefineQuerySharedText` and `exec_simple_query` still share the message and copy
+  nothing. A new portalmem unit test defines and drops a portal 100 times with a 4 KiB text and
+  asserts `TopPortalContext` does not grow; on the leaking shape it grows by 409 600 bytes.
+- **`3624f82cf0` tcop: `check_log_duration` tests the logging settings before it reads the clock,
+  as C does** (§6: 41% of B named's clock reads). With logging on, `check_log_duration_impl` behaves
+  as before; its seven sampling tests pass, with the other 42 in the `postgres` crate. What it buys
+  B named per statement was not re-measured.
+
+**The probe again.** `tmp/agents/leakfix/leak-probe.ts` is §8's probe with a `--module` flag and two
+more paths, so all four copying callers are covered: `DECLARE CURSOR`
+(`BEGIN; DECLARE c CURSOR FOR SELECT <n>; CLOSE c; COMMIT;`) and an SPI cursor (a `DO` block's
+`FOR r IN SELECT <n> AS n LOOP`). Same method: 2 000 statements per path after 50 of warm-up,
+`TopPortalContext`'s `used_bytes` before and after, one node process per module.
+
+| path (2 000 statements) | source text | OLD `df17f7e2…`, bytes kept per statement | NEW `556d0731…` | NEW, `used_bytes` before → after |
+| --- | --- | --- | --- | --- |
+| `exec("SELECT n")`, the simple protocol | 11 | 0.1 | 0.0 | 328 → 328 |
+| `query("SELECT $1::int", [n])`, unnamed Parse/Bind/Execute | 14 | 16.1 | 0.0 | 328 → 328 |
+| Bind/Execute on a named `SELECT $1::int` | 14 | 0.1 | 0.0 | 360 → 360 |
+| Bind/Execute on a named `SELECT count(*) FROM pg_class WHERE oid = $1` | 44 | 64.1 | 0.0 | 360 → 360 |
+| `EXECUTE s(n)`, `PREPARE s(int) AS SELECT $1` sent alone | 27 | 32.1 | 0.0 | 520 → 520 |
+| `DECLARE c CURSOR FOR SELECT n`, in a four-statement text | 57 | 64.1 | 0.0 | 496 → 496 |
+| an SPI cursor, `DO … FOR r IN SELECT n AS n LOOP …` | 16 | 16.1 | 0.0 | 392 → 392 |
+| `EXECUTE l(n)`, `PREPARE l` inside a 64 KiB text | 65 578 | 65 578.1 | 0.0 | 520 → 520 |
+
+OLD reproduces §8's six figures to the tenth. NEW keeps nothing on any path: `used_bytes` does not
+move by a byte. OLD's 0.1 on the simple and named rows is 128 bytes over the 2 000 statements, the
+chunk the probe's own 100-character `query()` of `pg_backend_memory_contexts` left behind.
+
+**§8's crashing Run completes.** `pgrust-A-full` (A on all four rows, round 1, `driver.ts` with a
+300 s watchdog), rerun with `--module` NEW: every row answers, cold — row 1 in 148.8 ms, row 7 in
+466.9 ms (OLD: 834.6), row 9 in 2 710.0 ms and row 10 in 4 861.6 ms — and it ends with the t1 and
+t2 checksums of OLD's one-round A Runs. OLD's backend died 2 615 statements into row 9 with 2.42 GB
+in `TopPortalContext`; NEW's server log has no context dump
+(`tmp/agents/leakfix/results/node-pgrust-A-full-new.server.log`). One Run, behind the load gate
+(255 s wait; 2.25 → 2.36).
+
+**The gate.**
+
+| Lane | Result |
+| --- | --- |
+| `cargo test -p portalmem -p types_portal -p pquery -p portalcmds -p pg_proc -p postgres -p prepare -p spi` (1.96.0, the repo's pin) | **127 pass, 0 fail** (portalmem 31, postgres 49, pquery 15, portalcmds 11 + 1 ignored, prepare 8, pg_proc 6, types_portal 6, spi 1) |
+| `cargo test -p exectuples_output -p explain -p printtup`, the crates whose tests build a `PortalData` | pass |
+| `cargo build -p main_main`; `cargo clippy --no-deps` on the six touched crates | clean; no warning on a touched line |
+| `--dispatch postmaster --fs broker` | `VERDICT: postmaster-node PASS fs=broker`, delta 5 files / 139 636 bytes, as at `31b5259d22` |
+| `--dispatch stdio-wire-threaded … --mount /pgeph=memory --sql wasm/tablespace-proof.sql` | `VERDICT: threads-node PASS fs=broker` |
+| `… --mount /pgdata/pg_tblspc=memory --sql wasm/tablespace-inplace-proof.sql` | `VERDICT: threads-node PASS fs=broker` |
+| `node wasm/tablespace-host-proof.mjs` | `VERDICT: tablespace-host-proof PASS` |
+| `node --test wasm/test/sab-pipe-host-gate.test.mjs` | pass 6, fail 0 |
+| `--sql wasm/browser-profile-proof.sql` | `VERDICT: threads-node PASS fs=broker` |
+| `bun run test:pgxsinkit-on-pgrust`, pgxsinkit `06ba369` | **2073 pass, 0 fail** in 421.1 s |
+| `lifetime-smoke` ([the portal source-text note](2026-09-18-portal-source-text-share.md) §4) | PASS; case (b)'s held cursor, now an owned copy, keeps its `DECLARE` text across the later message |
+| `bun run bench --suite rtt --configurations pgrust-memory` (the single-session module) | 12 of 12 |
+
+pgrust's `lint_determinism` test fails as it did before, on spike files these commits do not touch.
+
+**The modules**, both `browser`, `wasm-release`, the script's defaults (opt-level 3, fat LTO, one
+codegen unit, `wasm-opt -Oz --one-caller-inline-max-function-size=0`), toolchain
+`nightly-2026-07-17`. **Binaryen 133** did the pass, where the published modules had 132, so bytes
+differ for that reason as well as the source:
+
+| Module | raw | vs `569d1612` | gzip -9 -n | vs `569d1612` | sha256 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `postgres-threads.wasm` | 39 981 509 | −23 429 | 13 876 753 | −9 757 | `556d0731dd5f09249151a6ec13c6c03b61f524c6155fcefbab45f9fca7ecd32c` |
+| `postgres.wasm` | 39 137 339 | −23 523 | 13 894 386 | −4 640 | `4c010907fe9f1aabe338091ccffa94aef373531e6086963bf6c8c936ba5f2787` |
+
+**The Speedtest.** `tmp/agents/leakfix/ab.ts`, the adopt gate's driver (§ Adopted of
+[the store levers](2026-09-24-store-levers.md)) with the module as the arm: `bun run bench`'s
+persistent context on a fresh profile, `pglite-opfs-repacked-relaxed,pgrust-postmaster-opfs-repacked-relaxed`
+in one page with PGlite OPFS the Baseline, headless Chromium 149.0.7827.55. `dist/` is the bench's
+own build of the pinned tree; the only file a Run changes is `dist/pgrust/postgres-threads.wasm`,
+unlinked and replaced by OLD (the published `df17f7e2…`) or NEW before the Run, and every other file
+in `dist/` is sha-verified against the post-build snapshot before and after every Run. The bench's
+build was run again after the last Run and reproduced the post-pin `dist/` byte for byte. Every Run
+waited for the 1-minute load under 2.5.
+
+The two interleaved rounds (NEW, OLD; OLD, NEW) ran while a dictionary import in another session
+took 15–65% of a core beside the usual VM, and the PGlite control moved 19% between Runs:
+
+| Benchmark | NEW r1 | OLD r1 | OLD r2 | NEW r2 |
+| --- | ---: | ---: | ---: | ---: |
+| 1: 1000 INSERTs | 434.2 | 347.4 | 450.5 | 260.3 |
+| 2: 25000 INSERTs in a transaction | 1 732.7 | 1 733.6 | 2 121.9 | 1 636.4 |
+| 7: 5000 SELECTs with an index | 1 289.1 | 1 439.9 | 1 251.7 | 1 354.6 |
+| 9: 25000 UPDATEs with an index | 3 262.2 | 3 564.6 | 3 225.6 | 3 650.1 |
+| 11: INSERTs from a SELECT | 388.5 | 433.5 | 409.9 | 526.1 |
+| **Suite total** | **15 876.7** | **17 378.2** | **16 729.6** | **18 342.0** |
+| `pglite-opfs-repacked-relaxed` in the same page | 10 887.1 | 9 840.4 | 11 529.3 | 9 713.9 |
+| pgrust ÷ PGlite OPFS | 1.46× | 1.77× | 1.45× | 1.89× |
+| wasm memory high-water (MiB) | 266.4 | 266.4 | 266.4 | 266.6 |
+
+NEW's two-round sum is 34 219 ms against OLD's 34 108, **0.33% slower**, inside the 3% the gate
+allows, but on a box that could not resolve 3%: pgrust ÷ PGlite swung 1.45–1.89× within each arm. Two
+more rounds under the same conditions (r3, r4) came out 10.0% apart, NEW slower (18 302 / 16 557
+against 14 987 / 16 693), so they were followed by a node micro A/B and, once the import had
+finished, four more rounds.
+
+The node micro A/B (`tmp/agents/leakfix/cpu-ab.ts`: the bench's engine under node, rows 1 to 3.1
+once, then rows 4 and 5 ten times each, row 6, row 7 ten times; three processes per module,
+interleaved OLD, NEW, NEW, OLD, OLD, NEW) found the read-only rows level or close: median of the
+three per-process medians, row 5 OLD 828.8 ms, NEW 817.0; row 7 OLD 703.1, NEW 704.6; row 4 OLD
+354.1, NEW 367.7, NEW slower in all three pairs (+3 to +9%), which on the Suite is under 0.3%.
+
+With the import gone, the PGlite control held to 4.5% over eight Runs (8 363–8 741 ms), and all 18
+rows were in every Run:
+
+| Benchmark | NEW r5 | OLD r5 | OLD r6 | NEW r6 | NEW r7 | OLD r7 | OLD r8 | NEW r8 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1: 1000 INSERTs | 280.6 | 320.4 | 265.4 | 298.4 | 248.5 | 269.4 | 261.4 | 256.3 |
+| 2: 25000 INSERTs in a transaction | 1 106.5 | 1 283.9 | 1 113.5 | 1 105.6 | 1 205.3 | 1 321.4 | 1 097.1 | 1 103.5 |
+| 2.1: 25000 INSERTs in single statement | 223.5 | 240.7 | 231.7 | 219.6 | 223.1 | 242.6 | 252.4 | 224.5 |
+| 3: 25000 INSERTs into an indexed table | 1 208.4 | 1 313.3 | 1 191.7 | 1 215.9 | 1 189.8 | 1 316.5 | 1 183.1 | 1 198.5 |
+| 3.1: 25000 INSERTs into an indexed table in single statement | 265.5 | 280.8 | 230.0 | 255.0 | 222.8 | 248.3 | 230.5 | 255.8 |
+| 4: 100 SELECTs without an index | 432.9 | 473.3 | 431.7 | 414.6 | 433.3 | 434.9 | 413.2 | 403.1 |
+| 5: 100 SELECTs on a string comparison | 882.0 | 822.5 | 809.8 | 847.2 | 884.5 | 961.9 | 814.4 | 815.3 |
+| 6: Creating an index | 37.8 | 37.3 | 37.6 | 38.8 | 52.8 | 45.0 | 37.5 | 37.4 |
+| 7: 5000 SELECTs with an index | 905.0 | 1 004.6 | 921.3 | 929.9 | 934.9 | 979.8 | 944.0 | 951.8 |
+| 8: 1000 UPDATEs without an index | 214.4 | 231.7 | 225.3 | 230.9 | 236.7 | 227.6 | 215.1 | 223.0 |
+| 9: 25000 UPDATEs with an index | 2 698.1 | 2 681.4 | 2 720.5 | 2 625.7 | 2 624.7 | 2 861.3 | 2 658.3 | 2 741.1 |
+| 10: 25000 text UPDATEs with an index | 2 985.5 | 3 014.8 | 2 994.0 | 3 050.2 | 3 025.4 | 3 200.3 | 2 989.1 | 3 252.6 |
+| 11: INSERTs from a SELECT | 323.1 | 327.9 | 326.3 | 385.7 | 341.1 | 340.2 | 333.2 | 424.0 |
+| 12: DELETE without an index | 37.4 | 31.4 | 31.0 | 36.5 | 30.0 | 31.1 | 43.5 | 31.6 |
+| 13: DELETE with an index | 53.0 | 50.3 | 60.7 | 49.1 | 43.6 | 49.2 | 50.2 | 61.7 |
+| 14: A big INSERT after a big DELETE | 279.0 | 264.2 | 270.7 | 290.4 | 249.2 | 247.6 | 250.1 | 289.8 |
+| 15: A big DELETE followed by many small INSERTs | 377.6 | 383.2 | 377.8 | 384.0 | 383.9 | 366.3 | 371.7 | 443.3 |
+| 16: DROP TABLE | 18.7 | 17.0 | 16.8 | 15.9 | 19.2 | 17.7 | 17.3 | 17.8 |
+| **Suite total** | **12 328.9** | **12 778.6** | **12 255.9** | **12 393.3** | **12 348.8** | **13 161.1** | **12 161.8** | **12 731.0** |
+| `pglite-opfs-repacked-relaxed` in the same page | 8 514.4 | 8 629.5 | 8 740.5 | 8 444.3 | 8 472.2 | 8 362.6 | 8 513.5 | 8 510.2 |
+| pgrust ÷ PGlite OPFS | 1.45× | 1.48× | 1.40× | 1.47× | 1.46× | 1.57× | 1.43× | 1.50× |
+| wasm memory high-water (MiB) | 266.4 | 266.4 | 266.4 | 266.6 | 266.4 | 266.4 | 266.4 | 266.4 |
+| load before → after (1-min) | 2.04 → 2.05 | 2.05 → 2.59 | 2.32 → 2.07 | 2.07 → 2.08 | 1.46 → 2.13 | 2.13 → 2.81 | 2.15 → 2.15 | 2.15 → 3.37 |
+
+Over these four rounds NEW sums 49 802 ms against OLD's 50 357, **1.1% faster**, and 1.47× PGlite
+OPFS against 1.47×; best of four per row, NEW is at most 3% slower on any row (row 15) and up to
+13% faster (row 13, a 50 ms row). Over all eight rounds, the noisy four included, NEW is 2.35% slower. The shared
+memory is 266.4–266.6 MiB in every Run of both arms: the Speedtest's simple-protocol texts never
+went through the leaking path, so the fix does not move its peak.
+
+**RTT and Concurrency**, pgrust column, one Run each on NEW as the gate asks and one on OLD beside
+it, in the noisy hour (r1) and again once the import had finished (r2):
+
+| | NEW r1 | OLD r1 | NEW r2 | OLD r2 | PGlite OPFS, the four Runs |
+| --- | ---: | ---: | ---: | ---: | --- |
+| RTT: insert small row | 1.019 | 0.896 | 0.738 | 0.738 | 0.355–0.416 |
+| RTT: delete small row | 2.527 | 2.780 | 1.662 | 1.724 | 0.468–0.569 |
+| RTT: update 1kb row | 0.626 | 0.894 | 0.536 | 0.470 | 0.319–0.385 |
+| **RTT: sum of the 12** | **11.80** | **11.74** | **9.14** | **8.99** | 4.88–5.65 |
+| Concurrency 1: read fan-out, total wall | 1 072.2 | 928.7 | 838.5 | 924.1 | 739.7–879.5 |
+| **Concurrency 4: writers on disjoint rows (tx/s)** | **2 326** | **2 996** | **3 914** | **3 960** | 1 302–1 501 |
+| **Concurrency 5: writers on the same row, p95** | **5.720** | **1.870** | **2.225** | **2.445** | 3.825–5.430 |
+| wasm memory high-water (MiB), RTT / Concurrency | 256.0 / 270.0 | 256.0 / 270.0 | 256.0 / 270.0 | 256.0 / 270.3 | |
+
+No Benchmark failed in any Run. On the quiet box the two modules agree (RTT sum 9.14 against 8.99,
+disjoint writers 3 914 against 3 960 tx/s). The noisy pair differs by more (Test 4 2 326 against
+2 996 tx/s, Test 5 5.72 against 1.87 ms), in the hour whose PGlite control also moved, and the quiet
+pair does not reproduce it. None of the four is near [the store levers' adopt gate](2026-09-24-store-levers.md) (RTT sum
+8.38–8.49, Test 4 4 829–5 100), which ran on a quieter evening; this note does not compare across the
+two.
+
+**Verdict.** Adopted. The leak is gone on every path the probe has and on §8's crashing Run, the
+simple-query path still copies nothing, and the Speedtest is level: 0.33% slower over the gate's two
+rounds, 1.1% faster over four on a quiet box, 266.4 MiB either way. Of §8's closing sentence, what
+is left is PostgreSQL's own behaviour: a `PREPARE` inside a large text makes every `EXECUTE` copy
+that text into its portal, in PGlite and now in pgrust alike, and frees it with the portal.
+
+**Not shown.** The second commit's saving on B named (§6's clock reads), not re-measured. Whether
+NEW's row-4 difference in node is the source or Binaryen 133: OLD's source was not rebuilt on
+Binaryen 133. Safari and phones. The copy-into-`portalContext` shape C uses was not tried: a copy in
+the portal's context would stop `PortalDrop` pooling it (it pools only empty contexts) and would die
+under a parked shell that still needs its text.
+
+Reproduction, from the root (the pgrust half in `/home/anton/dev/tmp/pgrust`, scratch under each
+repo's `tmp/agents/leakfix/`):
+
+```
+# pgrust: native tests, the two modules, the six lanes
+cargo test -p portalmem -p types_portal -p pquery -p portalcmds -p pg_proc -p postgres -p prepare -p spi
+PGRUST_WASM_FEATURES=browser PGRUST_WASM_TARGET=wasm32-wasip1-threads PGRUST_WASM_PROFILE=wasm-release wasm/wasm-build.sh
+PGRUST_WASM_FEATURES=browser PGRUST_WASM_PROFILE=wasm-release wasm/wasm-build.sh
+tmp/agents/leakfix/lanes.sh
+
+# here: probe, crashing Run, pin, gate
+node --import ./tmp/agents/anchors/node-ts-hooks.ts tmp/agents/leakfix/leak-probe.ts --engine pgrust --module <postgres-threads.wasm> --tag <old|new>
+node --import ./tmp/agents/anchors/node-ts-hooks.ts tmp/agents/prepared/driver.ts --engine pgrust --tag pgrust-A-full-new \
+  --mode rows --variant A --module tmp/agents/leakfix/new/postgres-threads.wasm --rounds 1 --watchdog-ms 300000 --out tmp/agents/leakfix/results
+bun run sync:pgrust && bun run build && bun tmp/agents/leakfix/ab.ts --snapshot
+tmp/agents/leakfix/gate.sh      # Speedtest r1, r2; RTT and Concurrency on NEW; rebuild
+tmp/agents/leakfix/gate2.sh     # Speedtest r3, r4; RTT and Concurrency on OLD
+tmp/agents/leakfix/cpu-ab.sh    # the node micro A/B
+tmp/agents/leakfix/gate3.sh && tmp/agents/leakfix/gate4.sh && tmp/agents/leakfix/gate5.sh   # r5, r6; RTT/Concurrency r2; r7, r8
+bun tmp/agents/leakfix/tables.ts --runs speedtest-r5-NEW,speedtest-r5-OLD,speedtest-r6-OLD,speedtest-r6-NEW,...
+PGXSINKIT_DIR=/home/anton/dev/pgxsinkit/pgxsinkit bun run test:pgxsinkit-on-pgrust
+bun tmp/agents/pr1/lifetime-smoke.ts
+bun run pgrust:bundle --upstream-commit 79ad992ede22bcf6ae0c4fdead6fb01eeac5a990 --built-at 2026-08-29T03:17:08.732Z
 ```
