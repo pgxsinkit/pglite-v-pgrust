@@ -249,7 +249,25 @@ export function makeWasi({ image, manifest, vfs: existingVfs, stdinBytes, stdinS
 
   let memory = null;
   const u8 = () => new Uint8Array(memory.buffer);
-  const dv = () => new DataView(memory.buffer);
+  // One DataView per buffer rather than one per call: clock_time_get alone
+  // comes through here for every statement timestamp and activity report,
+  // several times per protocol message. `memory.buffer` is still read on every
+  // call, because it is a new object whenever the memory grows — here, or on
+  // another thread for the threads build's shared memory — and a view over the
+  // old one is stale: a private buffer is detached by the grow, a shared one
+  // keeps its old length. So the view is rebuilt exactly when the buffer's
+  // identity changes, and every caller sees what `new DataView(memory.buffer)`
+  // would have given it.
+  let dvBuffer = null;
+  let dvView = null;
+  const dv = () => {
+    const buffer = memory.buffer;
+    if (buffer !== dvBuffer) {
+      dvBuffer = buffer;
+      dvView = new DataView(buffer);
+    }
+    return dvView;
+  };
   const num = (x) => (typeof x === 'bigint' ? Number(x) : x);
 
   function readStr(ptr, len) {
