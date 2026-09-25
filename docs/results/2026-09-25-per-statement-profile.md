@@ -1132,8 +1132,12 @@ is mostly the engine running its code for the first time.
 - **Frames V8 inlined.** Self time is per physical frame (§4); a function missing from one engine's
   tables may simply have been inlined there.
 - **`exec_simple_query`'s growing self time** (§9), 2% of a 10 000-statement text, is unexplained.
-- **pgrust's t2 statistics after `CREATE INDEX`** (relpages 0, reltuples −1, §10): a behaviour
-  difference from PostgreSQL that this note records and did not chase.
+- **pgrust's t2 statistics after `CREATE INDEX`** (relpages 0, reltuples −1, §10): not a behaviour
+  difference from PostgreSQL. Read on 2026-09-25 after this note was written: `index_update_stats`
+  in `crates/backend/catalog/catalog_index/src/lib.rs` ports PostgreSQL 18's gate that skips the
+  table's stats when autovacuum is off (`index.c:2873–2892`), and the wasm hosts boot with
+  `-c autovacuum=off`; PGlite runs `autovacuum=on`. A setting, not the port. Nothing in the browser
+  runs `ANALYZE` unless the application does.
 - **Short windows.** Row 1 warm is about 310 samples for pgrust and 170 for PGlite; bucket values
   under about 0.5 µs a statement there are a sample or two. Rows 2 to 10 hold thousands.
 - **The OPFS store, and other browsers.** Not measured here; the store-levers and persistent-context
