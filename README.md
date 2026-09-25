@@ -139,14 +139,18 @@ published as `@pgxsinkit/pglite`, while the store package declares its peer agai
 an npm alias:
 
 ```json
-"@electric-sql/pglite": "npm:@pgxsinkit/pglite@0.5.5-pgx.2"
+"@electric-sql/pglite": "npm:@pgxsinkit/pglite@0.5.8-pgx.2"
 ```
 
 One dependency, one copy in `node_modules` (`bun pm ls`), one `pglite.wasm` and one `pglite.data` in
-`dist/`, and the store's peer satisfied by the exact build being measured. The environment header
-still names the fork — `@pgxsinkit/pglite 0.5.5-pgx.2` — and takes the version from the alias rather
+`dist/`, and the store's peer resolved to the exact build being measured. The environment header
+still names the fork — `@pgxsinkit/pglite 0.5.8-pgx.2` — and takes the version from the alias rather
 than from the dependency key, which under an alias is not the installed package's name at all. That
 rule lives beside wa-sqlite's git-tag rule in `src/dependency-version.ts` and is unit-tested with it.
+`0.5.8-pgx.2` (upstream PGlite 0.5.8, PostgreSQL 18.3) replaced `0.5.5-pgx.3` on 2026-09-25, and
+beside it on one machine gives every Suite total within 4%; the published store `0.3.0` declares
+`>=0.5.5-pgx.0 <0.5.5` and runs on it all the same ([the
+note](docs/results/2026-09-25-pglite-0.5.8-pgx.2.md)).
 
 ## The columns
 
