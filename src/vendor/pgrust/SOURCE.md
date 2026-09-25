@@ -8,7 +8,7 @@ they stay identical to their source.
 - Version: `6ed7984bf0`
 - Source: `/home/anton/dev/tmp/pgrust`
 - Working tree: clean
-- Synced: 2026-09-25T11:54:48.598Z
+- Synced: 2026-09-25T15:00:05.098Z
 
 ## Files
 
@@ -37,10 +37,10 @@ committed.
 
 - Package: `@pgxsinkit/pglite-opfs-repacked` (manifest version `0.0.0`)
 - Repository: [`develop`](https://github.com/pgxsinkit/pgxsinkit/tree/develop)
-- Commit: [`06ba3690985567123fe0ed4dabf7d9ac25ea12e7`](https://github.com/pgxsinkit/pgxsinkit/commit/06ba3690985567123fe0ed4dabf7d9ac25ea12e7)
+- Commit: [`f4777b4e1f80c17fdb95f6db1e0973ac1753fc7f`](https://github.com/pgxsinkit/pgxsinkit/commit/f4777b4e1f80c17fdb95f6db1e0973ac1753fc7f)
 - Licence: MIT
 - Built with: `bun run build:public-packages` -> `packages/pglite-opfs-repacked/dist/browser-bundle.js`
-- Installed at: `public/pgrust/host/vendor/pglite-opfs-repacked.js` (1009593 bytes)
+- Installed at: `public/pgrust/host/vendor/pglite-opfs-repacked.js` (1010981 bytes)
 
 The `RepackedSyncBroker` + `createWasiPreview1Fs` pair those columns need is **not** in any
 published version of the package, so no npm release corresponds to these bytes. The two
@@ -56,7 +56,7 @@ outputs; only this record of them is committed.
 
 - Source: `/home/anton/dev/tmp/pgrust`
 - Version: `6ed7984bf0`
-- Copied: 2026-09-25T11:54:48.615Z
+- Copied: 2026-09-25T15:00:05.117Z
 
 pgrust is AGPL-3.0-only; these binaries were built locally from the checkout named above.
 <!-- pgrust-assets:end -->

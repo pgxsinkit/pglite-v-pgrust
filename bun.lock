@@ -5,7 +5,7 @@
     "": {
       "name": "pglite-v-pgrust",
       "dependencies": {
-        "@electric-sql/pglite": "npm:@pgxsinkit/pglite@0.5.5-pgx.3",
+        "@electric-sql/pglite": "npm:@pgxsinkit/pglite@0.5.8-pgx.2",
         "@electric-sql/pglite-tools": "^0.4.8",
         "@pgxsinkit/client": "0.3.0",
         "@pgxsinkit/contracts": "0.3.0",
@@ -35,7 +35,7 @@
   "packages": {
     "@durable-streams/client": ["@durable-streams/client@0.2.6", "", { "dependencies": { "@microsoft/fetch-event-source": "^2.0.1", "fastq": "^1.19.1" }, "bin": { "intent": "bin/intent.js" } }, "sha512-uHKKbWpsKLhFMeGjG0PgM6LXE3oEIi7FHKlJZkmYGxcqd4Yjjd/QEvnQnDzteRP4Av1uJVM8qjTL7kfKsgeS/w=="],
 
-    "@electric-sql/pglite": ["@pgxsinkit/pglite@0.5.5-pgx.3", "", {}, "sha512-r8Ruh4W6oyDZVOqF/andUmTixqI0e0Dtvqcd/7PjmOaaHKVFPmX/hn+g00c3VcVSDmYkpz2xFh3IGZoq/0EdZQ=="],
+    "@electric-sql/pglite": ["@pgxsinkit/pglite@0.5.8-pgx.2", "", {}, "sha512-YP74PVh7ScGvAVR3HnZbePaXEbsUqa2RH3lHhlMtP5BCdHaDnLJUchuExpyOUA0usPE4DOatrm2KaSq2ZSPJuw=="],
 
     "@electric-sql/pglite-tools": ["@electric-sql/pglite-tools@0.4.8", "", { "peerDependencies": { "@electric-sql/pglite": "0.5.8" } }, "sha512-WjgS8US6xfuE0wLYn5m9WrZ/+8dQWoQuQSRkpe7eYcxxx1UjZjvq30rpYSHfGrGtTke/zNiCd9ijVGeRUD8ukg=="],
 
