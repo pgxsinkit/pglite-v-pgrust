@@ -38,10 +38,12 @@
  *   guest's `exit(0)` under a bounded deadline, then every worker terminated so an OPFS store's
  *   handles are released. `client.stop()` in pgxsinkit calls `pglite.close()`, and this is what
  *   that means here.
- * - durability — `relaxed` is `synchronous_commit=off`, `strict` is `synchronous_commit=on`, and
- *   the BROKER is relaxed in both. The broker's own strict mode syncs the store on every mutating
- *   request, which is not what either pgxsinkit mode asks for; the guest's own fsyncs are
- *   durability boundaries in both, and `strictSync()` is the explicit one.
+ * - durability — `relaxed` is `synchronous_commit=off` and `fsync=off`, `strict` is
+ *   `synchronous_commit=on` and `fsync=on`, and the BROKER is relaxed in both. The broker's own
+ *   strict mode syncs the store on every mutating request, which is not what either pgxsinkit mode
+ *   asks for. Under `strict` the guest's own fsyncs are durability boundaries; under `relaxed` the
+ *   guest issues none, and `strictSync()` — the explicit boundary in both — and `close()` are what
+ *   reach the platform.
  *
  * **Store paths.** `memory://<name>` is the coordinator's heap — the sanctioned test/ephemeral
  * lane, and all bun can do. `opfs://<name>` is the store's OPFS port on the NESTED directory
@@ -151,7 +153,8 @@ export interface PgrustStoreOptions<TExtensions extends Extensions = Extensions>
   readonly backend?: PgrustBackend;
   /**
    * The registry-declared durability (ADR-0047). `relaxed` (the default) is
-   * `synchronous_commit=off`; `strict` is `synchronous_commit=on`. The broker is relaxed in both.
+   * `synchronous_commit=off` and `fsync=off`; `strict` is `synchronous_commit=on` and `fsync=on`.
+   * The broker is relaxed in both.
    */
   readonly durability?: PgrustDurability;
   /**
@@ -616,14 +619,20 @@ export function pgrustDurabilityOf(options: {
  * The postmaster settings a store's durability implies, ahead of the caller's own.
  *
  * `relaxed` is `synchronous_commit=off`: a commit returns before its WAL record is flushed, which is
- * the trade pgxsinkit's relaxed mode makes everywhere. `strict` is Postgres's own default, stated.
- * The caller's `-c` entries come last, so a duplicate of theirs wins.
+ * the trade pgxsinkit's relaxed mode makes everywhere. It is also `fsync=off` (adopted 2026-09-24,
+ * `docs/results/2026-09-24-store-levers.md` §8 and "Adopted", on the lane of
+ * `docs/results/2026-09-24-persistent-context.md`): the guest stops turning its WAL flushes and
+ * checkpoints into store-wide syncs, and `strictSync()` is the boundary. `strict` is Postgres's own
+ * default for both, stated. Both are stated for both modes because the engine derives its own
+ * `fsync` default from the BROKER's durability, which is relaxed under either mode here; these come
+ * after it and win. The caller's `-c` entries come last, so a duplicate of theirs wins.
  */
 export function pgrustDurabilitySettings(
   durability: PgrustDurability,
   extra: readonly string[] | undefined,
 ): readonly string[] {
-  return [`synchronous_commit=${durability === "strict" ? "on" : "off"}`, ...(extra ?? [])];
+  const onWhenStrict = durability === "strict" ? "on" : "off";
+  return [`synchronous_commit=${onWhenStrict}`, `fsync=${onWhenStrict}`, ...(extra ?? [])];
 }
 
 /** The guest environment entries a store's options add, the caller's own last. */

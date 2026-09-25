@@ -11,9 +11,10 @@
  * end to end on the memory backend:
  *
  *  a. `createPgrustPglite("memory://factory-a", { durability: "strict", extensions: { live } })` —
- *     one call, no engine wiring; `SHOW synchronous_commit` must say `on`, which is what the strict
- *     mode means here, and `strictSync()` — the broker's store-wide sync, which the commitment
- *     barrier calls — must resolve;
+ *     one call, no engine wiring; `SHOW synchronous_commit` and `SHOW fsync` must say `on`, which
+ *     is what the strict mode means here, the engine's own store settings must be in place
+ *     (`wal_init_zero` `off`, `wal_buffers` `4MB`), and `strictSync()` — the broker's store-wide
+ *     sync, which the commitment barrier calls — must resolve;
  *  b. that instance is handed to `createSyncClient({ precreatedPglite, … })` exactly as the live
  *     scenario hands its own, and rows are written through the client;
  *  d. `dumpDataDir()` — a `CHECKPOINT` and then the whole datadir read out over the host's broker
@@ -23,7 +24,8 @@
  *     is that the postmaster exited 0 with its shutdown checkpoint written, inside the deadline;
  *  e. a SECOND store is created from that tarball —
  *     `createPgrustPglite("memory://factory-b", { durability: "relaxed", loadDataDir })` — which
- *     must report `synchronous_commit` `off` and must hold the rows written in (b);
+ *     must report `synchronous_commit` and `fsync` `off`, the same two store settings as (a), and
+ *     must hold the rows written in (b);
  *  f. its own `close()` shuts down as cleanly as the first.
  *
  * Then the question the shared tar FORMAT raises on its own: is the DATADIR portable too? Both
@@ -150,6 +152,32 @@ async function show(pglite: PgrustClientPGlite, name: string): Promise<string> {
   return value;
 }
 
+/**
+ * The four settings a durability mode and the engine's store defaults decide, each checked against
+ * what it must be: `synchronous_commit` and `fsync` follow the mode, `wal_init_zero` and
+ * `wal_buffers` are the engine's own for every store (`src/client/pgrust-engine.ts`).
+ */
+async function assertDurabilitySettings(
+  label: string,
+  pglite: PgrustClientPGlite,
+  durability: "strict" | "relaxed",
+): Promise<void> {
+  const onWhenStrict = durability === "strict" ? "on" : "off";
+  const expected: readonly (readonly [string, string])[] = [
+    ["synchronous_commit", onWhenStrict],
+    ["fsync", onWhenStrict],
+    ["wal_init_zero", "off"],
+    ["wal_buffers", "4MB"],
+  ];
+  for (const [name, want] of expected) {
+    const value = await show(pglite, name);
+    log(`${label} SHOW ${name} = ${value}`);
+    if (value !== want) {
+      throw new Error(`${durability} durability must be ${name}=${want}, got ${value}`);
+    }
+  }
+}
+
 /** What a shutdown must look like: the guest's own exit(0), with the shutdown checkpoint written. */
 function assertCleanShutdown(label: string, pglite: PgrustClientPGlite): string {
   const shutdown = pglite.engineShutdown;
@@ -181,11 +209,7 @@ async function main(): Promise<void> {
     const bootMs = performance.now() - bootStart;
     log(`(a) createPgrustPglite("memory://factory-a", strict) ready in ${ms(bootMs)}`);
 
-    const strictCommit = await show(first, "synchronous_commit");
-    log(`(a) SHOW synchronous_commit = ${strictCommit}`);
-    if (strictCommit !== "on") {
-      throw new Error(`strict durability must be synchronous_commit=on, got ${strictCommit}`);
-    }
+    await assertDurabilitySettings("(a)", first, "strict");
 
     const strictSyncStart = performance.now();
     await first.strictSync();
@@ -270,11 +294,7 @@ async function main(): Promise<void> {
     const restoreMs = performance.now() - restoreStart;
     log(`(e) createPgrustPglite("memory://factory-b", relaxed, loadDataDir) ready in ${ms(restoreMs)}`);
 
-    const relaxedCommit = await show(second, "synchronous_commit");
-    log(`(e) SHOW synchronous_commit = ${relaxedCommit}`);
-    if (relaxedCommit !== "off") {
-      throw new Error(`relaxed durability must be synchronous_commit=off, got ${relaxedCommit}`);
-    }
+    await assertDurabilitySettings("(e)", second, "relaxed");
 
     const restored = await second.query<{ count: number }>("select count(*)::int as count from note");
     const restoredCount = Number(restored.rows[0]?.count ?? -1);

@@ -59,6 +59,16 @@ const POOL_BASE_SIZE = 12;
 /** `max_parallel_workers`, and therefore the size of the postmaster's warm standby pool. */
 const MAX_PARALLEL_WORKERS = 2;
 
+/**
+ * The postmaster settings that follow from the store, adopted on 2026-09-24 and the same three the
+ * browser engine boots with (`./pgrust-browser-engine.ts` says what each one does):
+ * `wal_init_zero=off`, `wal_buffers=4MB`, and `fsync=off` unless the store's durability is `strict`.
+ * Measured in `docs/results/2026-09-24-store-levers.md` (§2's S1–S3, §8, §11, "Adopted") on the lane
+ * of `docs/results/2026-09-24-persistent-context.md`.
+ */
+const WAL_INIT_ZERO = "off";
+const WAL_BUFFERS = "4MB";
+
 const STDIN_CAPACITY = 1 << 16;
 const STDOUT_CAPACITY = 1 << 16;
 const LISTENER_CAPACITY = 1 << 12;
@@ -262,10 +272,11 @@ function connectionRecord(inFd: number, outFd: number, wakeFd: number): Uint8Arr
  * The postmaster's argv: the wire lanes' GUCs with `PostmasterMain`'s shape.
  *
  * `--host-pipes` picks the transport and falls through to the ordinary postmaster, so there is no
- * trailing database name, the two GUCs that make the host fd the only way in are set, and the warm
- * standby pool is bounded because a fixed host thread pool is what backs it.
+ * trailing database name, the two GUCs that make the host fd the only way in are set, the warm
+ * standby pool is bounded because a fixed host thread pool is what backs it, and the three store
+ * settings above go in with `fsync` taken from the store's `durability`.
  */
-function postmasterArgv(extra: readonly string[]): string[] {
+function postmasterArgv(durability: PgrustStorageDurability, extra: readonly string[]): string[] {
   const argv = defaultWireArgv();
   argv[1] = "--host-pipes";
   argv.pop();
@@ -278,9 +289,16 @@ function postmasterArgv(extra: readonly string[]): string[] {
     "log_checkpoints=on",
     "-c",
     `max_parallel_workers=${MAX_PARALLEL_WORKERS}`,
+    "-c",
+    `wal_init_zero=${WAL_INIT_ZERO}`,
+    "-c",
+    `wal_buffers=${WAL_BUFFERS}`,
+    "-c",
+    `fsync=${durability === "strict" ? "on" : "off"}`,
   );
   // Last, so a caller's `-c` wins the duplicate — which is how the factory sets
-  // `synchronous_commit` without this function knowing what durability is.
+  // `synchronous_commit` and `fsync` from pgxsinkit's durability, where `durability` here is only the
+  // broker's (relaxed in both of the factory's modes).
   for (const setting of extra) {
     argv.push("-c", setting);
   }
@@ -608,7 +626,7 @@ export async function startPgrustPostmaster(options: PgrustEngineOptions = {}): 
       stdin: stdin.descriptor(),
       stdout: stdout.descriptor(),
       pipes: registry.descriptors(),
-      argv: postmasterArgv(options.settings ?? []),
+      argv: postmasterArgv(options.storage?.durability ?? "relaxed", options.settings ?? []),
       env: guestEnv(options.env ?? {}),
       poolSize,
       trace: 0,

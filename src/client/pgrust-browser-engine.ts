@@ -99,6 +99,30 @@ const MAX_PARALLEL_WORKERS = 2;
  */
 const MAX_STACK_DEPTH_KB = 2048;
 
+/**
+ * The postmaster settings that follow from the store rather than from the transport, adopted on
+ * 2026-09-24: `wal_init_zero=off` and `wal_buffers=4MB` for every store, and `fsync=off` unless the
+ * store's durability is `strict`. Measured and gated in
+ * `docs/results/2026-09-24-store-levers.md` (§2's S1–S3, §8, §11 and its "Adopted" section) and
+ * taken on the persistent-context lane of `docs/results/2026-09-24-persistent-context.md`.
+ *
+ * - `wal_init_zero=off`: a new 16 MB WAL segment is not zero-filled 8 KiB at a time through the
+ *   broker. On this store a new segment reads as zeros either way — a fresh extent is zero, a reused
+ *   one is zeroed by the store — so those writes were pure broker traffic (2 048 of Speedtest row
+ *   11's 3 370 requests).
+ * - `wal_buffers=4MB`: PGlite's own value, in place of `-1` (1/32 of `shared_buffers`, 1 MB here).
+ *   It costs 6 MiB of the shared memory.
+ * - `fsync=off` on a `relaxed` store: the guest stops turning every WAL flush and checkpoint into a
+ *   store-wide `strictSync()`, which on a disk-backed OPFS profile is a millisecond and more each.
+ *   The store then reaches the platform when it amortizes, at an explicit `strictSync()` and at
+ *   close — the broker's own documented relaxed loss window. A `strict` store keeps `fsync=on`.
+ *
+ * They go in before a caller's settings, so a caller — the factory's durability mapping, a
+ * `?postmasterTuning=` Run — still wins the duplicate.
+ */
+const WAL_INIT_ZERO = "off";
+const WAL_BUFFERS = "4MB";
+
 /** stdin/stdout of the postmaster process itself: nothing rides them, but the host wants the pair. */
 const STDIN_CAPACITY = 1 << 16;
 const STDOUT_CAPACITY = 1 << 16;
@@ -377,12 +401,13 @@ export function describeStorageReady(report: PgrustBrowserStorageReport): string
  * session lanes cannot drift apart on one. What changes is the dispatch (`--host-pipes`, which picks
  * a transport and then falls through to the ordinary postmaster), the trailing database name (a
  * postmaster's getopt rejects it), the two GUCs that make the host fd the only way in, the warm
- * standby pool, which has to be bounded because a fixed host thread pool is what backs it, and
- * `max_stack_depth`, which here sizes every child's stack inside the shared memory.
+ * standby pool, which has to be bounded because a fixed host thread pool is what backs it,
+ * `max_stack_depth`, which here sizes every child's stack inside the shared memory, and the three
+ * store settings above, `fsync` from the store's `durability`.
  *
  * `extra` is appended last, so a caller's `-c` wins the duplicate.
  */
-function postmasterArgv(extra: readonly string[]): string[] {
+function postmasterArgv(durability: PgrustBrowserDurability, extra: readonly string[]): string[] {
   const argv = defaultWireArgv();
   argv[1] = "--host-pipes";
   argv.pop();
@@ -398,6 +423,12 @@ function postmasterArgv(extra: readonly string[]): string[] {
     `max_parallel_workers=${MAX_PARALLEL_WORKERS}`,
     "-c",
     `max_stack_depth=${MAX_STACK_DEPTH_KB}`,
+    "-c",
+    `wal_init_zero=${WAL_INIT_ZERO}`,
+    "-c",
+    `wal_buffers=${WAL_BUFFERS}`,
+    "-c",
+    `fsync=${durability === "strict" ? "on" : "off"}`,
   );
   for (const setting of extra) {
     argv.push("-c", setting);
@@ -870,7 +901,7 @@ export async function startPgrustBrowserPostmaster(options: PgrustBrowserEngineO
       stdout: stdout.descriptor(),
       // The whole of this transport: the listener, the wake channel and every session's pair.
       pipes: registry.descriptors(),
-      argv: postmasterArgv(options.settings ?? []),
+      argv: postmasterArgv(storage.durability ?? "relaxed", options.settings ?? []),
       env: guestEnv(host, options.env ?? {}),
       poolSize,
       trace: 0,
