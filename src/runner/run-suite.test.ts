@@ -8,10 +8,18 @@ import { configurationDialect } from "../engines/contract";
 import type { EngineStats } from "../engines/protocol";
 import type { ConcurrentScenario, ScenarioReport } from "../engines/scenario";
 import { buildConcurrencyBenchmarks, CONCURRENCY_CLIENTS, concurrencySetupFor } from "../suites/concurrency";
+import type { PreparedBenchmarkId } from "../suites/prepared/benchmarks";
+import {
+  PREPARED_BENCHMARK_IDS,
+  preparedSetupTexts,
+  preparedSqlFileName,
+  preparedTeardownTexts,
+} from "../suites/prepared/benchmarks";
+import { buildPreparedSuite } from "../suites/prepared/suite";
 import { RTT_SUITE } from "../suites/rtt";
 import { RTT_INITIAL_SETUP_POSTGRES, RTT_STATEMENTS, rttInitialSetupFor } from "../suites/rtt/statements";
 import { SPEEDTEST_BENCHMARK_IDS, speedtestSqlFileName } from "../suites/speedtest/benchmarks";
-import type { Benchmark, Suite } from "../suites/types";
+import type { Benchmark, StatementBenchmark, Suite } from "../suites/types";
 import { benchmarkSql, isScenarioBenchmark } from "../suites/types";
 import { WARMUP_LABEL, WARMUP_SCRIPT_NAME } from "../suites/warmup";
 import type { BenchmarkResult, WarmupResult } from "./run-suite";
@@ -178,6 +186,17 @@ const WARMUP_SQL = readFileSync(join(import.meta.dir, "../suites", WARMUP_SCRIPT
 /** Every statement of the Warm-up, one per line, comments dropped. */
 const WARMUP_STATEMENTS = WARMUP_SQL.split("\n").filter((line) => line.trim() !== "" && !line.startsWith("--"));
 
+/** The Prepared Suite's timed texts, read from disk because `?raw` is a bundler feature. */
+const PREPARED_SQL_FROM_DISK = Object.fromEntries(
+  PREPARED_BENCHMARK_IDS.map((id) => [
+    id,
+    readFileSync(join(import.meta.dir, "../suites/prepared", preparedSqlFileName(id)), "utf8"),
+  ]),
+) as Record<PreparedBenchmarkId, string>;
+
+/** The Prepared Suite as the page runs it, built from those texts. */
+const PREPARED_SUITE = buildPreparedSuite(PREPARED_SQL_FROM_DISK);
+
 /** Every SQL string any Suite runs, in both dialects: its setup, its Benchmarks, its Scenarios. */
 function everySuiteSql(): string {
   const speedtest = SPEEDTEST_BENCHMARK_IDS.map((id) =>
@@ -190,7 +209,12 @@ function everySuiteSql(): string {
     JSON.stringify(buildConcurrencyBenchmarks(CONCURRENCY_CLIENTS, "postgres").map((entry) => entry.scenario)),
     JSON.stringify(buildConcurrencyBenchmarks(CONCURRENCY_CLIENTS, "sqlite").map((entry) => entry.scenario)),
   ];
-  return [...speedtest, ...rtt, ...concurrency].join("\n");
+  const prepared = PREPARED_BENCHMARK_IDS.flatMap((id) => [
+    ...preparedSetupTexts(id),
+    PREPARED_SQL_FROM_DISK[id],
+    ...preparedTeardownTexts(id),
+  ]);
+  return [...speedtest, ...rtt, ...concurrency, ...prepared].join("\n");
 }
 
 describe("the Warm-up script", () => {
@@ -338,5 +362,133 @@ describe("runSuite, the Warm-up", () => {
   test("skips an empty setup, as opening with an empty preamble always did", async () => {
     const { calls } = await run("  \n");
     expect(calls.some((call) => call.startsWith("exec"))).toBe(false);
+  });
+});
+
+/** A planned Benchmark that the plan must have kept a statement Benchmark. */
+function statementBenchmark(benchmark: Benchmark | undefined): StatementBenchmark {
+  if (benchmark === undefined || isScenarioBenchmark(benchmark)) {
+    throw new Error("expected a statement Benchmark");
+  }
+  return benchmark;
+}
+
+describe("planRun, the Prepared Suite", () => {
+  for (const id of UNLOGGED_CONFIGURATION_IDS) {
+    test(`${id}: creates every row's tables UNLOGGED in the row's own untimed setup`, () => {
+      const plan = planFor(PREPARED_SUITE, id);
+      const setups = plan.benchmarks.flatMap((benchmark) => statementBenchmark(benchmark).setup ?? []);
+      const creates = setups.join("").match(/CREATE (UNLOGGED )?TABLE/g) ?? [];
+      expect(creates).toEqual(["CREATE UNLOGGED TABLE", "CREATE UNLOGGED TABLE", "CREATE UNLOGGED TABLE"]);
+      expect(statementBenchmark(plan.benchmarks[0]).setup?.[0]).toBe(
+        "CREATE UNLOGGED TABLE t1(a INTEGER, b INTEGER, c VARCHAR(100));\n",
+      );
+    });
+
+    test(`${id}: leaves the PREPAREs, the EXECUTEs and the DEALLOCATEs exactly as the Baseline runs them`, () => {
+      const plan = planFor(PREPARED_SUITE, id);
+      const baseline = planFor(PREPARED_SUITE, "pglite-memory");
+      plan.benchmarks.forEach((benchmark, index) => {
+        const ours = statementBenchmark(benchmark);
+        const theirs = statementBenchmark(baseline.benchmarks[index]);
+        expect(ours.sql).toBe(theirs.sql);
+        expect(ours.setup?.at(-1)).toBe(theirs.setup?.at(-1));
+        expect(ours.teardown).toEqual(theirs.teardown);
+      });
+    });
+  }
+
+  test("hands every Postgres Configuration without a rewrite the Suite's own bytes", () => {
+    for (const id of ["pglite-memory", "pglite-opfs-repacked-relaxed", "pgrust-postmaster-opfs-repacked-relaxed"]) {
+      const plan = planFor(PREPARED_SUITE, id);
+      expect(plan.benchmarks).toEqual(PREPARED_SUITE.benchmarks);
+      expect(plan.setupSql).toBe("");
+      expect(plan.sessions).toBe(1);
+    }
+  });
+});
+
+describe("runSuite, a Benchmark with its own untimed setup and teardown", () => {
+  const SETUP_SUITE: Suite = {
+    ...EDITABLE_SETUP_SUITE,
+    benchmarks: [
+      {
+        id: "1",
+        label: "Test 1: prepared",
+        sql: "EXECUTE p(1);",
+        setup: ["CREATE TABLE t (a int);", "PREPARE p(int) AS INSERT INTO t VALUES ($1);"],
+        teardown: ["DEALLOCATE p;"],
+      },
+      { id: "2", label: "Test 2: plain", sql: "SELECT 2;" },
+    ],
+  };
+
+  async function run(configurationId: string): Promise<{
+    readonly calls: readonly string[];
+    readonly results: readonly BenchmarkResult[];
+  }> {
+    const runner = new RecordingRunner();
+    const results: BenchmarkResult[] = [];
+    await runSuite({
+      suite: SETUP_SUITE,
+      configuration: configuration(configurationId),
+      setupSql: "-- setup",
+      warmupSql: "SELECT 0;",
+      onWarmup: () => undefined,
+      onResult: (result) => results.push(result),
+      createRunner: () => runner,
+    });
+    return { calls: runner.calls, results };
+  }
+
+  test("sends each setup text untimed and alone just before the Benchmark, and its teardown just after", async () => {
+    const { calls } = await run("pglite-memory");
+    expect(calls).toEqual([
+      'open pglite-memory preamble="" sessions=1',
+      "measure SELECT 0;",
+      "exec -- setup",
+      "exec CREATE TABLE t (a int);",
+      "exec PREPARE p(int) AS INSERT INTO t VALUES ($1);",
+      "measure EXECUTE p(1);",
+      "exec DEALLOCATE p;",
+      "measure SELECT 2;",
+      "close",
+    ]);
+  });
+
+  test("times only the Benchmark's own text", async () => {
+    const { results } = await run("pglite-memory");
+    expect(results.map((result) => [result.benchmarkId, result.elapsedMs])).toEqual([
+      ["1", 2],
+      ["2", 3],
+    ]);
+  });
+
+  test("rewrites a row's setup for an unlogged Configuration, as it rewrites everything else", async () => {
+    const { calls } = await run("pgrust-memory-unlogged");
+    expect(calls).toContain("exec CREATE UNLOGGED TABLE t (a int);");
+  });
+});
+
+describe("runSuite, a Suite that does not run on an Engine", () => {
+  test("refuses the Prepared Suite on wa-sqlite before it opens anything, and says why", async () => {
+    const runner = new RecordingRunner();
+    let refusal: unknown = null;
+    try {
+      await runSuite({
+        suite: PREPARED_SUITE,
+        configuration: configuration("wasqlite-memory"),
+        setupSql: "",
+        warmupSql: "SELECT 0;",
+        onWarmup: () => undefined,
+        onResult: () => undefined,
+        createRunner: () => runner,
+      });
+    } catch (thrown) {
+      refusal = thrown;
+    }
+    expect(refusal).toBeInstanceOf(Error);
+    expect(String(refusal)).toContain("Prepared Suite does not run on wa-sqlite Memory");
+    expect(runner.calls).toEqual([]);
   });
 });

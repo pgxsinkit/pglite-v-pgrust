@@ -106,12 +106,14 @@ const AVAILABLE: Availability = { available: true };
 /**
  * Whether this Configuration can run here at all.
  *
- * Every Suite runs on every Engine, so there is nothing a Suite can add to this: the only reasons a
- * column is empty are the three capabilities above, and all three are properties of the browser
- * rather than of what is being measured. The Concurrency Suite used to name three Engines it refused
- * — the two pgrust wire builds and wa-sqlite — on the grounds that one Session cannot be concurrent;
- * it can, one statement at a time, which is what PGlite was doing all along, and those columns now
- * run with the mode in their header instead of a reason in their cell.
+ * The three capabilities above are properties of the browser rather than of what is being measured,
+ * and they are all this answers. The one Suite that does not run on every Engine — the Prepared
+ * Suite, which times `PREPARE` and `EXECUTE`, on wa-sqlite — says so itself
+ * (`Suite.unsupportedReasonFor`), because that column would be skipped in any browser. The
+ * Concurrency Suite used to name three Engines it refused — the two pgrust wire builds and wa-sqlite
+ * — on the grounds that one Session cannot be concurrent; it can, one statement at a time, which is
+ * what PGlite was doing all along, and those columns now run with the mode in their header instead of
+ * a reason in their cell.
  */
 export function configurationAvailability(
   configuration: Configuration,

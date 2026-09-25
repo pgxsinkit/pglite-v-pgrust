@@ -7,11 +7,26 @@ import { scenarioSessions } from "../engines/scenario";
 /** How the per-iteration Measurements of one Benchmark collapse to the number in the cell. */
 export type AggregationStrategy = "mean" | "trimmed-mean";
 
-/** One timed unit within a Suite: a Speedtest script, or one RTT statement. One row of the table. */
+/**
+ * One timed unit within a Suite: a Speedtest script, one RTT statement, or one Prepared Suite row.
+ * One row of the table.
+ */
 export interface StatementBenchmark {
   readonly id: string;
   readonly label: string;
   readonly sql: string;
+  /**
+   * Untimed query texts sent just before this Benchmark's first Measurement, in order, each as its
+   * own text; absent for a Benchmark that needs none.
+   *
+   * The Prepared Suite's seam: a row's tables and its `PREPARE` have to exist before the timed text
+   * of `EXECUTE`s can run, and the `PREPARE` has to be a short text of its own, because PostgreSQL
+   * keeps a prepared statement's whole message as its source text and copies it into every
+   * `EXECUTE`'s portal. A Configuration's rewrite reaches these texts as it reaches `sql`.
+   */
+  readonly setup?: readonly string[];
+  /** Untimed query texts sent just after this Benchmark's last Measurement, in order. */
+  readonly teardown?: readonly string[];
 }
 
 /**
@@ -48,7 +63,7 @@ export function benchmarkSql(benchmark: Benchmark): string {
   return benchmark.sql;
 }
 
-export type SuiteId = "speedtest" | "rtt" | "concurrency";
+export type SuiteId = "speedtest" | "rtt" | "concurrency" | "prepared";
 
 /** A named, fixed list of Benchmarks run in order against one Engine. */
 export interface Suite {
@@ -86,8 +101,22 @@ export interface Suite {
    * than in a footnote for exactly that reason. Absent for a Suite whose columns need no such note.
    */
   columnNoteFor?(engine: EngineId): string | undefined;
+  /**
+   * Why this Suite does not run on an Engine of `dialect`, or undefined where it does.
+   *
+   * Absent for every Suite but one. The Prepared Suite times `PREPARE` and `EXECUTE`, which SQLite
+   * does not have in any spelling, so wa-sqlite's columns are skipped with this reason instead of
+   * failing on the first statement. It is a property of the Suite, not of the browser: the column
+   * would be skipped in any browser, which is why it is asked here and not in `availability.ts`.
+   */
+  unsupportedReasonFor?(dialect: SqlDialect): string | undefined;
   /** A line the Markdown export carries under the environment, e.g. how many Clients ran. */
   readonly headerLine?: string;
+}
+
+/** Why `suite` does not run on an Engine of `dialect`, or undefined where it does. */
+export function suiteUnsupportedReason(suite: Suite, dialect: SqlDialect): string | undefined {
+  return suite.unsupportedReasonFor?.(dialect);
 }
 
 /**

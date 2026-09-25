@@ -6,9 +6,13 @@
  *
  * In order: the Engine boots and its store opens; the **Warm-up** runs, timed; the Suite's untimed
  * setup runs; then the Benchmarks. The Warm-up comes before the setup in every Suite, so its line
- * measures the same thing in all three — the first SQL an Engine runs after boot — and so the
+ * measures the same thing in all four — the first SQL an Engine runs after boot — and so the
  * Concurrency Suite's 100 000-row setup cannot pay the first-use costs untimed and leave its Warm-up
  * line measuring an Engine that is already warm.
+ *
+ * A statement Benchmark may carry untimed texts of its own, sent just before its first Measurement
+ * and just after its last: the Prepared Suite's tables and `PREPARE` before a row, its `DEALLOCATE`
+ * after it. The other three Suites' Benchmarks carry none, and their Runs are unchanged.
  */
 
 import type { Configuration, EngineId, EngineRunner, Measurement } from "../engines/contract";
@@ -17,8 +21,8 @@ import type { EngineStats } from "../engines/protocol";
 import { createEngineRunner } from "../engines/registry";
 import { mapScenarioSql } from "../engines/scenario";
 import { aggregateRun } from "../results/aggregate";
-import type { Benchmark, Suite } from "../suites/types";
-import { isScenarioBenchmark, suiteSessions } from "../suites/types";
+import type { Benchmark, StatementBenchmark, Suite } from "../suites/types";
+import { isScenarioBenchmark, suiteSessions, suiteUnsupportedReason } from "../suites/types";
 
 /** Every SQL string one Run will execute, with the Configuration's rewrite already applied. */
 export interface RunPlan {
@@ -67,9 +71,26 @@ export function planRun(
     benchmarks: benchmarks.map((benchmark) =>
       isScenarioBenchmark(benchmark)
         ? { ...benchmark, scenario: mapScenarioSql(benchmark.scenario, rewrite) }
-        : { ...benchmark, sql: rewrite(benchmark.sql) },
+        : rewriteStatementBenchmark(benchmark, rewrite),
     ),
     sessions: suiteSessions(suite),
+  };
+}
+
+/**
+ * A statement Benchmark with every text it carries rewritten: its timed SQL and, where it has them,
+ * its untimed setup and teardown texts. The Prepared Suite creates its tables in a row's setup, so an
+ * unlogged column whose row setup was left alone would run on logged tables.
+ */
+function rewriteStatementBenchmark(
+  benchmark: StatementBenchmark,
+  rewrite: (sql: string) => string,
+): StatementBenchmark {
+  return {
+    ...benchmark,
+    sql: rewrite(benchmark.sql),
+    ...(benchmark.setup === undefined ? {} : { setup: benchmark.setup.map(rewrite) }),
+    ...(benchmark.teardown === undefined ? {} : { teardown: benchmark.teardown.map(rewrite) }),
   };
 }
 
@@ -129,8 +150,26 @@ function assertNotAborted(signal: AbortSignal | undefined): void {
   }
 }
 
+/** Send each untimed text of a Benchmark's setup or teardown, in order, each as its own query text. */
+async function execEach(
+  runner: EngineRunner,
+  texts: readonly string[] | undefined,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  for (const text of texts ?? []) {
+    assertNotAborted(signal);
+    await runner.exec(text);
+  }
+}
+
 export async function runSuite(options: RunOptions): Promise<void> {
   const { suite, configuration, setupSql, warmupSql, onWarmup, onResult, onStats, signal } = options;
+  const unsupported = suiteUnsupportedReason(suite, configurationDialect(configuration));
+  if (unsupported !== undefined) {
+    // The page never asks, since it skips such a column; this is for any other caller, which would
+    // otherwise boot an Engine only to fail on the Suite's first statement.
+    throw new Error(`${suite.title} does not run on ${configuration.label}: ${unsupported}`);
+  }
   const plan = planRun(suite, configuration, setupSql, warmupSql);
   const runner = (options.createRunner ?? createEngineRunner)(configuration.engine);
   try {
@@ -147,6 +186,11 @@ export async function runSuite(options: RunOptions): Promise<void> {
     }
     for (const benchmark of plan.benchmarks) {
       assertNotAborted(signal);
+      // A Benchmark's own untimed setup, once, just before its first Measurement: the Prepared
+      // Suite's tables and its PREPARE. Nothing else sits between it and the timed text.
+      if (!isScenarioBenchmark(benchmark)) {
+        await execEach(runner, benchmark.setup, signal);
+      }
       const measurements: Measurement[] = [];
       for (let iteration = 0; iteration < suite.iterations; iteration += 1) {
         assertNotAborted(signal);
@@ -157,6 +201,9 @@ export async function runSuite(options: RunOptions): Promise<void> {
             ? benchmark.summarize(await runner.concurrent(benchmark.scenario))
             : await runner.measure(benchmark.sql),
         );
+      }
+      if (!isScenarioBenchmark(benchmark)) {
+        await execEach(runner, benchmark.teardown, signal);
       }
       const aggregated = aggregateRun(measurements, suite.aggregation);
       onResult({

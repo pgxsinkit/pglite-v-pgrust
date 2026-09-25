@@ -16,6 +16,7 @@ import { toMarkdown } from "../results/markdown";
 import { applyRttIterations, describeRttIterations } from "../rtt-iterations";
 import { runSuite } from "../runner/run-suite";
 import type { Suite } from "../suites/types";
+import { suiteUnsupportedReason } from "../suites/types";
 import { WARMUP_EXPORT_LINE, WARMUP_LABEL } from "../suites/warmup";
 import { WARMUP_SQL } from "../suites/warmup-sql";
 import { ResultsTable } from "./ResultsTable";
@@ -39,9 +40,10 @@ export interface SuiteSectionProps {
 type RunState = "idle" | "running" | "complete";
 
 /**
- * A column is unavailable either because this browser cannot run the Engine, or because its Run has
- * already failed. Either way the reason is shown in the header and the Run moves on to the next
- * Configuration rather than abandoning the whole table.
+ * A column is unavailable because this Suite does not run on its Engine at all (the Prepared Suite on
+ * wa-sqlite), because this browser cannot run the Engine, or because its Run has already failed.
+ * Whichever it is, the reason is shown in the header and the Run moves on to the next Configuration
+ * rather than abandoning the whole table.
  *
  * The Suite's note travels with the column whatever its state: a skipped Concurrency column still
  * says which kind of concurrency it would have had, which is what makes the reason beside it read as
@@ -61,6 +63,10 @@ function toColumn(
   };
   if (failure !== undefined) {
     return { ...named, available: false, unavailableReason: failure, failed: true };
+  }
+  const unsupported = suiteUnsupportedReason(suite, configurationDialect(configuration));
+  if (unsupported !== undefined) {
+    return { ...named, available: false, unavailableReason: unsupported };
   }
   const availability = configurationAvailability(configuration, environment);
   if (availability.available) {
@@ -176,7 +182,10 @@ export function SuiteSection({ suite, environment, configurations, baseline }: S
     setEngineStats({});
     try {
       for (const configuration of configurations) {
-        if (!configurationAvailability(configuration, environment).available) {
+        if (
+          suiteUnsupportedReason(runnableSuite, configurationDialect(configuration)) !== undefined ||
+          !configurationAvailability(configuration, environment).available
+        ) {
           continue;
         }
         setActiveColumnId(configuration.id);

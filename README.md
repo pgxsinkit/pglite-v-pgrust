@@ -5,8 +5,9 @@ A browser benchmark that runs the same SQL workloads against [PGlite](https://pg
 timings side by side, with [wa-sqlite](https://github.com/rhashimoto/wa-sqlite) alongside them as a
 calibration reference.
 
-Two Suites are ported unchanged from PGlite's own benchmark pages, and a third asks what the first
-two cannot:
+Two Suites are ported unchanged from PGlite's own benchmark pages, a third asks what the first two
+cannot, and a fourth runs the first one's statement-heavy rows the way a client that prepares its
+statements would send them:
 
 - **Speedtest Suite** — the 16 SQL scripts ported from the SQLite speed test via
   [wa-sqlite](https://github.com/rhashimoto/wa-sqlite), byte-identical to PGlite's copies. One timing
@@ -18,6 +19,9 @@ two cannot:
   beside a long one, writers on disjoint rows and writers on the same row. Every Engine runs it; what
   "at once" means is the Engine's answer, stated in each column's header and exactly what the Suite
   reports.
+- **[Prepared Suite](#the-prepared-suite)** — the Speedtest's seven statement-heavy rows (1, 2, 3,
+  7, 8, 9 and 10), each sent as one `PREPARE` of its statement's shape followed by the row's
+  statements as `EXECUTE`s with the Speedtest's own values. Postgres Engines only.
 
 Before any Suite's first Benchmark, every Engine runs one fixed **Warm-up** script
 ([`src/suites/warmup.sql`](src/suites/warmup.sql)) once after it boots, so the first Benchmark no
@@ -48,7 +52,7 @@ bun run dev                               # http://localhost:5580, then press St
 ```
 
 `bun run bench --suite rtt --iterations 3` runs the same page headlessly instead and prints the
-tables; `bun run bench` on its own runs all three Suites (see [the headless lane](#headless-lane)).
+tables; `bun run bench` on its own runs all four Suites (see [the headless lane](#headless-lane)).
 
 `bun run scenario:pgxsinkit-live` is the one lane here that is not a benchmark: it boots a pgrust
 postmaster under bun and runs the published `@pgxsinkit/client` against it — unchanged, over PGlite's
@@ -122,7 +126,9 @@ and is unit-tested; a plain semver dependency still reports its manifest version
 One consequence of it being SQLite rather than Postgres: **the RTT Suite's untimed setup is
 dialect-specific.** Its two `CREATE TABLE` statements are run as `INTEGER PRIMARY KEY AUTOINCREMENT`
 rather than `SERIAL`, byte-identical to PGlite's own SQLite variant. That is the only SQL that differs
-anywhere: every timed Benchmark in both Suites is run byte-identically against every Engine.
+anywhere in those two Suites: every timed Benchmark in both is run byte-identically against every
+Engine. (The Concurrency Suite has a SQLite spelling of its own, below; the Prepared Suite does not
+run on wa-sqlite at all, because SQLite has no `PREPARE`.)
 
 ## PGlite, once
 
@@ -376,6 +382,23 @@ ignored — rebuilds the Suite for another Client count, and says so in the envi
 Suite itself and in every Markdown export. Every export carries the Client count either way, as its
 own line under the environment: `Concurrency clients: 4`.
 
+## The Prepared Suite
+
+The Speedtest sends every statement as literal SQL, so each of row 9's 25 000 UPDATEs is parsed,
+analysed and planned again. The Prepared Suite shows what a client that prepares its statement
+shapes gets instead: rows 1, 2, 3, 7, 8, 9 and 10 of the Speedtest, the scripts that repeat one
+statement, each sent as one `PREPARE` of that statement with its literals as parameters (untimed, as
+a short text of its own, after the untimed DDL the row needs) and then the script's own statements as
+`EXECUTE`s with the Speedtest's values, in one timed text, with `DEALLOCATE` after the row
+([`src/suites/prepared/`](src/suites/prepared/)). Both engines gain, and pgrust gains more, because
+planning is where it was slowest: in Chromium on disk rows 7, 9 and 10 cost pgrust 51–58% less a
+statement than the Speedtest's literal rows and PGlite OPFS 39–54% less, which takes pgrust from
+1.46–1.66× PGlite OPFS to 1.19–1.46× ([the note](docs/results/2026-09-25-prepared-suite.md)). Both
+engines follow PostgreSQL's plan-cache rule — five custom plans, the generic plan built at the sixth
+execution and reused from the seventh — so each row's first six statements are still planned one by
+one. It runs on the Postgres Engines only: SQLite has no `PREPARE`, so both wa-sqlite columns are
+skipped, with that reason in their header.
+
 ## Results
 
 > **2026-09-24: every OPFS number in the runs below was taken in an off-the-record context.**
@@ -480,7 +503,7 @@ bun run build
 bun run preview
 ```
 
-Both Suites are started from the page — nothing runs until you press **Start**. Each Run opens a fresh
+Every Suite is started from the page — nothing runs until you press **Start**. Each Run opens a fresh
 Engine in a fresh worker, so no state carries over between Configurations; a Storage Configuration's
 OPFS directory is emptied before its Run and removed after it, so nothing carries over between page
 loads either.
@@ -501,7 +524,7 @@ URL, and a Baseline outside the selection falls back and corrects the URL the sa
 Markdown export carries the line `Configurations (N of 14): … | Baseline: …` under the environment,
 so a table of three columns can never be mistaken for a table of fourteen.
 
-Both Suites the page runs unchanged are fixed by definition. The RTT Suite is 100 iterations, and the
+The Suites the page runs unchanged are fixed by definition. The RTT Suite is 100 iterations, and the
 page offers no control that changes it. For
 automation only, the URL query `?rttIterations=N` — an integer from 1 to 1000, anything else ignored —
 shortens it, and says so everywhere: the environment header, the Suite itself and every Markdown
@@ -1005,9 +1028,10 @@ older tables can be reproduced ([what changed](docs/results/2026-09-24-persisten
 results file's header names the context a Run used.
 
 ```sh
-bun run bench                                # all three Suites, Chromium, fresh build
+bun run bench                                # all four Suites, Chromium, fresh build
 bun run bench --suite rtt --iterations 5     # one Suite, deliberately short RTT Run
 bun run bench --suite concurrency            # the Concurrency Suite on its own
+bun run bench --suite prepared               # the Prepared Suite on its own
 bun run bench --browser firefox --no-build   # reuse the existing dist/
 bun run bench --help                         # every flag, and every Configuration id
 
@@ -1023,7 +1047,7 @@ bun run bench --suite rtt \
 | Flag                       | Meaning                                                                                       |
 | -------------------------- | --------------------------------------------------------------------------------------------- |
 | `--browser <name>`         | `chromium` (default), `firefox` or `webkit`                                                   |
-| `--suite <id>`             | `speedtest`, `rtt` or `concurrency`; repeatable, defaults to all three                        |
+| `--suite <id>`             | `speedtest`, `rtt`, `concurrency` or `prepared`; repeatable, defaults to all four             |
 | `--iterations <N>`         | Passes `?rttIterations=N` to the page; 1-1000                                                 |
 | `--configurations <id,id>` | Passes `?configurations=` to the page: only these columns, in Configuration order; repeatable |
 | `--baseline <id>`          | Passes `?baseline=` to the page: the column every ratio is taken against                      |
@@ -1059,7 +1083,7 @@ revisions it will look for — floating it would silently ask for builds that ar
 | Firefox (`--browser firefox`) | The lane sets `javascript.options.wasm_js_promise_integration`; where JSPI is still missing the two `pgrust` Configurations are unavailable, so they are unticked and the table is drawn without them — the Configurations panel carries the reason. Firefox's reduced timer precision quantises Measurements, so its numbers are coarser than Chromium's |
 | WebKit (`--browser webkit`)   | Exits 0 with `WebKit skipped: Playwright's WebKit build has no JSPI yet`, without launching. That build also refuses synchronous access handles in both worker kinds, so it could contribute neither the pgrust nor the OPFS columns                                                                                                                      |
 
-`bun run test:e2e` drives the same lane from `bun test` (Chromium, all three Suites, RTT at three
+`bun run test:e2e` drives the same lane from `bun test` (Chromium, all four Suites, RTT at three
 iterations) and asserts the shape of the result rather than any timing: an environment line that says
 `cross-origin isolated yes` — the lane serves both headers, so anything else is a lane bug — column
 headers in Configuration order so the positional assertions cannot drift, a millisecond figure and a
@@ -1067,8 +1091,9 @@ ratio in every PGlite Memory and wa-sqlite cell, and `skipped`, `failed` or a mi
 every pgrust, pgrust Threads, postmaster and OPFS cell. For the Concurrency Suite it also asserts the
 Suite's own header line, the Detail block under the table, and each column's Concurrency mode in the
 header it exports — `interleaved on one session` on the four single-session Engines,
-`one backend per Client` on the postmaster. The Reference Engine is held to the stricter rule on
-purpose — it needs no JSPI, no synchronous access handle and no asset that can be missing, so a cell
+`one backend per Client` on the postmaster. For the Prepared Suite it asserts no Run failed and
+that both wa-sqlite columns are `skipped` in every row with the reason in their header. The
+Reference Engine is held to the stricter rule on purpose — it needs no JSPI, no synchronous access handle and no asset that can be missing, so a cell
 without a number in it is a harness bug rather than a browser or a build state. It is deliberately outside `test`, `check` and `validate` — `bun run
 validate:full` is `validate` plus this lane.
 

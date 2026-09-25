@@ -9,7 +9,7 @@
  * (`docs/results/2026-09-25-per-statement-profile.md` §8). Those costs are still paid, by every
  * Engine, and still reported; they are just no longer billed to a Benchmark.
  *
- * The script is one file, `warmup.sql` beside this module, shared by all three Suites and
+ * The script is one file, `warmup.sql` beside this module, shared by all four Suites and
  * byte-identical for every Engine; it is sent as one query text, the way a Speedtest script is, and
  * a Configuration's SQL rewrite reaches it as it reaches everything else a Run executes. Its SQL is
  * imported with `?raw` in `./warmup-sql.ts`, which only the bundle loads; this module holds what

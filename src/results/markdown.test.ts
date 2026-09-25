@@ -206,3 +206,37 @@ describe("toMarkdown, a grid with a Warm-up line", () => {
     expect(toMarkdown(GRID, OPTIONS)).not.toContain("| Warm-up |");
   });
 });
+
+describe("toMarkdown, a column the Suite does not run on", () => {
+  // The Prepared Suite's wa-sqlite columns: skipped in every Run, in every browser, with the reason
+  // in the header the export carries rather than in a cell.
+  const PREPARED_LINE = "| Test 9: 25000 UPDATEs with an index (prepared) |";
+  const refused: ResultsGrid = {
+    rows: [{ id: "9", label: "Test 9: 25000 UPDATEs with an index (prepared)" }],
+    columns: [
+      { id: "pglite-memory", label: "PGlite Memory", available: true },
+      {
+        id: "wasqlite-memory",
+        label: "wa-sqlite Memory",
+        available: false,
+        unavailableReason: "The Prepared Suite times PREPARE and EXECUTE statements, which SQLite does not have",
+        note: "not run: SQLite has no PREPARE or EXECUTE",
+      },
+    ],
+    baselineColumnId: "pglite-memory",
+    cells: { [cellKey("pglite-memory", "9")]: 805 },
+    warmup: { label: "Warm-up", cells: { "pglite-memory": 60 } },
+  };
+  const lines = toMarkdown(refused, { ...OPTIONS, title: "Prepared Suite" }).split("\n");
+
+  test("names why in the column's header", () => {
+    expect(lines[4]).toBe(
+      "| Benchmark | PGlite Memory (ms) | wa-sqlite Memory — not run: SQLite has no PREPARE or EXECUTE (ms) | vs PGlite Memory |",
+    );
+  });
+
+  test("reports every row of it skipped, the Warm-up included, and never a ratio", () => {
+    expect(lines[6]).toBe("| Warm-up | 60.000 | skipped | – |");
+    expect(lines[7]).toBe(`${PREPARED_LINE} 805.000 | skipped | – |`);
+  });
+});

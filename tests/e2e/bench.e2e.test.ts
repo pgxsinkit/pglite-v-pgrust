@@ -4,7 +4,8 @@
  *
  * This proves the lane, not the Engines: it asserts the shape of every cell (a millisecond figure,
  * a ratio, or an explicit `skipped`/`failed`) and never a threshold, because a benchmark number is
- * not a pass/fail. The RTT Suite runs at a deliberately non-standard three iterations so the whole
+ * not a pass/fail. All four Suites run, the Prepared Suite on the twelve Postgres columns (wa-sqlite
+ * has no PREPARE, and its two columns say so). The RTT Suite runs at a deliberately non-standard three iterations so the whole
  * lane stays inside a sane wall time; the environment line must say so.
  *
  * Run with `bun run test:e2e`; it is not part of `bun run test`, `check` or `validate`.
@@ -20,13 +21,18 @@ import { markdownColumnHeader } from "../../src/results/markdown";
 import { describeRttIterations } from "../../src/rtt-iterations";
 import { SUITES } from "../../src/suites";
 import { CONCURRENCY_CLIENTS, CONCURRENCY_SUITE, INTERLEAVED_ON_ONE_SESSION } from "../../src/suites/concurrency";
+import {
+  PREPARED_BENCHMARK_IDS,
+  PREPARED_BENCHMARK_LABELS,
+  PREPARED_SQLITE_NOTE,
+} from "../../src/suites/prepared/benchmarks";
 import { RTT_STATEMENTS } from "../../src/suites/rtt/statements";
 import { SPEEDTEST_BENCHMARK_IDS } from "../../src/suites/speedtest/benchmarks";
 import type { Suite, SuiteId } from "../../src/suites/types";
 import { WARMUP_EXPORT_LINE, WARMUP_LABEL } from "../../src/suites/warmup";
 
 /**
- * Build plus three Suites against fourteen Configurations; generous, because it is a real browser.
+ * Build plus four Suites against fourteen Configurations; generous, because it is a real browser.
  *
  * The five Storage Configurations are the slow ones — each seeds a whole data directory into a cold
  * store before its Run and writes every byte the Suite produces to OPFS — and the Concurrency Suite
@@ -177,9 +183,18 @@ const EXPECTED_ROW_COUNTS: Readonly<Record<SuiteId, number>> = {
   speedtest: 1 + SPEEDTEST_BENCHMARK_IDS.length,
   rtt: 1 + RTT_STATEMENTS.length,
   concurrency: 1 + CONCURRENCY_SUITE.benchmarks.length,
+  prepared: 1 + PREPARED_BENCHMARK_IDS.length,
 };
 
-const SUITE_IDS: readonly SuiteId[] = ["speedtest", "rtt", "concurrency"];
+const SUITE_IDS: readonly SuiteId[] = ["speedtest", "rtt", "concurrency", "prepared"];
+
+/** The Suite that does not run on the Reference Engine, and whose wa-sqlite columns say so. */
+const PREPARED_SUITE_ID: SuiteId = "prepared";
+
+/** Whether this Suite runs on SQLite at all; the one that does not skips both wa-sqlite columns. */
+function runsOnSqlite(suiteId: SuiteId): boolean {
+  return suiteFor(suiteId).unsupportedReasonFor?.("sqlite") === undefined;
+}
 
 /** The Suite whose cells are not all times, and whose Engines are not all able to run it. */
 const CONCURRENCY_SUITE_ID: SuiteId = "concurrency";
@@ -298,7 +313,7 @@ describe("bench lane", () => {
     expect(report.environmentLine).toContain(describeRttIterations(RTT_ITERATIONS));
   });
 
-  test("returns both Suites in the order they were requested", () => {
+  test("returns every Suite in the order they were requested", () => {
     expect(report.suites.map((suite) => suite.suiteId)).toEqual([...SUITE_IDS]);
   });
 
@@ -308,6 +323,8 @@ describe("bench lane", () => {
     expect(written).toContain(report.environmentLine);
     expect(written).toContain("### Speedtest Suite");
     expect(written).toContain("### RTT Suite");
+    expect(written).toContain("### Concurrency Suite");
+    expect(written).toContain("### Prepared Suite");
   });
 
   for (const suiteId of SUITE_IDS) {
@@ -394,17 +411,37 @@ describe("bench lane", () => {
     // browser or a build state. Its whole purpose is to be the column that always has a number.
     // Every Suite, this one included: wa-sqlite runs the Concurrency Suite on its one connection,
     // interleaving per statement, which is the mode its header states.
-    test(`${suiteId}: both wa-sqlite Reference columns report milliseconds and a ratio in every row`, () => {
-      const rows = rowsFor(suiteId);
-      const offenders = rows
-        .filter((row) =>
-          WASQLITE_COLUMNS.some(
-            (column) => !MS_PATTERN.test(row[column.value] ?? "") || !RATIO_PATTERN.test(row[column.ratio] ?? ""),
-          ),
-        )
-        .map(describeRow);
-      expect(offenders).toEqual([]);
-    });
+    //
+    // The one exception is a Suite that does not run on SQLite at all — the Prepared Suite, since SQLite
+    // has no PREPARE — and there both columns must be `skipped` in every row, never `failed` and never
+    // a number: the page must not have tried.
+    if (runsOnSqlite(suiteId)) {
+      test(`${suiteId}: both wa-sqlite Reference columns report milliseconds and a ratio in every row`, () => {
+        const rows = rowsFor(suiteId);
+        const offenders = rows
+          .filter((row) =>
+            WASQLITE_COLUMNS.some(
+              (column) => !MS_PATTERN.test(row[column.value] ?? "") || !RATIO_PATTERN.test(row[column.ratio] ?? ""),
+            ),
+          )
+          .map(describeRow);
+        expect(offenders).toEqual([]);
+      });
+    } else {
+      test(`${suiteId}: both wa-sqlite Reference columns are skipped in every row, and say why`, () => {
+        const rows = rowsFor(suiteId);
+        const offenders = rows
+          .filter((row) =>
+            WASQLITE_COLUMNS.some((column) => row[column.value] !== "skipped" || row[column.ratio] !== EMPTY_CELL),
+          )
+          .map(describeRow);
+        expect(offenders).toEqual([]);
+        const header = headerFor(suiteId);
+        for (const column of WASQLITE_COLUMNS) {
+          expect(header[column.value]).toContain(PREPARED_SQLITE_NOTE);
+        }
+      });
+    }
   }
 });
 
@@ -454,6 +491,33 @@ describe("the Concurrency Suite", () => {
         (row) =>
           !MS_PATTERN.test(row[COLUMNS.baseline] ?? "") ||
           PGRUST_POSTMASTER_COLUMNS.some((column) => !MS_PATTERN.test(row[column.value] ?? "")),
+      )
+      .map(describeRow);
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe("the Prepared Suite", () => {
+  test("runs every Postgres column without a failure", () => {
+    const suite = report.suites.find((candidate) => candidate.suiteId === PREPARED_SUITE_ID);
+    expect(suite?.failures).toBe("");
+  });
+
+  test("labels its rows as the Speedtest's statement-heavy rows, prepared", () => {
+    expect(rowsFor(PREPARED_SUITE_ID).map((row) => row[0])).toEqual([
+      WARMUP_LABEL,
+      ...PREPARED_BENCHMARK_IDS.map((id) => PREPARED_BENCHMARK_LABELS[id]),
+    ]);
+  });
+
+  test("has a number in every row on both PGlite Memory columns and the pgrust Postmaster OPFS one", () => {
+    const rows = rowsFor(PREPARED_SUITE_ID);
+    const offenders = rows
+      .filter(
+        (row) =>
+          !MS_PATTERN.test(row[COLUMNS.baseline] ?? "") ||
+          !MS_PATTERN.test(row[COLUMNS.pgliteUnlogged] ?? "") ||
+          !MS_PATTERN.test(row[COLUMNS.pgrustPostmasterOpfsRelaxed] ?? ""),
       )
       .map(describeRow);
     expect(offenders).toEqual([]);

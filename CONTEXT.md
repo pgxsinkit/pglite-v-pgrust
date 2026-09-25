@@ -5,7 +5,7 @@ A browser benchmark that runs the same SQL workloads against PGlite and pgrust (
 ## Language
 
 **Suite**:
-A named, fixed list of Benchmarks run in order against one Engine. There are exactly three: the Speedtest Suite, the RTT Suite and the Concurrency Suite.
+A named, fixed list of Benchmarks run in order against one Engine. There are exactly four: the Speedtest Suite, the RTT Suite, the Concurrency Suite and the Prepared Suite.
 _Avoid_: test set, benchmark set (a **Scenario** is a different thing: one Benchmark's script)
 
 **Speedtest Suite**:
@@ -19,6 +19,10 @@ _Avoid_: latency suite, CRUD suite
 **Concurrency Suite**:
 Five Benchmarks run by N Clients at once (four by default) against one 100,000-row indexed table built in the untimed setup: a read fan-out, a reader under a bulk write, short queries beside a long one, writers on disjoint rows and writers on the same row. Each row reports one headline number — a wall time, a percentile or a rate — and its Detail. Every Engine runs it. What concurrency _is_ differs per Engine and is the thing being reported, so every column's header states its **Concurrency mode**.
 _Avoid_: parallel suite, contention suite, multi-client suite
+
+**Prepared Suite**:
+The Speedtest's statement-heavy rows sent as one `PREPARE` per shape followed by an `EXECUTE` per statement, so a Benchmark measures a reused plan: rows 1, 2, 3, 7, 8, 9 and 10, with the Speedtest's own statements and values. Each row's `PREPARE`, and the tables and indexes the row needs, are sent untimed just before it, the `PREPARE` as a short text of its own; its `DEALLOCATE` just after. Byte-identical for every Postgres Engine; wa-sqlite's columns are skipped, because SQLite has no `PREPARE`.
+_Avoid_: prepared speedtest, plan-cache suite, variant A2
 
 **Concurrency mode**:
 How an Engine gives N Clients concurrency, stated in every Concurrency Suite column header and carried into the Markdown export. Exactly two: `one backend per Client`, which is pgrust Postmaster giving Client `i` its own Session and therefore its own real backend; and `interleaved on one session`, which is PGlite, both pgrust wire builds and wa-sqlite serving one statement at a time from one place to run SQL, with a transaction holding it from BEGIN to COMMIT. A cell cannot be read without it: a reader p95 of 0.4 ms and one of 670 ms are both correct answers to different questions.
@@ -61,7 +65,7 @@ One pgwire connection to one Engine: on pgrust Postmaster a real Postgres backen
 _Avoid_: connection, client (a **Client** is the scripted program that uses one), backend
 
 **Reference Engine**:
-An Engine included only so results can be calibrated against numbers published elsewhere (wa-sqlite's and PGlite's own benchmark pages); never the Baseline of a ratio.
+An Engine included only so results can be calibrated against numbers published elsewhere (wa-sqlite's and PGlite's own benchmark pages); never the Baseline of a ratio. It runs every Suite but the Prepared Suite, which SQLite cannot express.
 _Avoid_: control, sanity engine
 
 **Baseline**:
@@ -101,7 +105,7 @@ A Postgres Memory Configuration whose tables are created UNLOGGED, so the Engine
 _Avoid_: no-WAL mode, fast mode, unsafe mode
 
 **Benchmark**:
-One timed unit within a Suite: a Speedtest script, one RTT statement, or one Concurrency Scenario. It is the row of the results table.
+One timed unit within a Suite: a Speedtest script, one RTT statement, one Concurrency Scenario, or one Prepared Suite row's text of `EXECUTE`s. It is the row of the results table.
 _Avoid_: test, case, step (a **Step** is one entry in a Client's program), query
 
 **Measurement**:

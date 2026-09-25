@@ -10,14 +10,24 @@ import { describe, expect, test } from "bun:test";
 import { CONFIGURATION_IDS } from "../src/configurations";
 import { cellKey } from "../src/results/grid";
 import { toMarkdown } from "../src/results/markdown";
+import { SUITES } from "../src/suites";
 import { WARMUP_EXPORT_LINE, WARMUP_LABEL } from "../src/suites/warmup";
 import type { BenchReport } from "./bench";
 import { DEFAULT_BENCH_OPTIONS, parseBenchArguments, renderResultsFile } from "./bench";
 
 describe("parseBenchArguments", () => {
-  test("runs all three Suites by default, in page order", () => {
-    expect(DEFAULT_BENCH_OPTIONS.suites).toEqual(["speedtest", "rtt", "concurrency"]);
+  test("runs all four Suites by default, in page order", () => {
+    expect(DEFAULT_BENCH_OPTIONS.suites).toEqual(["speedtest", "rtt", "concurrency", "prepared"]);
+    expect(DEFAULT_BENCH_OPTIONS.suites).toEqual(SUITES.map((suite) => suite.id));
     expect(parseBenchArguments([]).options.suites).toBeUndefined();
+  });
+
+  test("accepts --suite prepared, on its own and beside the Speedtest", () => {
+    expect(parseBenchArguments(["--suite", "prepared"]).options.suites).toEqual(["prepared"]);
+    expect(parseBenchArguments(["--suite=speedtest", "--suite", "prepared"]).options.suites).toEqual([
+      "speedtest",
+      "prepared",
+    ]);
   });
 
   test("accepts --suite concurrency, on its own and beside the others", () => {
@@ -31,6 +41,7 @@ describe("parseBenchArguments", () => {
 
   test("refuses a Suite that does not exist, naming the ones that do", () => {
     expect(() => parseBenchArguments(["--suite", "concurrent"])).toThrow("concurrency");
+    expect(() => parseBenchArguments(["--suite", "prepare"])).toThrow("prepared");
   });
 
   test("narrows the Configurations and names the Baseline, defaulting to neither", () => {
@@ -75,7 +86,7 @@ describe("parseBenchArguments", () => {
     expect(() => parseBenchArguments(["--ephemeral-context", "--keep-profile"])).toThrow("--keep-profile");
   });
 
-  // The default has to cover the run the default flags ask for: three Suites against fourteen
+  // The default has to cover the run the default flags ask for: four Suites against fourteen
   // Configurations, five of which seed a whole data directory into a cold store first.
   test("allows the whole default run inside the default deadline", () => {
     expect(DEFAULT_BENCH_OPTIONS.timeoutMs).toBeGreaterThanOrEqual(2_400_000);
