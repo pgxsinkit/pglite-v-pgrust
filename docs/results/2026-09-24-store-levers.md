@@ -5,6 +5,10 @@
 > that lane's, and the owner's target was set in it. What the move changes on the three columns this
 > note used: [2026-09-24, the persistent context](2026-09-24-persistent-context.md). No number here
 > was changed.
+>
+> **2026-09-24 (adopted): `wal_init_zero=off`, `wal_buffers=4MB` and, on every store that is not
+> `strict`, `fsync=off` are now the pgrust postmaster's defaults** — S2, S3 and S1 — gated in the
+> persistent context. Nothing else here was adopted. See [Adopted](#adopted-2026-09-24).
 
 - Date: 2026-09-24
 - Machine: i7-1165G7 (8 logical cores), 30 GiB, Linux 7.0.0-34-generic, as in
@@ -627,3 +631,139 @@ bun tmp/agents/levers/perop.ts r7-S0 r8-S0 disk-r1-S0 disk-r2-S0 r7-S6H4 disk-r1
 
 A single tuning Run needs none of the scratch: `bun run bench --suite speedtest --configurations
 pgrust-postmaster-opfs-repacked-relaxed --postmaster-tuning wal_init_zero=off,wal_buffers=4MB`.
+
+## Adopted (2026-09-24)
+
+Three of the settings arms above are now the pgrust postmaster's own defaults, in the argv both of
+this repo's hosts compose: `src/client/pgrust-browser-engine.ts` (the page's two `pgrust Postmaster`
+columns and the pgxsinkit store factory) and `src/client/pgrust-engine.ts` (the same factory under
+bun, which runs the pgxsinkit suite and the scenarios). Every pgrust Postmaster Configuration boots
+with them. The single-session `pgrust` and the `pgrust Threads` columns are not postmasters and were
+not touched.
+
+| setting | arm | on | why |
+| --- | --- | --- | --- |
+| `wal_init_zero=off` | S2 | every store | the largest lever that is ours alone (§11, #2): a new 16 MB WAL segment is no longer zero-filled 8 KiB at a time through the broker, and on this store it reads as zeros either way |
+| `wal_buffers=4MB` | S3 | every store | PGlite's own value, in place of `-1` (1 MB at 32 MB of `shared_buffers`); 6 MiB of shared memory, inside the ceiling (§4.3) |
+| `fsync=off` | S1 | every store whose durability is not `strict`: the relaxed OPFS column and the Memory ones | nothing on the Speedtest, but on a disk-backed profile it took the RTT sum down 23% and writers on disjoint rows up 51% (§8, S6HF4 against S6H4); a `strict` store keeps `fsync=on` |
+
+The engine derives `fsync` from its store's durability. The factory's durability mapping
+(`pgrustDurabilitySettings`, `src/client/pgrust-client-pglite.ts`) states `fsync` beside
+`synchronous_commit` — `off`/`off` for relaxed, `on`/`on` for strict — because the broker it boots
+is relaxed under both of pgxsinkit's modes. A caller's own settings and a `?postmasterTuning=` still
+come after all of these and win the duplicate, so
+`?postmasterTuning=wal_init_zero=on,wal_buffers=-1,fsync=on` (`bun run bench --postmaster-tuning …`)
+is the server as it was before.
+
+What the server reports (`SHOW`), on the built page's own postmaster worker in the persistent
+context (`tmp/agents/adopt/show.ts`) and through the bun factory (`bun run scenario:pgxsinkit-factory`,
+which now asserts all four):
+
+| where | `fsync` | `wal_init_zero` | `wal_buffers` | `synchronous_commit` |
+| --- | --- | --- | --- | --- |
+| page, `pgrust-postmaster-opfs-repacked-relaxed` | off | off | 4MB | on |
+| page, `pgrust-postmaster-memory-broker` | off | off | 4MB | on |
+| page worker, an OPFS store at `strict` (no page Configuration has one) | on | off | 4MB | on |
+| page, `pgrust-postmaster-opfs-repacked-relaxed` with the old-defaults override | on | on | 1MB | on |
+| bun factory, `strict` (memory store) | on | off | 4MB | on |
+| bun factory, `relaxed` (memory store) | off | off | 4MB | off |
+
+The page's two postmaster columns run `synchronous_commit=on`, and did before: their `relaxed` is
+the broker's durability, and they never passed through the factory's mapping, which is the only
+place `relaxed` means `synchronous_commit=off`. That was not changed here.
+
+**The gate**, all in `bun run bench`'s persistent-context lane
+([the persistent context](2026-09-24-persistent-context.md)): its own `serveDist` and
+`openBenchContext`, read by `tmp/agents/adopt/ab.ts` so the page's engine stats come back with the
+Markdown; headless Chromium 149.0.7827.55; the published modules sha-verified before and after every
+Run; `pglite-opfs-repacked-relaxed,pgrust-postmaster-opfs-repacked-relaxed` with PGlite OPFS the
+Baseline, both columns in one page per Run. OLD is the same build with the old-defaults override
+above. The Speedtest ran in two interleaved rounds (NEW, OLD; OLD, NEW), RTT and Concurrency two
+Runs each in the same order. Every Run started with the 1-minute load under 2.5 (1.21–2.31 before,
+the longest wait 30 s; 1.55–3.38 after).
+
+| Benchmark | NEW r1 | OLD r1 | OLD r2 | NEW r2 |
+| --- | --- | --- | --- | --- |
+| 1: 1000 INSERTs | 245.5 | 259.7 | 249.0 | 251.0 |
+| 2: 25000 INSERTs in a transaction | 1042.4 | 1101.6 | 1105.4 | 1042.7 |
+| 2.1: 25000 INSERTs in single statement | 221.0 | 227.4 | 239.0 | 218.5 |
+| 3: 25000 INSERTs into an indexed table | 1149.3 | 1297.9 | 1272.9 | 1142.0 |
+| 3.1: 25000 INSERTs into an indexed table in single statement | 244.2 | 229.5 | 253.5 | 227.8 |
+| 4: 100 SELECTs without an index | 440.7 | 405.9 | 374.6 | 418.7 |
+| 5: 100 SELECTs on a string comparison | 774.5 | 736.3 | 744.9 | 747.0 |
+| **6: Creating an index** | 36.4 | 50.3 | 44.7 | 35.5 |
+| 7: 5000 SELECTs with an index | 854.3 | 888.2 | 852.7 | 822.5 |
+| 8: 1000 UPDATEs without an index | 205.6 | 208.4 | 211.8 | 196.7 |
+| 9: 25000 UPDATEs with an index | 2432.2 | 2502.6 | 2510.0 | 2395.2 |
+| 10: 25000 text UPDATEs with an index | 2737.4 | 2891.4 | 2799.2 | 2709.7 |
+| **11: INSERTs from a SELECT** | 324.8 | 457.5 | 472.1 | 331.4 |
+| 12: DELETE without an index | 36.3 | 39.3 | 34.9 | 43.1 |
+| 13: DELETE with an index | 44.1 | 51.2 | 50.7 | 46.0 |
+| **14: A big INSERT after a big DELETE** | 285.2 | 261.3 | 262.9 | 258.7 |
+| 15: A big DELETE followed by many small INSERTs | 354.1 | 378.9 | 368.4 | 385.4 |
+| 16: DROP TABLE | 17.1 | 17.3 | 17.4 | 16.4 |
+| **Suite total** | **11 445.3** | **12 004.7** | **11 864.1** | **11 288.3** |
+| `pglite-opfs-repacked-relaxed` in the same page | 7 724.1 | 7 586.5 | 7 637.3 | 7 713.2 |
+| pgrust ÷ PGlite OPFS | 1.48× | 1.58× | 1.55× | 1.46× |
+| wasm memory high-water (MiB) | 266.6 | 260.6 | 260.4 | 266.6 |
+
+**Verdict: NEW is 4.8% faster.** The two-round sums are 22 734 ms against OLD's 23 869, and pgrust
+goes from 1.55–1.58× PGlite OPFS to 1.46–1.48×; the control held to 1.8% across the four Runs. The
+gain is where §8 put it on disk: row 11 0.71× (325/331 ms against 458/472), row 6 0.76×, row 3
+0.89×, row 2 0.94×; row 14 is level (259–285 against 261–263). No Benchmark failed. Against both OLD
+Runs here and the three steady Runs of the old defaults in
+[the persistent-context note](2026-09-24-persistent-context.md) §3, two NEW cells sit above every OLD
+figure by more than 3%: row 4 at 440.7 ms (OLD 374.6–417.7), a read-only row, and row 12 at 43.1 ms
+(OLD 29.7–39.3), a 40 ms row. Each one's other NEW Run is inside the OLD range; neither is shown to
+be a regression, and neither is shown not to be. The shared memory is 266.6 MiB against
+260.4–260.6 — the 6 MiB `wal_buffers` costs, under the 300 MiB ceiling.
+
+RTT, milliseconds per statement, and Concurrency (Test 4 in transactions/s, higher is better; the
+rest in ms), pgrust column:
+
+| | NEW r1 | OLD r1 | OLD r2 | NEW r2 | PGlite OPFS, the four Runs |
+| --- | --- | --- | --- | --- | --- |
+| RTT: insert small row | 0.680 | 1.092 | 1.060 | 0.733 | 0.283–0.378 |
+| RTT: delete small row | 1.647 | 2.188 | 2.076 | 1.697 | 0.435–0.491 |
+| RTT: insert 1kb row | 0.429 | 0.783 | 0.746 | 0.467 | 0.295–0.379 |
+| RTT: update 1kb row | 0.524 | 0.833 | 0.890 | 0.499 | 0.326–0.390 |
+| **RTT: sum of the 12** | **8.38** | **10.98** | **10.60** | **8.49** | 4.40–4.65 |
+| Concurrency 1: read fan-out, total wall | 777.5 | 794.9 | 1025.1 | 656.5 | 647.1–728.2 |
+| Concurrency 2: reader p95 under a bulk write | 0.450 | 0.625 | 1.045 | 0.395 | 690.8–708.4 |
+| Concurrency 3: short p95 beside a long query | 0.510 | 0.845 | 0.645 | 0.415 | 271.9–281.1 |
+| **Concurrency 4: writers on disjoint rows** | **4829** | **2496** | **3057** | **5100** | 1661–1772 |
+| **Concurrency 5: writers on the same row, p95** | **1.830** | **4.870** | **5.585** | **1.715** | 2.525–2.630 |
+| wasm memory high-water (MiB), RTT / Concurrency | 256.0 / 270.0 | 256.0 / 264.3 | 256.0 / 264.0 | 256.0 / 270.0 | |
+
+The RTT sum falls 22% and all of it is in the writing statements; the reads do not move. Writers on
+disjoint rows go 1.8× faster and the same-row p95 falls to a third, both now ahead of PGlite OPFS.
+Test 1, the one §10 watched, is 777 and 656 ms against OLD's 795 and 1025: below both OLD Runs.
+
+Also green on the new defaults: the pgxsinkit suite on pgrust at **2073 pass / 0 fail** (354 s, after
+the timed lanes), `lifetime-smoke` PASS, `bun run scenario:pgxsinkit-factory` PASS with its new
+`SHOW` assertions, and `bun run validate`. No pgrust Postmaster Configuration is `strict`, so the
+strict column has no Speedtest Run; the `strict` rows of the `SHOW` table are its proof that `fsync`
+stayed on.
+
+**Not adopted, and why.**
+
+- **The store levers U1–U4, and H1.** They are prototypes in a scratch patch; U1 and U4 change what
+  the store promises (§11); they belong in the store upstream, where they would move PGlite's column
+  as much as pgrust's (§12); and on a disk-backed profile, which is the lane now, they are worth 0–4%
+  of the Suite (§8). H1, the host's gather, is redundant once S2 is in (§11, #4).
+- **`shared_buffers`.** S4 at 64 MB is within the default's own spread in round 2 (0.97×) and costs
+  36.4 MiB; with S3's 6 MiB it would be about 303 MiB, past the 300 MiB ceiling, and 128 MB is
+  368.2 MiB (§4.3).
+- **`file_extend_method=posix_fallocate`** (S5). This build refuses the setting, making it settable
+  is a guest change and a rebuild, and it would not fire for the one-block extensions this Suite
+  makes (§9).
+- **S7** (`wal_recycle=off,min_wal_size=32MB`): noise-level (§11, #6).
+
+**What `fsync=off` gives up, on a relaxed store.** Every WAL flush and every checkpoint the guest
+made used to reach the broker as an `fd_sync`, which the coordinator answers with a store-wide
+`strictSync()`. The guest now issues none, so the store reaches the platform when it amortizes, at
+an explicit `strictSync()` — pgxsinkit's commitment barrier calls one — and at close. A tab killed
+between those loses the tail the broker's relaxed mode documents
+(`src/vendor/pgrust/storage-worker.js`); recovery still keeps the longest valid metadata-log prefix.
+A `strict` store is unchanged. PGlite's relaxed column already ran `fsync=off`
+([where the multiple lives](2026-09-24-where-the-multiple-lives.md) §6).

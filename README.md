@@ -523,6 +523,13 @@ with before [the memory diet](docs/results/2026-09-08-webkit-memory-diet.md). Li
 above it is never silent: the environment header and every Markdown export carry
 `postmaster tuning: … (non-standard)`.
 
+A `name=value` entry also overrides the three store settings every postmaster has booted with since
+2026-09-24: `wal_init_zero=off` and `wal_buffers=4MB`, and `fsync=off` unless the store's durability
+is `strict` (the store factory's `strict` mode keeps `fsync=on` beside `synchronous_commit=on`).
+`?postmasterTuning=wal_init_zero=on,wal_buffers=-1,fsync=on` is the server as it was before them;
+[the store-levers note](docs/results/2026-09-24-store-levers.md#adopted-2026-09-24) has what each one
+bought and what it gives up.
+
 ## pgrust assets
 
 PGlite installs from npm; pgrust does not. Its host JavaScript is vendored into this repo and
