@@ -15,9 +15,11 @@
  * - `?brokerSpin=<µs>` is the other broker lever, and aimed at the hand-off rather than the request
  *   count: before either side of a broker Configuration's seam parks in `Atomics.wait`, it polls the
  *   word it is about to wait on for up to that many µs — a guest for its reply, the coordinator for
- *   the next request (`wasm/broker-spin.js`). Bounded per wait; 0 is the behaviour without it. The
- *   values the README offers are 0, 50 and 200; any whole number up to {@link BROKER_SPIN_MAX_US} is
- *   accepted.
+ *   the next request (`wasm/broker-spin.js`). Bounded per wait. **It is the one switch that is on by
+ *   default**: since 2026-09-26 every broker Configuration spins {@link BROKER_SPIN_DEFAULT_US} µs
+ *   unless the URL says otherwise (`docs/results/2026-09-26-phone-broker-spin.md`), and
+ *   `?brokerSpin=0` is the behaviour before that. Any whole number up to {@link BROKER_SPIN_MAX_US}
+ *   is accepted.
  * - `?storeLevers=grow,coalesce` changes how the pgrust broker coordinator's store talks to its port:
  *   `grow` makes the arena file grow in 4 MiB chunks instead of one truncate per allocation (trimmed
  *   back on close), `coalesce` makes contiguous arena writes inside one store call one handle write
@@ -29,9 +31,11 @@
  * They arrive the way every other non-standard Run setting does (`?pgrustModule=`,
  * `?postmasterTuning=`): read once from the page URL, a value this page does not accept is ignored,
  * and never silent — the environment header and every Markdown export say `broker stats: on`,
- * `broker gather: on`, `broker spin: <N> µs` and `store levers: … (pgrust columns only)`. Off, every
- * Configuration's options are byte-for-byte the ones this repo's tables were produced with; so is
- * `?brokerSpin=0`, which is announced (so a 0-µs Run of an A/B carries its label) and changes nothing.
+ * `broker gather: on`, `broker spin: <N> µs` and `store levers: … (pgrust columns only)`. The spin is
+ * named on every Run, the default included, so an export says which hand-off its pgrust broker
+ * columns ran on without the reader knowing when the default moved. With `?brokerSpin=0` and none of
+ * the other three, every Configuration's options are byte-for-byte the ones this repo's tables before
+ * 2026-09-26 were produced with.
  */
 
 /** The query parameter that counts the store work of every Measurement. */
@@ -55,8 +59,17 @@ const ON = "1";
  */
 export const BROKER_SPIN_MAX_US = 1000;
 
-/** The spins the README offers a phone. */
-export const BROKER_SPIN_OFFERED_US: readonly number[] = [0, 50, 200];
+/**
+ * The spin every pgrust broker Configuration runs when the URL does not set one, in µs.
+ *
+ * Adopted 2026-09-26 on a Galaxy S22+ (`docs/results/2026-09-26-phone-broker-spin.md`): it took the
+ * Speedtest's pgrust total down 6.8% and the Session backend's blocked time 33%. 1000 µs was 9.6% and
+ * 38%: past 200 the returns are small, and every µs a thread spins is a core polling.
+ */
+export const BROKER_SPIN_DEFAULT_US = 200;
+
+/** The spins the README offers a phone: none (the behaviour before the default), the default, and the maximum. */
+export const BROKER_SPIN_OFFERED_US: readonly number[] = [0, BROKER_SPIN_DEFAULT_US, BROKER_SPIN_MAX_US];
 
 /** A store lever by name, as pgrust's `wasm/store-levers.js` names them. */
 export type StoreLever = "grow" | "coalesce";
@@ -69,14 +82,19 @@ export interface BrokerSwitches {
   readonly stats: boolean;
   /** One broker write per `fd_pwrite`, over 256 KiB channel payloads (`?brokerGather=1`). */
   readonly gather: boolean;
-  /** The broker's spin before parking in µs (`?brokerSpin=`), or null when the URL did not set one. */
-  readonly spinUs: number | null;
+  /** The broker's spin before parking in µs: `?brokerSpin=`, or {@link BROKER_SPIN_DEFAULT_US} when the URL did not set one. */
+  readonly spinUs: number;
   /** The pgrust coordinator's store levers (`?storeLevers=`), in {@link STORE_LEVERS} order. */
   readonly storeLevers: readonly StoreLever[];
 }
 
-/** Every switch off: what every Run this repo reports uses. */
-export const NO_BROKER_SWITCHES: BrokerSwitches = { stats: false, gather: false, spinUs: null, storeLevers: [] };
+/** A page URL with none of the four parameters: nothing counted or gathered, no store levers, the default spin. */
+export const DEFAULT_BROKER_SWITCHES: BrokerSwitches = {
+  stats: false,
+  gather: false,
+  spinUs: BROKER_SPIN_DEFAULT_US,
+  storeLevers: [],
+};
 
 /** How the stats switch is announced wherever the environment is reported. */
 export const BROKER_STATS_LINE = "broker stats: on";
@@ -116,25 +134,28 @@ export function parseBrokerSwitches(search: string): BrokerSwitches {
   return {
     stats: params.get(BROKER_STATS_PARAM)?.trim() === ON,
     gather: params.get(BROKER_GATHER_PARAM)?.trim() === ON,
-    spinUs: parseBrokerSpin(params.get(BROKER_SPIN_PARAM)),
+    spinUs: parseBrokerSpin(params.get(BROKER_SPIN_PARAM)) ?? BROKER_SPIN_DEFAULT_US,
     storeLevers: parseStoreLevers(params.get(STORE_LEVERS_PARAM)),
   };
 }
 
-/** The switches on the current URL; all off wherever there is no `location` (under `bun test`). */
+/** The switches on the current URL; the defaults wherever there is no `location` (under `bun test`). */
 export function readBrokerSwitches(): BrokerSwitches {
   if (typeof location === "undefined") {
-    return NO_BROKER_SWITCHES;
+    return DEFAULT_BROKER_SWITCHES;
   }
   return parseBrokerSwitches(location.search);
 }
 
-/** The environment-line entries for whichever switches are set, in a fixed order. */
+/**
+ * The environment-line entries for the switches, in a fixed order: each on/off switch when it is on,
+ * and the spin always — the default and a 0 as much as any other value.
+ */
 export function describeBrokerSwitches(switches: BrokerSwitches): readonly string[] {
   return [
     ...(switches.stats ? [BROKER_STATS_LINE] : []),
     ...(switches.gather ? [BROKER_GATHER_LINE] : []),
-    ...(switches.spinUs === null ? [] : [brokerSpinLine(switches.spinUs)]),
+    brokerSpinLine(switches.spinUs),
     ...(switches.storeLevers.length === 0 ? [] : [storeLeversLine(switches.storeLevers)]),
   ];
 }
@@ -152,9 +173,12 @@ export function brokerGatherOptions(switches: BrokerSwitches): { brokerGather?: 
   return switches.gather ? { brokerGather: true } : {};
 }
 
-/** The spin as a broker Configuration's pgrust options spell it; empty when it is unset or 0. */
+/**
+ * The spin as a broker Configuration's pgrust options spell it; empty when it is 0, so `?brokerSpin=0`
+ * opens the Engine exactly as before the default.
+ */
 export function brokerSpinOptions(switches: BrokerSwitches): { brokerSpinUs?: number } {
-  return switches.spinUs === null || switches.spinUs === 0 ? {} : { brokerSpinUs: switches.spinUs };
+  return switches.spinUs === 0 ? {} : { brokerSpinUs: switches.spinUs };
 }
 
 /** The store levers as a broker Configuration's pgrust options spell them; empty when none is on. */

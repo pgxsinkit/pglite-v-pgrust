@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import { BROKER_SPIN_DEFAULT_US } from "../broker-switches";
 import { CONFIGURATIONS, findConfiguration } from "../configurations";
 import type { Configuration, EngineId } from "./contract";
 import {
@@ -65,17 +66,24 @@ describe("pgliteOpenOptions", () => {
 
 describe("pgrustThreadsOptions", () => {
   test("reads the filesystem seam, the port and the durability of the four threads Configurations", () => {
+    // The three broker columns carry the default spin before parking; the copy seam has no broker.
+    const brokerSpinUs = BROKER_SPIN_DEFAULT_US;
     expect(pgrustThreadsOptions(configuration("pgrust-threads-memory").options)).toEqual({ fs: "copy" });
-    expect(pgrustThreadsOptions(configuration("pgrust-threads-memory-broker").options)).toEqual({ fs: "broker" });
+    expect(pgrustThreadsOptions(configuration("pgrust-threads-memory-broker").options)).toEqual({
+      fs: "broker",
+      brokerSpinUs,
+    });
     expect(pgrustThreadsOptions(configuration("pgrust-threads-opfs-repacked-relaxed").options)).toEqual({
       fs: "broker",
       port: "opfs",
       durability: "relaxed",
+      brokerSpinUs,
     });
     expect(pgrustThreadsOptions(configuration("pgrust-threads-opfs-repacked-strict").options)).toEqual({
       fs: "broker",
       port: "opfs",
       durability: "strict",
+      brokerSpinUs,
     });
   });
 

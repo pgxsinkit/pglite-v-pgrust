@@ -1,6 +1,12 @@
 import type { JSX } from "react";
 
-import { BROKER_GATHER_LINE, BROKER_STATS_LINE, brokerSpinLine, storeLeversLine } from "../broker-switches";
+import {
+  BROKER_GATHER_LINE,
+  BROKER_SPIN_DEFAULT_US,
+  BROKER_STATS_LINE,
+  brokerSpinLine,
+  storeLeversLine,
+} from "../broker-switches";
 import type { EnvironmentInfo } from "../environment";
 import { formatEnvironmentLine } from "../environment";
 import { describePgrustModule } from "../pgrust-module";
@@ -19,6 +25,14 @@ function describePgrustModules(environment: EnvironmentInfo): string {
     return `${environment.pgrustVersion} (postgres.wasm + postgres-threads.wasm)`;
   }
   return `${environment.pgrustVersion} (postgres.wasm) + ${environment.pgrustModule} (postgres-threads.wasm, alternate)`;
+}
+
+/** The pgrust broker's spin, and whether it is the default one. */
+function describeBrokerSpin(spinUs: number): string {
+  if (spinUs === BROKER_SPIN_DEFAULT_US) {
+    return `${spinUs} µs (default)`;
+  }
+  return spinUs === 0 ? "0 µs (none, non-standard)" : `${spinUs} µs (non-standard)`;
 }
 
 function describeOpfsSyncAccess(environment: EnvironmentInfo): string {
@@ -71,6 +85,12 @@ export function EnvironmentHeader({ environment }: EnvironmentHeaderProps): JSX.
           {/* The probe's own words when it was refused: what the store hit, not what we assumed. */}
           <dd>{describeOpfsSyncAccess(environment)}</dd>
         </div>
+        <div className={environment.brokerSwitches.spinUs === BROKER_SPIN_DEFAULT_US ? undefined : "non-standard"}>
+          {/* Named on every Run, the default included: the default moved on 2026-09-26, and an
+              export that did not say which spin it ran on could not be read against one before. */}
+          <dt>pgrust broker spin</dt>
+          <dd>{describeBrokerSpin(environment.brokerSwitches.spinUs)}</dd>
+        </div>
         {environment.rttIterationsOverride === null ? null : (
           <div className="non-standard">
             <dt>RTT iterations</dt>
@@ -97,13 +117,14 @@ export function EnvironmentHeader({ environment }: EnvironmentHeaderProps): JSX.
             "channel payloads."}
         </p>
       ) : null}
-      {environment.brokerSwitches.spinUs === null ? null : (
+      {environment.brokerSwitches.spinUs === BROKER_SPIN_DEFAULT_US ? null : (
         <p className="non-standard-note" data-testid="broker-spin-note">
           {environment.brokerSwitches.spinUs === 0
-            ? `${brokerSpinLine(0)}: no spin — every pgrust broker column parks as it does by default.`
+            ? `${brokerSpinLine(0)}: no spin — every pgrust broker column parks at once, as it did before ` +
+              `the ${BROKER_SPIN_DEFAULT_US} µs default.`
             : `${brokerSpinLine(environment.brokerSwitches.spinUs)}: in every pgrust broker column each guest ` +
               "polls for its reply, and the coordinator for the next request, for up to that long before " +
-              "parking in Atomics.wait."}
+              `parking in Atomics.wait, instead of the default ${BROKER_SPIN_DEFAULT_US} µs.`}
         </p>
       )}
       {environment.brokerSwitches.storeLevers.length === 0 ? null : (

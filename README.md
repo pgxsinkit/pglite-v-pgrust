@@ -615,17 +615,24 @@ column beside it, and the same with the gathered writes:
 
 ### `?brokerSpin=<µs>` and `?storeLevers=grow,coalesce` — the broker hand-off and the store's calls
 
-Two more switches, off by default, for asking a phone whether pgrust's per-request broker cost comes
-down. Read them with `?brokerStats=1`: the **Broker** table's two per-request columns are what they
-aim at.
+Two more switches for asking a phone whether pgrust's per-request broker cost comes down. Read them
+with `?brokerStats=1`: the **Broker** table's two per-request columns are what they aim at.
 
 `?brokerSpin=<µs>` targets the hand-off — the difference between what a guest thread was blocked on a
 request and what the coordinator spent answering it. Before either side of every pgrust broker column
 parks in `Atomics.wait`, it polls the word it is about to wait on for up to that many µs: a guest for
 its reply, the coordinator for the next request (pgrust's `wasm/broker-spin.js`). Each spin is bounded
 per wait, and the coordinator skips it after a park that timed out, so an idle coordinator does not
-burn a core. The values offered are 0, 50 and 200; any whole number up to 1000 is accepted. 0 is the
-default behaviour, and is still announced, so the control Run of an A/B carries its label.
+burn a core.
+
+**Since 2026-09-26 the spin is on by default, at 200 µs**, in all five pgrust broker columns (the page
+and `bun run bench` alike): on a Galaxy S22+ it took the Speedtest's pgrust total down 6.8% and the
+Session backend's blocked time 33% ([the phone broker-spin note](docs/results/2026-09-26-phone-broker-spin.md)).
+`?brokerSpin=0` restores the behaviour before that — no spin, every wait parks at once — and is the
+setting every result in [`docs/results/`](docs/results/) before that date was taken with. Any whole
+number up to 1000 is accepted; a value the page does not accept is ignored, and the Run is on the
+default. The PGlite columns, the two single-session `pgrust` columns and `pgrust Threads Memory` (the
+copy seam) have no broker and are untouched.
 
 `?storeLevers=grow,coalesce` targets the coordinator's own serving: `grow` makes the arena file grow in
 4 MiB chunks instead of one truncate per allocation (and trims it back on close), `coalesce` makes
@@ -635,17 +642,20 @@ in pgrust's coordinator (`wasm/store-levers.js`), never in the store package: **
 columns only**. The PGlite OPFS columns keep the published store untouched, so a pgrust-against-PGlite
 ratio from such a Run is not like for like. Either name may be given alone.
 
-Both are never silent: the environment header and every Markdown export carry `broker spin: <N> µs`
-and `store levers: grow, coalesce (pgrust columns only)`. The phone ladder, PGlite Memory against the
-postmaster on OPFS:
+Both are never silent: the environment header and every Markdown export carry
+`store levers: grow, coalesce (pgrust columns only)` when the levers are on, and `broker spin: <N> µs`
+on **every** Run — `broker spin: 200 µs` for the default, so an export says which hand-off its broker
+columns ran on without the reader knowing when the default moved. The phone ladder, PGlite Memory
+against the postmaster on OPFS:
 
-- control: <https://pgxsinkit.github.io/pglite-v-pgrust/?brokerStats=1&brokerSpin=0&configurations=pglite-memory,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-memory>
-- spin 50 µs: <https://pgxsinkit.github.io/pglite-v-pgrust/?brokerStats=1&brokerSpin=50&configurations=pglite-memory,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-memory>
-- spin 200 µs: <https://pgxsinkit.github.io/pglite-v-pgrust/?brokerStats=1&brokerSpin=200&configurations=pglite-memory,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-memory>
-- store levers: <https://pgxsinkit.github.io/pglite-v-pgrust/?brokerStats=1&storeLevers=grow,coalesce&configurations=pglite-memory,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-memory>
-- both: <https://pgxsinkit.github.io/pglite-v-pgrust/?brokerStats=1&brokerSpin=200&storeLevers=grow,coalesce&configurations=pglite-memory,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-memory>
+- default (spin 200 µs): <https://pgxsinkit.github.io/pglite-v-pgrust/?brokerStats=1&configurations=pglite-memory,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-memory>
+- no spin (before 2026-09-26): <https://pgxsinkit.github.io/pglite-v-pgrust/?brokerStats=1&brokerSpin=0&configurations=pglite-memory,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-memory>
+- spin 1000 µs: <https://pgxsinkit.github.io/pglite-v-pgrust/?brokerStats=1&brokerSpin=1000&configurations=pglite-memory,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-memory>
+- store levers, on the default spin: <https://pgxsinkit.github.io/pglite-v-pgrust/?brokerStats=1&storeLevers=grow,coalesce&configurations=pglite-memory,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-memory>
 
-`bun run bench --broker-stats --broker-spin <µs> --store-levers grow,coalesce` drives them headlessly.
+`bun run bench --broker-stats [--broker-spin <µs>] [--store-levers grow,coalesce]` drives them
+headlessly; without `--broker-spin` the Run is on the default, and the lane fails it if the page does
+not say `broker spin: 200 µs`.
 
 ## pgrust assets
 
@@ -1144,7 +1154,7 @@ bun run bench --suite rtt \
 | `--pgrust-module <id>`     | Passes `?pgrustModule=` to the page: the threads columns on the alternate module `<id>`       |
 | `--broker-stats`           | Passes `?brokerStats=1` to the page: the store tables under every Suite's results table       |
 | `--broker-gather`          | Passes `?brokerGather=1` to the page: one pgrust broker write per `fd_pwrite`                 |
-| `--broker-spin <µs>`       | Passes `?brokerSpin=` to the page: the pgrust broker spins that long before parking           |
+| `--broker-spin <µs>`       | Passes `?brokerSpin=` to the page, the pgrust broker's spin before parking; default 200       |
 | `--store-levers <list>`    | Passes `?storeLevers=` to the page: `grow`, `coalesce`, the pgrust coordinator only           |
 | `--ephemeral-context`      | The pre-2026-09-24 lane: an off-the-record context, OPFS in memory in the browser process     |
 | `--keep-profile`           | Leave the persistent context's profile in `tmp/bench-profiles/` after the Run                 |

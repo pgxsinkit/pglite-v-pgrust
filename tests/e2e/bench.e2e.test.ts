@@ -15,7 +15,13 @@ import { describe, expect, test } from "bun:test";
 
 import type { BenchReport } from "../../scripts/bench";
 import { runBench, WEBKIT_SKIP_MESSAGE } from "../../scripts/bench";
-import { BROKER_GATHER_LINE, BROKER_STATS_LINE, brokerSpinLine, storeLeversLine } from "../../src/broker-switches";
+import {
+  BROKER_GATHER_LINE,
+  BROKER_SPIN_DEFAULT_US,
+  BROKER_STATS_LINE,
+  brokerSpinLine,
+  storeLeversLine,
+} from "../../src/broker-switches";
 import { CONFIGURATIONS } from "../../src/configurations";
 import { EMPTY_CELL } from "../../src/results/format";
 import { markdownColumnHeader } from "../../src/results/markdown";
@@ -314,9 +320,11 @@ const STORE_CONFIGURATION_IDS: readonly string[] = [
 ];
 
 /**
- * A second, short Run with every store-seam switch on (`?brokerStats=1&brokerGather=1&brokerSpin=200
- * &storeLevers=grow,coalesce`): the Speedtest Suite on those five columns, on the build the lane above
- * already made.
+ * A second, short Run with every other store-seam switch on and the spin off
+ * (`?brokerStats=1&brokerGather=1&brokerSpin=0&storeLevers=grow,coalesce`): the Speedtest Suite on
+ * those five columns, on the build the lane above already made. The lane above runs every broker
+ * column on the default 200 µs spin through all four Suites; this one is the page before that
+ * default, so both hand-offs stay proven end to end.
  */
 const storeReport: BenchReport = await runBench({
   browser: "chromium",
@@ -324,7 +332,7 @@ const storeReport: BenchReport = await runBench({
   configurationIds: STORE_CONFIGURATION_IDS,
   brokerStats: true,
   brokerGather: true,
-  brokerSpinUs: 200,
+  brokerSpinUs: 0,
   storeLevers: ["grow", "coalesce"],
   build: false,
   timeoutMs: LANE_TIMEOUT_MS,
@@ -367,6 +375,9 @@ describe("bench lane", () => {
     expect(report.environmentLine).toContain("cross-origin isolated yes");
     expect(report.environmentLine).toContain("OPFS sync access");
     expect(report.environmentLine).toContain(describeRttIterations(RTT_ITERATIONS));
+    // No --broker-spin: the page's default, named like any other spin.
+    expect(report.environmentLine).toContain(brokerSpinLine(BROKER_SPIN_DEFAULT_US));
+    expect(report.environmentLine).toContain("broker spin: 200 µs");
   });
 
   test("returns every Suite in the order they were requested", () => {
@@ -580,15 +591,16 @@ describe("the Prepared Suite", () => {
   });
 });
 
-describe("the store tables (`?brokerStats=1&brokerGather=1&brokerSpin=200&storeLevers=grow,coalesce`)", () => {
+describe("the store tables (`?brokerStats=1&brokerGather=1&brokerSpin=0&storeLevers=grow,coalesce`)", () => {
   const markdown = storeReport.suites[0]?.markdown ?? "";
   const speedtestRows = 1 + SPEEDTEST_BENCHMARK_IDS.length;
   const labelOf = (id: string): string => CONFIGURATIONS.find((config) => config.id === id)?.label ?? id;
 
-  test("says every switch is on, and every column ran", () => {
+  test("says which switches are on and that the spin is 0, and every column ran", () => {
     expect(storeReport.environmentLine).toContain(BROKER_STATS_LINE);
     expect(storeReport.environmentLine).toContain(BROKER_GATHER_LINE);
-    expect(storeReport.environmentLine).toContain(brokerSpinLine(200));
+    expect(storeReport.environmentLine).toContain(brokerSpinLine(0));
+    expect(storeReport.environmentLine).not.toContain(brokerSpinLine(BROKER_SPIN_DEFAULT_US));
     expect(storeReport.environmentLine).toContain(storeLeversLine(["grow", "coalesce"]));
     expect(storeReport.suites[0]?.failures).toBe("");
   });

@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   BROKER_GATHER_LINE,
   BROKER_GATHER_PARAM,
+  BROKER_SPIN_DEFAULT_US,
   BROKER_SPIN_MAX_US,
   BROKER_SPIN_OFFERED_US,
   BROKER_SPIN_PARAM,
@@ -11,8 +12,8 @@ import {
   brokerGatherOptions,
   brokerSpinLine,
   brokerSpinOptions,
+  DEFAULT_BROKER_SWITCHES,
   describeBrokerSwitches,
-  NO_BROKER_SWITCHES,
   parseBrokerSwitches,
   readBrokerSwitches,
   STORE_LEVERS,
@@ -125,8 +126,9 @@ describe("Configurations", () => {
     const opfs = findConfiguration("pgrust-postmaster-opfs-repacked-relaxed");
     expect(memory?.engine).toBe("pgrust-postmaster");
     expect(opfs?.engine).toBe("pgrust-postmaster");
-    expect(memory?.options).toEqual({ pgrustPostmaster: { port: "memory", durability: "relaxed" } });
-    expect(opfs?.options).toEqual({ pgrustPostmaster: { port: "opfs", durability: "relaxed" } });
+    const spin = { brokerSpinUs: BROKER_SPIN_DEFAULT_US };
+    expect(memory?.options).toEqual({ pgrustPostmaster: { port: "memory", durability: "relaxed", ...spin } });
+    expect(opfs?.options).toEqual({ pgrustPostmaster: { port: "opfs", durability: "relaxed", ...spin } });
     expect(memory?.dataDir).toBe("");
     expect(memory?.modSql).toBeUndefined();
     expect(opfs?.modSql).toBeUndefined();
@@ -137,8 +139,9 @@ describe("Configurations", () => {
     const broker = findConfiguration("pgrust-threads-memory-broker");
     expect(copy?.engine).toBe("pgrust-threads");
     expect(broker?.engine).toBe("pgrust-threads");
+    // The broker seam spins before parking by default; the copy seam has no broker to spin for.
     expect(copy?.options).toEqual({ pgrustThreads: { fs: "copy" } });
-    expect(broker?.options).toEqual({ pgrustThreads: { fs: "broker" } });
+    expect(broker?.options).toEqual({ pgrustThreads: { fs: "broker", brokerSpinUs: BROKER_SPIN_DEFAULT_US } });
     // Both are Memory Configurations, and neither rewrites a byte of SQL.
     expect(copy?.dataDir).toBe("");
     expect(broker?.dataDir).toBe("");
@@ -152,8 +155,9 @@ describe("Configurations", () => {
     const strict = findConfiguration("pgrust-threads-opfs-repacked-strict");
     expect(relaxed?.engine).toBe("pgrust-threads");
     expect(strict?.engine).toBe("pgrust-threads");
-    expect(relaxed?.options).toEqual({ pgrustThreads: { fs: "broker", port: "opfs", durability: "relaxed" } });
-    expect(strict?.options).toEqual({ pgrustThreads: { fs: "broker", port: "opfs", durability: "strict" } });
+    const spin = { brokerSpinUs: BROKER_SPIN_DEFAULT_US };
+    expect(relaxed?.options).toEqual({ pgrustThreads: { fs: "broker", port: "opfs", durability: "relaxed", ...spin } });
+    expect(strict?.options).toEqual({ pgrustThreads: { fs: "broker", port: "opfs", durability: "strict", ...spin } });
     expect(relaxed?.modSql).toBeUndefined();
     expect(strict?.modSql).toBeUndefined();
   });
@@ -314,34 +318,45 @@ describe("the alternate pgrust threads module", () => {
 });
 
 // `?brokerStats=1` counts every Measurement's store work, `?brokerGather=1` turns on the pgrust
-// broker's gathered writes, `?brokerSpin=` its spin before parking and `?storeLevers=` the pgrust
-// coordinator's store levers; none may change a Configuration's options when it is off.
+// broker's gathered writes, `?brokerSpin=` sets its spin before parking (200 µs unless the URL says
+// otherwise) and `?storeLevers=` the pgrust coordinator's store levers. The three on/off switches may
+// not change a Configuration's options when they are off; the spin reaches the broker columns alone.
 describe("the store-seam switches", () => {
   test("turn on for exactly `1`, and are ignored for anything else", () => {
-    expect(parseBrokerSwitches(`?${BROKER_STATS_PARAM}=1`)).toEqual({ ...NO_BROKER_SWITCHES, stats: true });
-    expect(parseBrokerSwitches(`?${BROKER_GATHER_PARAM}=1`)).toEqual({ ...NO_BROKER_SWITCHES, gather: true });
+    expect(parseBrokerSwitches(`?${BROKER_STATS_PARAM}=1`)).toEqual({ ...DEFAULT_BROKER_SWITCHES, stats: true });
+    expect(parseBrokerSwitches(`?${BROKER_GATHER_PARAM}=1`)).toEqual({ ...DEFAULT_BROKER_SWITCHES, gather: true });
     expect(parseBrokerSwitches(`?${BROKER_STATS_PARAM}=1&${BROKER_GATHER_PARAM}=1`)).toEqual({
-      ...NO_BROKER_SWITCHES,
+      ...DEFAULT_BROKER_SWITCHES,
       stats: true,
       gather: true,
     });
-    expect(parseBrokerSwitches(`?${BROKER_STATS_PARAM}=%201%20`)).toEqual({ ...NO_BROKER_SWITCHES, stats: true });
+    expect(parseBrokerSwitches(`?${BROKER_STATS_PARAM}=%201%20`)).toEqual({ ...DEFAULT_BROKER_SWITCHES, stats: true });
     for (const value of ["", "0", "true", "on", "yes", "2"]) {
       expect(parseBrokerSwitches(`?${BROKER_STATS_PARAM}=${value}&${BROKER_GATHER_PARAM}=${value}`)).toEqual(
-        NO_BROKER_SWITCHES,
+        DEFAULT_BROKER_SWITCHES,
       );
     }
-    expect(parseBrokerSwitches("")).toEqual(NO_BROKER_SWITCHES);
+    expect(parseBrokerSwitches("")).toEqual(DEFAULT_BROKER_SWITCHES);
   });
 
-  test("take a spin of 0 to the maximum µs, the offered ones included, and ignore anything else", () => {
-    for (const spinUs of [...BROKER_SPIN_OFFERED_US, 1, 999, BROKER_SPIN_MAX_US]) {
-      expect(parseBrokerSwitches(`?${BROKER_SPIN_PARAM}=${spinUs}`)).toEqual({ ...NO_BROKER_SWITCHES, spinUs });
+  test("spin 200 µs when the URL does not say, and 0 when it says 0", () => {
+    expect(BROKER_SPIN_DEFAULT_US).toBe(200);
+    expect(DEFAULT_BROKER_SWITCHES).toEqual({ stats: false, gather: false, spinUs: 200, storeLevers: [] });
+    expect(parseBrokerSwitches("").spinUs).toBe(200);
+    expect(parseBrokerSwitches(`?${BROKER_STATS_PARAM}=1`).spinUs).toBe(200);
+    expect(parseBrokerSwitches(`?${BROKER_SPIN_PARAM}=0`).spinUs).toBe(0);
+    expect(parseBrokerSwitches(`?${BROKER_SPIN_PARAM}=%200%20`).spinUs).toBe(0);
+  });
+
+  test("take a spin of 0 to the maximum µs, the offered ones included, and fall back to the default otherwise", () => {
+    for (const spinUs of [...BROKER_SPIN_OFFERED_US, 1, 50, 500, 999, BROKER_SPIN_MAX_US]) {
+      expect(parseBrokerSwitches(`?${BROKER_SPIN_PARAM}=${spinUs}`)).toEqual({ ...DEFAULT_BROKER_SWITCHES, spinUs });
     }
-    expect(BROKER_SPIN_OFFERED_US).toEqual([0, 50, 200]);
-    expect(parseBrokerSwitches(`?${BROKER_SPIN_PARAM}=%20200%20`).spinUs).toBe(200);
+    expect(BROKER_SPIN_OFFERED_US).toEqual([0, 200, 1000]);
+    expect(parseBrokerSwitches(`?${BROKER_SPIN_PARAM}=%2050%20`).spinUs).toBe(50);
+    // A value the page does not accept is ignored, as every other switch's is: the Run is on the default.
     for (const value of ["", "-1", "1001", "50.5", "5e1", "0x10", "fast", "200us", "99999"]) {
-      expect(parseBrokerSwitches(`?${BROKER_SPIN_PARAM}=${value}`)).toEqual(NO_BROKER_SWITCHES);
+      expect(parseBrokerSwitches(`?${BROKER_SPIN_PARAM}=${value}`)).toEqual(DEFAULT_BROKER_SWITCHES);
     }
   });
 
@@ -355,7 +370,7 @@ describe("the store-seam switches", () => {
     // U3 and U4 of the store-levers note are deliberately not offered.
     expect(parseBrokerSwitches(`?${STORE_LEVERS_PARAM}=grow,zeroskip,metacoalesce`).storeLevers).toEqual(["grow"]);
     for (const value of ["", "1", "zeroskip", "metacoalesce", "GROW", "grow;coalesce"]) {
-      expect(parseBrokerSwitches(`?${STORE_LEVERS_PARAM}=${value}`)).toEqual(NO_BROKER_SWITCHES);
+      expect(parseBrokerSwitches(`?${STORE_LEVERS_PARAM}=${value}`)).toEqual(DEFAULT_BROKER_SWITCHES);
     }
   });
 
@@ -369,8 +384,10 @@ describe("the store-seam switches", () => {
     expect(() => levers.normalizeStoreLevers(["zeroskip"])).toThrow(RangeError);
   });
 
-  test("announce themselves in a fixed order, and say nothing when off", () => {
-    expect(describeBrokerSwitches(NO_BROKER_SWITCHES)).toEqual([]);
+  test("announce themselves in a fixed order, and always name the spin", () => {
+    // The default is named too: every export says which spin its broker columns ran on.
+    expect(describeBrokerSwitches(DEFAULT_BROKER_SWITCHES)).toEqual(["broker spin: 200 µs"]);
+    expect(describeBrokerSwitches(parseBrokerSwitches(""))).toEqual([brokerSpinLine(BROKER_SPIN_DEFAULT_US)]);
     expect(
       describeBrokerSwitches({ stats: true, gather: true, spinUs: 200, storeLevers: ["grow", "coalesce"] }),
     ).toEqual([
@@ -383,30 +400,35 @@ describe("the store-seam switches", () => {
     expect(BROKER_GATHER_LINE).toBe("broker gather: on");
     expect(brokerSpinLine(50)).toBe("broker spin: 50 µs");
     expect(storeLeversLine(["coalesce"])).toBe("store levers: coalesce (pgrust columns only)");
-    // A 0-µs spin changes nothing and is still announced, so the control Run of an A/B carries its label.
-    expect(describeBrokerSwitches({ ...NO_BROKER_SWITCHES, spinUs: 0 })).toEqual(["broker spin: 0 µs"]);
+    // A 0-µs spin is the behaviour before the default, and is announced like any other.
+    expect(describeBrokerSwitches({ ...DEFAULT_BROKER_SWITCHES, spinUs: 0 })).toEqual(["broker spin: 0 µs"]);
+    expect(describeBrokerSwitches({ ...DEFAULT_BROKER_SWITCHES, stats: true, spinUs: 1000 })).toEqual([
+      BROKER_STATS_LINE,
+      "broker spin: 1000 µs",
+    ]);
   });
 
-  test("add nothing to the open options unless they are on", () => {
-    expect(Object.keys(storeStatsOptions(NO_BROKER_SWITCHES))).toEqual([]);
-    expect(Object.keys(brokerGatherOptions(NO_BROKER_SWITCHES))).toEqual([]);
-    expect(Object.keys(brokerSpinOptions(NO_BROKER_SWITCHES))).toEqual([]);
-    expect(Object.keys(brokerSpinOptions({ ...NO_BROKER_SWITCHES, spinUs: 0 }))).toEqual([]);
-    expect(Object.keys(storeLeverOptions(NO_BROKER_SWITCHES))).toEqual([]);
-    expect(storeStatsOptions({ ...NO_BROKER_SWITCHES, stats: true })).toEqual({ storeStats: true });
-    expect(brokerGatherOptions({ ...NO_BROKER_SWITCHES, gather: true })).toEqual({ brokerGather: true });
-    expect(brokerSpinOptions({ ...NO_BROKER_SWITCHES, spinUs: 50 })).toEqual({ brokerSpinUs: 50 });
-    expect(storeLeverOptions({ ...NO_BROKER_SWITCHES, storeLevers: ["grow"] })).toEqual({ storeLevers: ["grow"] });
+  test("add nothing to the open options unless they are on, but the spin, which is off only at 0", () => {
+    expect(Object.keys(storeStatsOptions(DEFAULT_BROKER_SWITCHES))).toEqual([]);
+    expect(Object.keys(brokerGatherOptions(DEFAULT_BROKER_SWITCHES))).toEqual([]);
+    expect(brokerSpinOptions(DEFAULT_BROKER_SWITCHES)).toEqual({ brokerSpinUs: 200 });
+    // `?brokerSpin=0` opens the Engine exactly as before the default: no spin option at all.
+    expect(Object.keys(brokerSpinOptions({ ...DEFAULT_BROKER_SWITCHES, spinUs: 0 }))).toEqual([]);
+    expect(Object.keys(storeLeverOptions(DEFAULT_BROKER_SWITCHES))).toEqual([]);
+    expect(storeStatsOptions({ ...DEFAULT_BROKER_SWITCHES, stats: true })).toEqual({ storeStats: true });
+    expect(brokerGatherOptions({ ...DEFAULT_BROKER_SWITCHES, gather: true })).toEqual({ brokerGather: true });
+    expect(brokerSpinOptions({ ...DEFAULT_BROKER_SWITCHES, spinUs: 50 })).toEqual({ brokerSpinUs: 50 });
+    expect(storeLeverOptions({ ...DEFAULT_BROKER_SWITCHES, storeLevers: ["grow"] })).toEqual({ storeLevers: ["grow"] });
   });
 
-  test("are read as off where there is no page URL, so every default Configuration is unchanged", () => {
-    expect(readBrokerSwitches()).toEqual(NO_BROKER_SWITCHES);
+  test("are read as the defaults where there is no page URL: the broker columns spin 200 µs, and nothing else moves", () => {
+    expect(readBrokerSwitches()).toEqual(DEFAULT_BROKER_SWITCHES);
     for (const config of CONFIGURATIONS) {
       expect(config.options?.storeStats).toBeUndefined();
       expect(config.options?.pgrustThreads?.brokerGather).toBeUndefined();
       expect(config.options?.pgrustPostmaster?.brokerGather).toBeUndefined();
-      expect(config.options?.pgrustThreads?.brokerSpinUs).toBeUndefined();
-      expect(config.options?.pgrustPostmaster?.brokerSpinUs).toBeUndefined();
+      const spinUs = config.options?.pgrustThreads?.brokerSpinUs ?? config.options?.pgrustPostmaster?.brokerSpinUs;
+      expect(spinUs).toBe(BROKER_CONFIGURATION_IDS.includes(config.id) ? BROKER_SPIN_DEFAULT_US : undefined);
       expect(config.options?.pgrustThreads?.storeLevers).toBeUndefined();
       expect(config.options?.pgrustPostmaster?.storeLevers).toBeUndefined();
     }
@@ -427,20 +449,24 @@ describe("the store-seam switches", () => {
 
   // The Configurations read the URL once, when their module loads; a second copy of the module,
   // loaded under a page URL, is how the spread itself is seen.
-  test("reach the pgrust broker columns alone: never PGlite's OPFS pair, never the copy seam", async () => {
+  async function configurationsUnder(search: string, instance: string): Promise<typeof CONFIGURATIONS> {
     const scope = globalThis as { location?: { search: string } };
-    scope.location = {
-      search: `?${BROKER_GATHER_PARAM}=1&${BROKER_SPIN_PARAM}=200&${STORE_LEVERS_PARAM}=grow,coalesce`,
-    };
+    scope.location = { search };
     // A query string makes it a second module instance; a variable keeps tsc from resolving it as a path.
-    const specifier = "./configurations.ts?switched";
-    let switched: typeof CONFIGURATIONS;
+    const specifier = `./configurations.ts?${instance}`;
     try {
-      switched = ((await import(specifier)) as { readonly CONFIGURATIONS: typeof CONFIGURATIONS }).CONFIGURATIONS;
+      return ((await import(specifier)) as { readonly CONFIGURATIONS: typeof CONFIGURATIONS }).CONFIGURATIONS;
     } finally {
       delete scope.location;
     }
-    const levers = { brokerGather: true, brokerSpinUs: 200, storeLevers: ["grow", "coalesce"] };
+  }
+
+  test("reach the pgrust broker columns alone: never PGlite's OPFS pair, never the copy seam", async () => {
+    const switched = await configurationsUnder(
+      `?${BROKER_GATHER_PARAM}=1&${BROKER_SPIN_PARAM}=1000&${STORE_LEVERS_PARAM}=grow,coalesce`,
+      "switched",
+    );
+    const levers = { brokerGather: true, brokerSpinUs: 1000, storeLevers: ["grow", "coalesce"] };
     for (const config of switched) {
       const pgrust = config.options?.pgrustThreads ?? config.options?.pgrustPostmaster;
       if (BROKER_CONFIGURATION_IDS.includes(config.id)) {
@@ -453,5 +479,32 @@ describe("the store-seam switches", () => {
       }
     }
     expect(switched.filter((config) => BROKER_CONFIGURATION_IDS.includes(config.id))).toHaveLength(5);
+  });
+
+  // `?brokerSpin=0` is the page before the default: the broker columns lose the spin option and are
+  // then exactly the options every table before 2026-09-26 was produced with; nothing else moves.
+  test("drop the spin from every broker column at `?brokerSpin=0`, and leave every other column as it is", async () => {
+    const unspun = await configurationsUnder(`?${BROKER_SPIN_PARAM}=0`, "unspun");
+    for (const config of unspun) {
+      const pgrust = config.options?.pgrustThreads ?? config.options?.pgrustPostmaster;
+      expect(pgrust?.brokerSpinUs).toBeUndefined();
+      if (!BROKER_CONFIGURATION_IDS.includes(config.id)) {
+        expect(JSON.stringify(config.options ?? {})).toBe(JSON.stringify(findConfiguration(config.id)?.options ?? {}));
+      }
+    }
+    const optionsOf = (id: string): unknown => unspun.find((config) => config.id === id)?.options;
+    expect(optionsOf("pgrust-threads-memory-broker")).toEqual({ pgrustThreads: { fs: "broker" } });
+    expect(optionsOf("pgrust-threads-opfs-repacked-relaxed")).toEqual({
+      pgrustThreads: { fs: "broker", port: "opfs", durability: "relaxed" },
+    });
+    expect(optionsOf("pgrust-threads-opfs-repacked-strict")).toEqual({
+      pgrustThreads: { fs: "broker", port: "opfs", durability: "strict" },
+    });
+    expect(optionsOf("pgrust-postmaster-memory-broker")).toEqual({
+      pgrustPostmaster: { port: "memory", durability: "relaxed" },
+    });
+    expect(optionsOf("pgrust-postmaster-opfs-repacked-relaxed")).toEqual({
+      pgrustPostmaster: { port: "opfs", durability: "relaxed" },
+    });
   });
 });

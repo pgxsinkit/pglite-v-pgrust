@@ -33,7 +33,7 @@
  *   bun run bench --suite speedtest --pgrust-module 3624f82c  # the threads columns on an alternate module
  *   bun run bench --suite speedtest --broker-stats            # plus the store tables under each table
  *   bun run bench --suite speedtest --broker-stats --broker-gather  # the broker's gathered writes too
- *   bun run bench --suite speedtest --broker-stats --broker-spin 200  # the broker spins 200 µs before parking
+ *   bun run bench --suite speedtest --broker-stats --broker-spin 0    # the broker parks at once, as before 2026-09-26
  *   bun run bench --suite speedtest --broker-stats --store-levers grow,coalesce  # the pgrust store levers
  *   bun run bench --ephemeral-context              # the pre-2026-09-24 lane: OPFS in memory, one IPC per call
  *   bun run bench --keep-profile                   # leave the Run's profile in tmp/bench-profiles/
@@ -55,7 +55,8 @@
  * broker's one write per `fd_pwrite`. The lane fails the Run if the environment line does not then
  * say `broker stats: on` / `broker gather: on`. `--broker-spin <µs>` and `--store-levers <list>` are
  * `?brokerSpin=` and `?storeLevers=`, checked the same way against `broker spin: <µs> µs` and
- * `store levers: <list> (pgrust columns only)`.
+ * `store levers: <list> (pgrust columns only)`. The spin is checked on every Run: without the flag the
+ * page's default (`broker spin: 200 µs`, since 2026-09-26) must be the one it announces.
  */
 
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -70,6 +71,7 @@ import type { StoreLever } from "../src/broker-switches";
 import {
   BROKER_GATHER_LINE,
   BROKER_GATHER_PARAM,
+  BROKER_SPIN_DEFAULT_US,
   BROKER_SPIN_MAX_US,
   BROKER_SPIN_PARAM,
   BROKER_STATS_LINE,
@@ -199,7 +201,10 @@ export interface BenchOptions {
   readonly brokerStats: boolean;
   /** The pgrust broker's gathered writes, as `?brokerGather=1`. Off by default. */
   readonly brokerGather: boolean;
-  /** The pgrust broker's spin before parking in µs, as `?brokerSpin=`; null (not on the URL) by default. */
+  /**
+   * The pgrust broker's spin before parking in µs, as `?brokerSpin=`; null by default, which leaves it
+   * off the URL and the page on its own default, {@link BROKER_SPIN_DEFAULT_US} µs.
+   */
   readonly brokerSpinUs: number | null;
   /** The pgrust coordinator's store levers, as `?storeLevers=`; none by default. */
   readonly storeLevers: readonly StoreLever[];
@@ -489,9 +494,10 @@ export async function openBenchContext(
  * The page URL a run drives: every out-of-band choice as a query parameter, and nothing else.
  *
  * The Configuration selection goes through exactly the parameters the page's own checkboxes write,
- * so `--configurations`/`--baseline` and a hand-edited link are the same mechanism.
+ * so `--configurations`/`--baseline` and a hand-edited link are the same mechanism. A Run without
+ * `--broker-spin` leaves `?brokerSpin=` off, so the page runs its own default.
  */
-function pageUrl(port: number, options: BenchOptions): string {
+export function pageUrl(port: number, options: BenchOptions): string {
   const params = new URLSearchParams();
   if (options.rttIterations !== null) {
     params.set(RTT_ITERATIONS_PARAM, String(options.rttIterations));
@@ -520,6 +526,14 @@ function pageUrl(port: number, options: BenchOptions): string {
       ? query
       : formatSelectionSearch(query, options.configurationIds, options.baselineId);
   return `http://127.0.0.1:${port}${normalizeBase(options.base)}${search}`;
+}
+
+/**
+ * What the page's environment line must say about the pgrust broker's spin for this Run to be the one
+ * asked for: the `--broker-spin` value, or the page's default without one. Checked on every Run.
+ */
+export function expectedBrokerSpinLine(options: Pick<BenchOptions, "brokerSpinUs">): string {
+  return brokerSpinLine(options.brokerSpinUs ?? BROKER_SPIN_DEFAULT_US);
 }
 
 /** A countdown against the overall deadline, so a stuck Run fails with a clear message. */
@@ -692,11 +706,6 @@ export async function runBench(overrides: Partial<BenchOptions> = {}): Promise<B
         [options.brokerStats, `${BROKER_STATS_PARAM}=1`, BROKER_STATS_LINE],
         [options.brokerGather, `${BROKER_GATHER_PARAM}=1`, BROKER_GATHER_LINE],
         [
-          options.brokerSpinUs !== null,
-          `${BROKER_SPIN_PARAM}=${options.brokerSpinUs ?? ""}`,
-          brokerSpinLine(options.brokerSpinUs ?? 0),
-        ],
-        [
           options.storeLevers.length > 0,
           `${STORE_LEVERS_PARAM}=${options.storeLevers.join(",")}`,
           storeLeversLine(options.storeLevers),
@@ -708,6 +717,18 @@ export async function runBench(overrides: Partial<BenchOptions> = {}): Promise<B
               "would be the default page under a switched Run's name",
           );
         }
+      }
+      // The spin on every Run, the default one included: a page that does not announce the one this
+      // lane asked for — or, without --broker-spin, the default — is not the page it meant to drive.
+      const spinLine = expectedBrokerSpinLine(options);
+      if (!environmentLine.includes(spinLine)) {
+        throw new Error(
+          options.brokerSpinUs === null
+            ? `the page does not announce the default broker spin: its environment line does not say "${spinLine}", ` +
+                "so this Run would be on some other spin under the default's name"
+            : `the page did not take ?${BROKER_SPIN_PARAM}=${options.brokerSpinUs}: its environment line does not ` +
+                `say "${spinLine}", so this Run would be the default page under a switched Run's name`,
+        );
       }
 
       for (const suiteId of options.suites) {
@@ -755,7 +776,8 @@ const USAGE = `Usage: bun run bench [options]
   --broker-gather                      One pgrust broker write per fd_pwrite over 256 KiB channel
                                        payloads, as the page's ?brokerGather=1
   --broker-spin <us>                   The pgrust broker spins up to <us> µs (0-${BROKER_SPIN_MAX_US}) before
-                                       parking, both sides, as the page's ?brokerSpin=
+                                       parking, both sides, as the page's ?brokerSpin= (default:
+                                       ${BROKER_SPIN_DEFAULT_US}; 0 parks at once, as before 2026-09-26)
   --store-levers <grow,coalesce>       The pgrust coordinator's store levers, as the page's
                                        ?storeLevers= (pgrust broker columns only)
   --ephemeral-context                  The pre-2026-09-24 lane: an off-the-record context, OPFS in

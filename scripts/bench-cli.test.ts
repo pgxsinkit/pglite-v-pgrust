@@ -13,7 +13,13 @@ import { toMarkdown } from "../src/results/markdown";
 import { SUITES } from "../src/suites";
 import { WARMUP_EXPORT_LINE, WARMUP_LABEL } from "../src/suites/warmup";
 import type { BenchReport } from "./bench";
-import { DEFAULT_BENCH_OPTIONS, parseBenchArguments, renderResultsFile } from "./bench";
+import {
+  DEFAULT_BENCH_OPTIONS,
+  expectedBrokerSpinLine,
+  pageUrl,
+  parseBenchArguments,
+  renderResultsFile,
+} from "./bench";
 
 describe("parseBenchArguments", () => {
   test("runs all four Suites by default, in page order", () => {
@@ -94,6 +100,19 @@ describe("parseBenchArguments", () => {
     expect(parseBenchArguments(["--broker-gather"]).options.brokerGather).toBe(true);
     const both = parseBenchArguments(["--broker-stats", "--broker-gather"]).options;
     expect([both.brokerStats, both.brokerGather]).toEqual([true, true]);
+  });
+
+  // Since 2026-09-26 the page spins 200 µs by default: a Run without --broker-spin leaves the
+  // parameter off the URL and still expects the page to announce the default.
+  test("leaves the spin to the page's default, and still checks that the page announces it", () => {
+    const url = (options: Partial<typeof DEFAULT_BENCH_OPTIONS>): URL =>
+      new URL(pageUrl(5581, { ...DEFAULT_BENCH_OPTIONS, ...options }));
+    expect(url({}).searchParams.has("brokerSpin")).toBe(false);
+    expect(url({ brokerSpinUs: 0 }).searchParams.get("brokerSpin")).toBe("0");
+    expect(url({ brokerSpinUs: 1000 }).searchParams.get("brokerSpin")).toBe("1000");
+    expect(expectedBrokerSpinLine(DEFAULT_BENCH_OPTIONS)).toBe("broker spin: 200 µs");
+    expect(expectedBrokerSpinLine({ brokerSpinUs: 0 })).toBe("broker spin: 0 µs");
+    expect(expectedBrokerSpinLine({ brokerSpinUs: 500 })).toBe("broker spin: 500 µs");
   });
 
   test("passes a broker spin and the store levers through, neither on the URL by default", () => {

@@ -72,9 +72,12 @@ export interface EnvironmentInfo {
    */
   readonly pgrustModule: string | null;
   /**
-   * The two store-seam switches, `?brokerStats=1` and `?brokerGather=1`, both off unless the URL
-   * turned them on. Reported for the same reason as the four above: counted store work is a Run
-   * with a clock read on either side of every file call, and gathered writes are another broker.
+   * The four store-seam switches: `?brokerStats=1`, `?brokerGather=1` and `?storeLevers=`, off unless
+   * the URL turned them on, and `?brokerSpin=`, the pgrust broker's spin before parking, which is
+   * 200 µs unless the URL set another. Reported for the same reason as the four above: counted store
+   * work is a Run with a clock read on either side of every file call, and gathered writes, another
+   * spin or the store levers are another broker. The spin is reported on every Run, the default
+   * included.
    */
   readonly brokerSwitches: BrokerSwitches;
 }

@@ -60,8 +60,10 @@ const PGRUST_MODULE = pgrustModuleOptions(readPgrustModule());
  * PGlite's OPFS pair. `BROKER_LEVERS` — the gathered writes, the spin before parking and the
  * coordinator's store levers — goes into the pgrust options of every broker one and nowhere else: the
  * copy seam has no broker, and PGlite's OPFS columns open the published store in their own worker.
- * Both are EMPTY objects unless the URL turned something on, so every Configuration's options are then
- * byte-for-byte the ones this repo's tables were produced with.
+ * `STORE_STATS` is an EMPTY object unless the URL turned it on. `BROKER_LEVERS` carries the spin
+ * (`brokerSpinUs: 200` unless the URL set another) and nothing else unless the URL turned something
+ * on; with `?brokerSpin=0` it is empty, and every broker Configuration's options are then byte-for-byte
+ * the ones this repo's tables before 2026-09-26 were produced with.
  */
 const BROKER_SWITCHES = readBrokerSwitches();
 const STORE_STATS = storeStatsOptions(BROKER_SWITCHES);
