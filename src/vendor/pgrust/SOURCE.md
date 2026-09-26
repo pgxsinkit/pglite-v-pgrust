@@ -4,11 +4,11 @@ Copied byte-verbatim by `bun run sync:pgrust`. **Do not edit these files by hand
 script against an updated pgrust checkout instead. They are excluded from oxlint and oxfmt so
 they stay identical to their source.
 
-- Commit: `a230ad7d08a4e1d9319976e10db61942b79edbe3`
-- Version: `a230ad7d08`
+- Commit: `95d4750995f86d7506df418de3926cb0eba051ab`
+- Version: `95d4750995`
 - Source: `/home/anton/dev/tmp/pgrust`
 - Working tree: clean
-- Synced: 2026-09-26T05:26:36.250Z
+- Synced: 2026-09-26T13:36:21.964Z
 
 ## Files
 
@@ -54,12 +54,18 @@ published version of the package, so no npm release corresponds to these bytes. 
 <!-- pgrust-assets:begin -->
 ## Binary assets in `public/pgrust/`
 
-Copied by `bun run sync:pgrust` from a local pgrust checkout. They are gitignored build
-outputs; only this record of them is committed.
+Downloaded by `bun run sync:pgrust --release pgrust-assets/95d47509` — **not** from the checkout above.
+They are gitignored build outputs; only this record of them is committed.
 
-- Source: `/home/anton/dev/tmp/pgrust`
-- Version: `a230ad7d08`
-- Copied: 2026-09-26T05:26:36.268Z
+- Release: [`pgrust-assets/95d47509`](https://github.com/pgxsinkit/pglite-v-pgrust/releases/tag/pgrust-assets/95d47509)
+- pgrust commit: [`95d4750995f86d7506df418de3926cb0eba051ab`](https://github.com/pgxsinkit/pgrust/commit/95d4750995f86d7506df418de3926cb0eba051ab)
+- Branch: [`spike/wasip1-threads`](https://github.com/pgxsinkit/pgrust/tree/spike/wasip1-threads)
+- Upstream base: `79ad992ede22bcf6ae0c4fdead6fb01eeac5a990` (https://github.com/malisper/pgrust)
+- Build: `wasm-release` / `wasm32-wasip1` / `nightly-2026-07-17`
+- Threads build: `wasm-release` / `wasm32-wasip1-threads` (postgres-threads.wasm)
+- VFS: `initdb` from PostgreSQL 18, built 2026-08-29T03:17:08.732Z
+- Downloaded: 2026-09-26T13:43:32.905Z
 
-pgrust is AGPL-3.0-only; these binaries were built locally from the checkout named above.
+pgrust is AGPL-3.0-only. The complete corresponding source for these binaries is the commit
+linked above; the release's `manifest.json` records the same thing in machine-readable form.
 <!-- pgrust-assets:end -->

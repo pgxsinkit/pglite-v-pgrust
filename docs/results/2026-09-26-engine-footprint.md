@@ -237,3 +237,49 @@ SPIN_RUNS=tmp/agents/spin-adopt/runs-cnp SPIN_ROWS=1,2,7,9,11,14 SPIN_PER_REQUES
 By hand, on any phone:
 <https://pgxsinkit.github.io/pglite-v-pgrust/?brokerStats=1&configurations=pglite-memory,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-memory>
 and the same with `&pgrustModule=efe65be6` or `&pgrustModule=95d47509`.
+
+## Adopted (2026-09-26)
+
+P is now the page's default. `.github/workflows/pages.yml` builds the site from
+`--release pgrust-assets/95d47509` instead of `pgrust-assets/e2e7a2f9`, and the four alternates are
+`e2e7a2f9` (C, the previous default), `3624f82c`, `be79c787` and `efe65be6` (N). `95d47509` is no
+longer an alternate: it is the default, so `?pgrustModule=95d47509`, in §4's URLs and the
+reproduction above, now names nothing the build carries and is ignored, and the page runs the same
+bytes as its own module, with no `pgrust module:` entry in the environment line.
+
+What moves with the pin, all verified against the release manifests:
+
+| file | before (`pgrust-assets/e2e7a2f9`) | after (`pgrust-assets/95d47509`) |
+| --- | --- | --- |
+| `postgres-threads.wasm` (the six threads and postmaster columns) | `c499994c…`, 39 759 752 B | `dd1d4780…`, 33 974 686 B |
+| `postgres.wasm` (the two `pgrust Memory` columns) | `4c010907…`, 39 137 339 B | `f0b145db…`, 35 830 277 B |
+| `vfs.img`, `vfs.json`, the store bundle (pgxsinkit `f4777b4`) | | byte-identical |
+| the vendored host JS | | byte-identical; its record now names `95d4750995` |
+
+`src/vendor/pgrust/VERSION`, and so the environment line, reads `pgrust 95d4750995`. The
+single-session `postgres.wasm` is the one N's release carries: `efe65be6d4`'s source, built without a
+profile, as the one before it was. This note measured threads modules only; the `pgrust Memory`
+columns' new module was not A/B'd.
+
+**Why, in the numbers above.** On the Galaxy S22+ (fan-cooled, no throttling, three interleaved
+rounds) P ran the Speedtest in 11.60 s against 12.89 s for C (0.90×, 11 546–11 645 ms against
+12 775–13 102, the ranges apart); pgrust ÷ PGlite Memory went from 1.79× to 1.61×; the Warm-up
+from 1 258 to 838 ms; Chrome's CPU time per Run fell 13% (55.8 to 48.5 CPU-s); the Prepared Suite,
+one Run each, was 0.87×. On the desktop P was 0.90× C as well. P passed the full gate of §3: the six
+pgrust node lanes, the leak probe at 0 bytes a statement on all eight paths, pgxsinkit's unit suite
+2 100 passed and 0 failed, the lifetime smoke, wasm memory 256.0 MiB.
+
+**After the switch, on the desktop.** One Speedtest Run on the synced tree (headless Chromium 149,
+persistent context, `pglite-opfs-repacked-relaxed,pgrust-postmaster-opfs-repacked-relaxed`, 1-minute
+load 0.23 at the start): the environment line said `pgrust 95d4750995` and `broker spin: 200 µs`
+with no `pgrust module:` entry; pgrust 8 749.7 ms, PGlite OPFS 8 302.6 ms (1.05×), Warm-up 650.7 ms.
+§3's P Runs were 8 948.7 and 8 901.5 ms, Warm-ups 515.6 and 572.2 ms, beside PGlite OPFS at
+8 352–8 573 ms.
+
+**Comparing with the previous default.** `?pgrustModule=e2e7a2f9` puts the six threads and
+postmaster columns back on C, with this build's host JS, image and store bundle, and the environment
+line says `pgrust module: e2e7a2f9 (alternate)`. On a phone, the same pair of URLs as §4:
+<https://pgxsinkit.github.io/pglite-v-pgrust/?brokerStats=1&configurations=pglite-memory,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-memory>
+(P, the default) and the same with `&pgrustModule=e2e7a2f9` (C). Headlessly,
+`bun run bench --suite speedtest --pgrust-module e2e7a2f9`. `&pgrustModule=efe65be6` is still the
+new code without its profile.

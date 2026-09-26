@@ -60,13 +60,14 @@ jobs:
       # Release assets are public downloads and need no credential; the token is only for the API
       # call that resolves `latest`, whose unauthenticated rate limit is shared by every job on the
       # runner's IP, should the pin below ever go back to it.
-      # e2e7a2f9: the default, the profile-guided threads module.
+      # 95d47509: the default, six engine commits on be79c787's source, profile-guided with a profile
+      #           re-collected on it (docs/results/2026-09-26-engine-footprint.md).
+      # e2e7a2f9: the previous default, the first profile-guided threads module.
       # 3624f82c: the last threads module before the profile-guided one.
       # be79c787: the profile-guided module with the absent-fork cache and no memory watchdog on WASI.
-      # efe65be6: six engine commits on be79c787's source, built without a profile.
-      # 95d47509: the same source, profile-guided with a profile re-collected on it.
+      # efe65be6: the default's source, built without a profile.
       - name: Sync the pgrust assets from the pinned release, and the four alternate threads modules
-        run: bun run sync:pgrust --release pgrust-assets/e2e7a2f9 --alt-release pgrust-assets/3624f82c --alt-release pgrust-assets/be79c787 --alt-release pgrust-assets/efe65be6 --alt-release pgrust-assets/95d47509
+        run: bun run sync:pgrust --release pgrust-assets/95d47509 --alt-release pgrust-assets/e2e7a2f9 --alt-release pgrust-assets/3624f82c --alt-release pgrust-assets/be79c787 --alt-release pgrust-assets/efe65be6
         env:
           GITHUB_TOKEN: ${{ github.token }}
 

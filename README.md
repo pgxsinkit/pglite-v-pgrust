@@ -564,26 +564,28 @@ bought and what it gives up.
 
 ### `?pgrustModule=` — the threads columns on another pgrust module
 
-The published build runs the profile-guided threads module of `pgrust-assets/e2e7a2f9` and also
-carries four alternates beside it:
+The published build runs the threads module of `pgrust-assets/95d47509` (pgrust `95d4750995`,
+module `dd1d4780…`): `be79c787`'s source with six engine commits on top that cut per-statement work
+(plan-state nodes boxed, the planner's rels filled in their arena slot, the btree insert path's scan
+key filled in place, the vector growth path out of line, the memory-context dispatch, and a stack
+check inlined in native builds only), built with a profile re-collected on that code
+(`pgo/train.sql`, trained as before). It became the default on 2026-09-26, 0.90× the previous
+default's Speedtest on the desktop and on a Galaxy S22+
+([the note](docs/results/2026-09-26-engine-footprint.md#adopted-2026-09-26)). The build also carries
+four alternates beside it:
 
+- `e2e7a2f9`, the previous default and the first profile-guided threads module (`c499994c…`), at
+  `pgrust/alt/e2e7a2f9/postgres-threads.wasm`. Against the default it is the six commits, the two
+  fixes below and the re-collected profile together.
 - `3624f82c`, the last threads module before the profile-guided one, at
   `pgrust/alt/3624f82c/postgres-threads.wasm`.
-- `be79c787`, the profile-guided module with two fixes that remove failed file opens, at
+- `be79c787`, the previous default with two fixes that remove failed file opens, at
   `pgrust/alt/be79c787/postgres-threads.wasm`. An index that has never been vacuumed has no free space
   map, and pgrust asked the store for it again at every index page split; it now remembers the
   answer until a file is created. The memory watchdog, which tried to read `/proc` once a second, no
-  longer runs on WASI.
-- `efe65be6`, `be79c787`'s source and six engine commits on top that cut per-statement work
-  (plan-state nodes boxed, the planner's rels filled in their arena slot, the btree insert path's
-  scan key filled in place, the vector growth path out of line, the memory-context dispatch, and a
-  stack check inlined in native builds only), built **without** a profile, at
-  `pgrust/alt/efe65be6/postgres-threads.wasm`.
-- `95d47509`, the same source built **with** a profile re-collected on it, at
-  `pgrust/alt/95d47509/postgres-threads.wasm`. The profile the other profile-guided modules are built
-  from predates the six commits, whose changes reach every function that grows a vector; this one is
-  trained the same way (`pgo/train.sql`) on the new code. `efe65be6` against `95d47509` is the
-  profile alone; either against the current module is the six commits too.
+  longer runs on WASI. The default carries both fixes.
+- `efe65be6`, the default's source built **without** a profile, at
+  `pgrust/alt/efe65be6/postgres-threads.wasm`. Against the default it is the profile alone.
 
 `?pgrustModule=<id>` makes the six `pgrust Threads` and `pgrust Postmaster` columns load that module
 instead of the current one; the host JS, `vfs.img`, the store bundle and the `pgrust Memory` columns'
@@ -592,14 +594,14 @@ and nothing else. An id the build does not carry is ignored, and one in effect i
 environment header and every Markdown export carry `pgrust module: <id> (alternate)`. The URLs to
 compare on a phone:
 
-- current: <https://pgxsinkit.github.io/pglite-v-pgrust/?configurations=pglite-opfs-repacked-relaxed,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-opfs-repacked-relaxed>
+- current (`95d47509`): <https://pgxsinkit.github.io/pglite-v-pgrust/?configurations=pglite-opfs-repacked-relaxed,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-opfs-repacked-relaxed>
+- `e2e7a2f9` (the previous default): <https://pgxsinkit.github.io/pglite-v-pgrust/?configurations=pglite-opfs-repacked-relaxed,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-opfs-repacked-relaxed&pgrustModule=e2e7a2f9>
 - `3624f82c`: <https://pgxsinkit.github.io/pglite-v-pgrust/?configurations=pglite-opfs-repacked-relaxed,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-opfs-repacked-relaxed&pgrustModule=3624f82c>
 - `be79c787`: <https://pgxsinkit.github.io/pglite-v-pgrust/?configurations=pglite-opfs-repacked-relaxed,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-opfs-repacked-relaxed&pgrustModule=be79c787>
 - `efe65be6`: <https://pgxsinkit.github.io/pglite-v-pgrust/?configurations=pglite-opfs-repacked-relaxed,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-opfs-repacked-relaxed&pgrustModule=efe65be6>
-- `95d47509`: <https://pgxsinkit.github.io/pglite-v-pgrust/?configurations=pglite-opfs-repacked-relaxed,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-opfs-repacked-relaxed&pgrustModule=95d47509>
 
-With `&brokerStats=1` added to the current and the `be79c787` URLs, each export's **Store work**
-tables show the open calls the two fixes remove.
+With `&brokerStats=1` added to the `e2e7a2f9` URL and to the current one (or `be79c787`'s), each
+export's **Store work** tables show the open calls the two fixes remove.
 
 `bun run sync:pgrust --alt-release pgrust-assets/<commit>` (repeatable) installs an alternate for a
 local build, and `bun run bench --pgrust-module <commit>` drives one headlessly.
@@ -1054,9 +1056,9 @@ every "Copy as Markdown" export.
 ### Deploying it
 
 `.github/workflows/pages.yml` runs on every push to `main` and on manual dispatch. It installs,
-runs `bun run sync:pgrust --release pgrust-assets/e2e7a2f9 --alt-release pgrust-assets/3624f82c
---alt-release pgrust-assets/be79c787 --alt-release pgrust-assets/efe65be6 --alt-release
-pgrust-assets/95d47509` (the four `--alt-release` flags are the [alternate threads
+runs `bun run sync:pgrust --release pgrust-assets/95d47509 --alt-release pgrust-assets/e2e7a2f9
+--alt-release pgrust-assets/3624f82c --alt-release pgrust-assets/be79c787 --alt-release
+pgrust-assets/efe65be6` (the four `--alt-release` flags are the [alternate threads
 modules](#pgrustmodule--the-threads-columns-on-another-pgrust-module)), builds with
 `BASE_PATH=/pglite-v-pgrust/` and uploads `dist/`. The release is pinned rather than `latest`, which
 is the newest published release: a release published to carry an alternate for an A/B must not
