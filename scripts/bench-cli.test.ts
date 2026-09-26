@@ -96,6 +96,26 @@ describe("parseBenchArguments", () => {
     expect([both.brokerStats, both.brokerGather]).toEqual([true, true]);
   });
 
+  test("passes a broker spin and the store levers through, neither on the URL by default", () => {
+    expect(DEFAULT_BENCH_OPTIONS.brokerSpinUs).toBeNull();
+    expect(DEFAULT_BENCH_OPTIONS.storeLevers).toEqual([]);
+    expect(parseBenchArguments([]).options.brokerSpinUs).toBeUndefined();
+    expect(parseBenchArguments([]).options.storeLevers).toBeUndefined();
+    for (const spinUs of [0, 50, 200, 1000]) {
+      expect(parseBenchArguments(["--broker-spin", String(spinUs)]).options.brokerSpinUs).toBe(spinUs);
+    }
+    expect(parseBenchArguments(["--broker-spin=50"]).options.brokerSpinUs).toBe(50);
+    for (const bad of ["-5", "1001", "fast", "50.5"]) {
+      expect(() => parseBenchArguments(["--broker-spin", bad])).toThrow("--broker-spin expects a whole number");
+    }
+    expect(() => parseBenchArguments(["--broker-spin"])).toThrow("--broker-spin needs a value");
+    expect(parseBenchArguments(["--store-levers", "coalesce,grow"]).options.storeLevers).toEqual(["grow", "coalesce"]);
+    expect(parseBenchArguments(["--store-levers", "grow"]).options.storeLevers).toEqual(["grow"]);
+    for (const bad of ["zeroskip", "grow,metacoalesce", ","]) {
+      expect(() => parseBenchArguments(["--store-levers", bad])).toThrow("--store-levers expects");
+    }
+  });
+
   // Since 2026-09-24 the lane's OPFS is on disk; the off-the-record lane every older OPFS number was
   // taken in is only ever asked for by name.
   test("runs in a persistent context by default, and the ephemeral one only by name", () => {

@@ -116,6 +116,10 @@ const VENDORED_FILES: readonly string[] = [
   // The optional store counters every host above can be handed (`?brokerStats=1`): guest file
   // calls per agent, the coordinator's broker requests and its storage handle calls.
   "wasm/io-stats.js",
+  // The broker's optional spin before parking, on both sides of the seam (`?brokerSpin=`).
+  "wasm/broker-spin.js",
+  // The coordinator's optional store levers around its port (`?storeLevers=`).
+  "wasm/store-levers.js",
   "LICENSE",
   "NOTICE",
 ];
@@ -124,9 +128,9 @@ const VENDORED_FILES: readonly string[] = [
  * The vendored host JS the threads Engine loads at **runtime**, copied from `src/vendor/pgrust/`
  * into `public/pgrust/host/` and served verbatim.
  *
- * These five (plus `pgrust-wasi.js` and `io-stats.js`, which `threads-host.js` imports) cannot be
- * bundled: the host builds its workers from URLs it computes at run time — `threadWorkerUrl(base)`,
- * `storageWorkerUrl(base)` — and Vite only rewrites the literal
+ * These five (plus `pgrust-wasi.js`, `io-stats.js`, `broker-spin.js` and `store-levers.js`, which
+ * they import) cannot be bundled: the host builds its workers from URLs it computes at run time —
+ * `threadWorkerUrl(base)`, `storageWorkerUrl(base)` — and Vite only rewrites the literal
  * `new Worker(new URL("./x", import.meta.url))` form. Bundling them would either break those URLs
  * or force an edit to a file that must stay byte-identical to pgrust's. Served as static assets
  * they keep their own relative imports and their own module identity, and the engine worker
@@ -144,6 +148,10 @@ const HOST_RUNTIME_FILES: readonly string[] = [
   "pgrust-wasi.js",
   // Imported by `threads-host.js`, `storage-worker.js` and `wiresession.js`.
   "io-stats.js",
+  // Imported by `broker-fs.js` and `storage-worker.js`.
+  "broker-spin.js",
+  // Imported by `storage-worker.js`.
+  "store-levers.js",
   // The Node/bun worker entries, laid out beside the `.js` they re-export: the browser Engines never
   // touch them, but the bun lane loads the host from this same directory and `IS_NODE` sends
   // `threadWorkerUrl`/`storageWorkerUrl` at the `.mjs` names.

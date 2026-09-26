@@ -52,6 +52,10 @@ _Avoid_: metadata, extras, breakdown, stats
 What a Configuration's store did while one Measurement ran, counted only when the page is opened with `?brokerStats=1`: on every pgrust Configuration the guest's file calls by kind (bytes, and the ms spent inside them by the Session's backend and by every guest thread), on the Broker ones the requests the coordinator answered and the ms it spent answering, and on every Storage Configuration on OPFS — PGlite's included — the synchronous access handle calls by kind. It is exported as tables of its own under the results table (one row per Benchmark per Configuration, summed over the Benchmark's Measurements), never in a cell and never in a Detail.
 _Avoid_: IO stats, broker counts, store counters (the counters are how it is measured, not what it is)
 
+**Store lever**:
+A change to how the pgrust Broker's coordinator talks to its Port, switched on for one Run with `?storeLevers=`: `grow` (the arena file grows in 4 MiB chunks and is trimmed back on close) and `coalesce` (contiguous arena writes inside one store call become one access handle write). It is a wrapper around the Port in pgrust's host, never a change to the Store package, so it reaches the pgrust Broker Configurations and no other: a PGlite column in the same Run runs the published Store untouched, and the environment line says `(pgrust columns only)` because a ratio between the two is then not like for like.
+_Avoid_: store option, store tuning, store flag (a lever is not a Store setting; the Store does not know it is there)
+
 **Engine**:
 One of the WebAssembly databases under comparison: PGlite, pgrust, pgrust Threads, pgrust Postmaster, or wa-sqlite. PGlite and the pgrust Engines are the subjects; wa-sqlite is the Reference Engine.
 _Avoid_: database, backend, target, implementation

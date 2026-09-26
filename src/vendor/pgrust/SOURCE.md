@@ -4,11 +4,11 @@ Copied byte-verbatim by `bun run sync:pgrust`. **Do not edit these files by hand
 script against an updated pgrust checkout instead. They are excluded from oxlint and oxfmt so
 they stay identical to their source.
 
-- Commit: `a1e9ea249197c6fbe7065b08683a134bd8b103bc`
-- Version: `a1e9ea2491`
+- Commit: `a230ad7d08a4e1d9319976e10db61942b79edbe3`
+- Version: `a230ad7d08`
 - Source: `/home/anton/dev/tmp/pgrust`
 - Working tree: clean
-- Synced: 2026-09-26T04:22:32.056Z
+- Synced: 2026-09-26T05:26:36.250Z
 
 ## Files
 
@@ -23,6 +23,8 @@ they stay identical to their source.
 - `wasm/broker-fs.js`
 - `wasm/storage-worker.js`
 - `wasm/io-stats.js`
+- `wasm/broker-spin.js`
+- `wasm/store-levers.js`
 - `LICENSE`
 - `NOTICE`
 
@@ -56,8 +58,8 @@ Copied by `bun run sync:pgrust` from a local pgrust checkout. They are gitignore
 outputs; only this record of them is committed.
 
 - Source: `/home/anton/dev/tmp/pgrust`
-- Version: `a1e9ea2491`
-- Copied: 2026-09-26T04:22:32.072Z
+- Version: `a230ad7d08`
+- Copied: 2026-09-26T05:26:36.268Z
 
 pgrust is AGPL-3.0-only; these binaries were built locally from the checkout named above.
 <!-- pgrust-assets:end -->

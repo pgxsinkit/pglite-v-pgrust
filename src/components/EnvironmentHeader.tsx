@@ -1,6 +1,6 @@
 import type { JSX } from "react";
 
-import { BROKER_GATHER_LINE, BROKER_STATS_LINE } from "../broker-switches";
+import { BROKER_GATHER_LINE, BROKER_STATS_LINE, brokerSpinLine, storeLeversLine } from "../broker-switches";
 import type { EnvironmentInfo } from "../environment";
 import { formatEnvironmentLine } from "../environment";
 import { describePgrustModule } from "../pgrust-module";
@@ -97,6 +97,22 @@ export function EnvironmentHeader({ environment }: EnvironmentHeaderProps): JSX.
             "channel payloads."}
         </p>
       ) : null}
+      {environment.brokerSwitches.spinUs === null ? null : (
+        <p className="non-standard-note" data-testid="broker-spin-note">
+          {environment.brokerSwitches.spinUs === 0
+            ? `${brokerSpinLine(0)}: no spin — every pgrust broker column parks as it does by default.`
+            : `${brokerSpinLine(environment.brokerSwitches.spinUs)}: in every pgrust broker column each guest ` +
+              "polls for its reply, and the coordinator for the next request, for up to that long before " +
+              "parking in Atomics.wait."}
+        </p>
+      )}
+      {environment.brokerSwitches.storeLevers.length === 0 ? null : (
+        <p className="non-standard-note" data-testid="store-levers-note">
+          {`${storeLeversLine(environment.brokerSwitches.storeLevers)}: the pgrust broker coordinator's store ` +
+            "talks to its port through these levers; the PGlite OPFS columns run the published store untouched, " +
+            "so no pgrust-against-PGlite ratio from this Run is like for like."}
+        </p>
+      )}
       {environment.pgrustModule === null ? null : (
         <p className="non-standard-note" data-testid="pgrust-module-note">
           {`${describePgrustModule(environment.pgrustModule)}: the six pgrust Threads and Postmaster columns load ` +

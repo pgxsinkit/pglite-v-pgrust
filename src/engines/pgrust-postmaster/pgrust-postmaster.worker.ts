@@ -32,10 +32,12 @@
  * Like every other Engine worker: no wasm module cache, no reuse of anything across Runs, and every
  * worker it creates is terminated in `close`.
  *
- * **The two store-seam switches.** `?brokerStats=1` asks the engine for its store counters and every
+ * **The store-seam switches.** `?brokerStats=1` asks the engine for its store counters and every
  * `measure` and `concurrent` answer then carries what moved in them — the guests' file calls (all of
  * them, and the Session backends' alone), the broker's requests and, on OPFS, the coordinator's
- * access handle calls. `?brokerGather=1` asks it for one broker write per `fd_pwrite`.
+ * access handle calls. `?brokerGather=1` asks it for one broker write per `fd_pwrite`,
+ * `?brokerSpin=<µs>` for a spin before either side of the broker parks, and `?storeLevers=` for the
+ * coordinator's store levers.
  */
 
 import type { PgrustBrowserEngine, PgrustBrowserSession } from "../../client/pgrust-browser-engine";
@@ -453,6 +455,8 @@ async function openEngine(dataDir: string, options: EngineOpenOptions | undefine
       ...(settings?.env === undefined ? {} : { env: settings.env }),
       ...(options?.storeStats === true ? { ioStats: true } : {}),
       ...(settings?.brokerGather === true ? { brokerGather: true } : {}),
+      ...(settings?.brokerSpinUs === undefined ? {} : { brokerSpinUs: settings.brokerSpinUs }),
+      ...(settings?.storeLevers === undefined ? {} : { storeLevers: settings.storeLevers }),
       onStorageReady: (line: string) => {
         console.info(line);
       },

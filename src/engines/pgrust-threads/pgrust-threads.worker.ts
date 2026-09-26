@@ -42,14 +42,18 @@
  * single-session worker has none: a benchmark must not carry hidden state, and every worker this
  * one creates is terminated in `close`.
  *
- * **The two store-seam switches.** With `?brokerStats=1` this worker hands the process worker, every
+ * **The store-seam switches.** With `?brokerStats=1` this worker hands the process worker, every
  * pool slot through it, and the coordinator one buffer of the vendored host's store counters, and
  * every `measure` and `concurrent` answer carries what moved in it: the guest's file calls on either
  * seam, the broker's requests and the coordinator's OPFS handle calls. With `?brokerGather=1` a
  * broker column's guests make one broker write per `fd_pwrite`, over channels minted at the host's
- * gather payload instead of the library's 64 KiB.
+ * gather payload instead of the library's 64 KiB. With `?brokerSpin=<µs>` a broker column's guests
+ * (through the process worker) and its coordinator spin that long before they park, and with
+ * `?storeLevers=` its coordinator puts those levers around its store's port. The last three reach
+ * the broker columns only.
  */
 
+import type { StoreLever } from "../../broker-switches";
 import { removeOpfsDirectory } from "../../opfs";
 import { threadsModulePath } from "../../pgrust-module";
 import type * as BrokerFs from "../../vendor/pgrust/broker-fs.js";
@@ -358,6 +362,8 @@ interface StorageBootOptions {
   readonly durability: StoreDurability;
   readonly opfsDir?: string;
   readonly reset?: boolean;
+  /** `?storeLevers=`: the levers the coordinator puts around its store's port. */
+  readonly storeLevers?: readonly StoreLever[];
 }
 
 /**
@@ -369,10 +375,12 @@ interface StorageBootOptions {
  * it did not write, and a Run that inherited an earlier Run's data directory would be measuring a
  * warm store while claiming a cold one. The directory is removed again by `close`.
  */
-function storageBootOptions(settings: StoragePortSettings): StorageBootOptions {
+function storageBootOptions(settings: StoragePortSettings, storeLevers: readonly StoreLever[]): StorageBootOptions {
+  // Only when asked for, so a default Run's options are exactly what they always were.
+  const levers = storeLevers.length === 0 ? {} : { storeLevers };
   return settings.port === "opfs"
-    ? { port: "opfs", opfsDir: settings.directory, durability: settings.durability, reset: true }
-    : { port: "memory", durability: settings.durability };
+    ? { port: "opfs", opfsDir: settings.directory, durability: settings.durability, reset: true, ...levers }
+    : { port: "memory", durability: settings.durability, ...levers };
 }
 
 /** One line of what the store cost this Run, none of which is inside any Measurement window. */
@@ -394,7 +402,12 @@ async function startStorageCoordinator(
   manifest: VfsManifest,
   storageStopped: Gate,
   settings: StoragePortSettings,
-  seam: { readonly ioStats: IoStats | null; readonly gather: boolean },
+  seam: {
+    readonly ioStats: IoStats | null;
+    readonly gather: boolean;
+    readonly spinUs: number;
+    readonly storeLevers: readonly StoreLever[];
+  },
 ): Promise<StorageCoordinator> {
   const bundleUrl = brokerFs.repackedBundleUrl(HOST_BASE);
   let bundle;
@@ -471,7 +484,8 @@ async function startStorageCoordinator(
       manifest,
       channels: channels.map((channel) => channel.transfer()),
       doorbell: doorbell.buffer,
-      options: storageBootOptions(settings),
+      options: storageBootOptions(settings, seam.storeLevers),
+      ...(seam.spinUs > 0 ? { brokerSpinUs: seam.spinUs } : {}),
       ...(seam.ioStats === null ? {} : { ioStats: seam.ioStats.buffer }),
     },
     [image],
@@ -531,13 +545,15 @@ async function openEngine(dataDir: string, options: EngineOpenOptions | undefine
   const storageStopped = gate();
 
   // `?brokerStats=1`: one agent for the process instance plus one per pool slot, as the host numbers
-  // them. `?brokerGather=1` only means anything on the broker seam.
+  // them. `?brokerGather=1`, `?brokerSpin=` and `?storeLevers=` only mean anything on the broker seam.
   const ioStats = options?.storeStats === true ? IoStats.create({ agents: POOL_SIZE + 1 }) : null;
   storeStats =
     ioStats === null
       ? null
       : new StoreStatsProbe(ioStats, { guest: true, broker: fs === "broker", handles: port === "opfs" });
   const gather = fs === "broker" && threads?.brokerGather === true;
+  const spinUs = fs === "broker" ? (threads?.brokerSpinUs ?? 0) : 0;
+  const storeLevers: readonly StoreLever[] = fs === "broker" ? (threads?.storeLevers ?? []) : [];
 
   // The coordinator goes first and its store must be seeded before the first backend can ask for a
   // file: once its blocking serve loop is entered it never reaches its event loop again, so there
@@ -553,6 +569,8 @@ async function openEngine(dataDir: string, options: EngineOpenOptions | undefine
       storage = await startStorageCoordinator(host, brokerFs, image, manifest, storageStopped, settings, {
         ioStats,
         gather,
+        spinUs,
+        storeLevers,
       });
     } catch (error: unknown) {
       // Nothing else is up yet, so this is the whole teardown: it takes the directory away.
@@ -676,6 +694,7 @@ async function openEngine(dataDir: string, options: EngineOpenOptions | undefine
       relayPorts: relayChannels.map((channel) => channel.port2),
       // Only when asked for, so a default Run's message is exactly what it always was.
       ...(gather ? { brokerGather: true } : {}),
+      ...(spinUs > 0 ? { brokerSpinUs: spinUs } : {}),
       ...(ioStats === null ? {} : { ioStats: ioStats.buffer }),
     },
     [guestImage, ...relayChannels.map((channel) => channel.port2)],

@@ -44,10 +44,12 @@
 // `brokerFsFor()` below turns it into a WASI filesystem adapter composed over
 // the host's WASI object — so every file call lands on the ONE store while fd
 // 0/1/2 and every non-filesystem import are untouched. Each role releases its
-// store descriptors when its guest thread returns (`releaseFs`). Two optional
+// store descriptors when its guest thread returns (`releaseFs`). Three optional
 // fields ride along with it: `brokerGather` (one broker write per `fd_pwrite`,
-// wasm/broker-fs.js) and `ioStats` (the counters of wasm/io-stats.js, this
-// instance being agent `ioAgent`); absent, nothing changes.
+// wasm/broker-fs.js), `brokerSpinUs` (spin that many µs for each reply before
+// parking, wasm/broker-spin.js) and `ioStats` (the counters of
+// wasm/io-stats.js, this instance being agent `ioAgent`); absent, nothing
+// changes.
 //
 // Node entry is thread-worker.mjs (a one-line re-export of this file) so
 // Node's module resolution sees ESM without relying on syntax detection.
@@ -107,6 +109,7 @@ async function brokerFsFor(msg, label, fdBase) {
     fdBase,
     onLog: (text) => post({ type: 'log', text }),
     gather: msg.brokerGather === true,
+    spinUs: msg.brokerSpinUs || 0,
   });
 }
 
@@ -114,6 +117,8 @@ async function runProcess(msg) {
   const stdin = SabPipe.from(msg.stdin);
   const stdout = SabPipe.from(msg.stdout);
   const fs = await brokerFsFor(msg, 'process', PROCESS_FD_BASE);
+  // Said once, by the instance that hands the same setting to every pool slot.
+  if (fs && fs.replySpinUs > 0) log(`process: broker reply spin ${fs.replySpinUs} µs, and every pool slot's`);
 
   const spawner = makeSpawner({
     wasmModule: msg.module,
@@ -132,6 +137,7 @@ async function runProcess(msg) {
     bundleUrl: msg.bundleUrl || null,
     poolChannels: msg.poolChannels || [],
     brokerGather: msg.brokerGather === true,
+    brokerSpinUs: msg.brokerSpinUs || 0,
     ioStats: msg.ioStats || null,
     // Every pool slot rebuilds the SAME pipes from these descriptors.
     pipes: msg.pipes || null,

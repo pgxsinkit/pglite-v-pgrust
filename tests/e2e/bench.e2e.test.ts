@@ -15,7 +15,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { BenchReport } from "../../scripts/bench";
 import { runBench, WEBKIT_SKIP_MESSAGE } from "../../scripts/bench";
-import { BROKER_GATHER_LINE, BROKER_STATS_LINE } from "../../src/broker-switches";
+import { BROKER_GATHER_LINE, BROKER_STATS_LINE, brokerSpinLine, storeLeversLine } from "../../src/broker-switches";
 import { CONFIGURATIONS } from "../../src/configurations";
 import { EMPTY_CELL } from "../../src/results/format";
 import { markdownColumnHeader } from "../../src/results/markdown";
@@ -314,8 +314,9 @@ const STORE_CONFIGURATION_IDS: readonly string[] = [
 ];
 
 /**
- * A second, short Run with both store-seam switches on (`?brokerStats=1&brokerGather=1`): the
- * Speedtest Suite on those five columns, on the build the lane above already made.
+ * A second, short Run with every store-seam switch on (`?brokerStats=1&brokerGather=1&brokerSpin=200
+ * &storeLevers=grow,coalesce`): the Speedtest Suite on those five columns, on the build the lane above
+ * already made.
  */
 const storeReport: BenchReport = await runBench({
   browser: "chromium",
@@ -323,6 +324,8 @@ const storeReport: BenchReport = await runBench({
   configurationIds: STORE_CONFIGURATION_IDS,
   brokerStats: true,
   brokerGather: true,
+  brokerSpinUs: 200,
+  storeLevers: ["grow", "coalesce"],
   build: false,
   timeoutMs: LANE_TIMEOUT_MS,
 });
@@ -577,14 +580,16 @@ describe("the Prepared Suite", () => {
   });
 });
 
-describe("the store tables (`?brokerStats=1&brokerGather=1`)", () => {
+describe("the store tables (`?brokerStats=1&brokerGather=1&brokerSpin=200&storeLevers=grow,coalesce`)", () => {
   const markdown = storeReport.suites[0]?.markdown ?? "";
   const speedtestRows = 1 + SPEEDTEST_BENCHMARK_IDS.length;
   const labelOf = (id: string): string => CONFIGURATIONS.find((config) => config.id === id)?.label ?? id;
 
-  test("says both switches are on, and every column ran", () => {
+  test("says every switch is on, and every column ran", () => {
     expect(storeReport.environmentLine).toContain(BROKER_STATS_LINE);
     expect(storeReport.environmentLine).toContain(BROKER_GATHER_LINE);
+    expect(storeReport.environmentLine).toContain(brokerSpinLine(200));
+    expect(storeReport.environmentLine).toContain(storeLeversLine(["grow", "coalesce"]));
     expect(storeReport.suites[0]?.failures).toBe("");
   });
 
@@ -620,6 +625,20 @@ describe("the store tables (`?brokerStats=1&brokerGather=1`)", () => {
     const opfs = ["pglite-opfs-repacked-relaxed", "pgrust-postmaster-opfs-repacked-relaxed"];
     expect(rows).toHaveLength(opfs.length * speedtestRows);
     expect(new Set(rows.map((row) => row[1]))).toEqual(new Set(opfs.map(labelOf)));
+  });
+
+  // `grow` reaches the pgrust coordinator and nothing else: its arena grows in 4 MiB chunks, where
+  // PGlite's store, which the levers never touch, still grows one extent at a time.
+  test("the store levers reach the pgrust coordinator's arena, and PGlite's store is untouched", () => {
+    const rows = storeTableRows(markdown, "##### OPFS access handles");
+    const truncates = (id: string): number =>
+      rows
+        .filter((row) => row[1] === labelOf(id))
+        .reduce((sum, row) => sum + Number((row[5] ?? "0").split(" · ")[0]), 0);
+    const pgrust = truncates("pgrust-postmaster-opfs-repacked-relaxed");
+    const pglite = truncates("pglite-opfs-repacked-relaxed");
+    expect(pglite).toBeGreaterThan(100);
+    expect(pgrust).toBeLessThan(pglite / 10);
   });
 });
 

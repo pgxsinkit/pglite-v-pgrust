@@ -318,6 +318,17 @@ export interface PgrustBrowserEngineOptions {
    * the library's 64 KiB. This host's own store channel is 1 MiB either way. Off by default.
    */
   readonly brokerGather?: boolean;
+  /**
+   * The broker's spin before parking, in µs (`wasm/broker-spin.js`): every guest polls its channel
+   * for its reply, and the coordinator the doorbell for the next request, for up to this long before
+   * it parks. This host's own store client never spins. Absent or 0 is no spin.
+   */
+  readonly brokerSpinUs?: number;
+  /**
+   * The coordinator's store levers (`wasm/store-levers.js`), put around its store's port: `grow` and
+   * `coalesce`. Absent or empty is none.
+   */
+  readonly storeLevers?: readonly string[];
 }
 
 /**
@@ -567,6 +578,8 @@ export async function startPgrustBrowserPostmaster(options: PgrustBrowserEngineO
   // One agent for the process instance plus one per pool slot, as the host numbers them.
   const ioStats = options.ioStats === true ? IoStats.create({ agents: poolSize + 1 }) : null;
   const gather = options.brokerGather === true;
+  const spinUs = options.brokerSpinUs ?? 0;
+  const storeLevers = options.storeLevers ?? [];
 
   /** One decoder for the whole run: a multi-byte character can straddle two stderr chunks. */
   const stderrDecoder = new TextDecoder("utf-8", { fatal: false });
@@ -722,15 +735,19 @@ export async function startPgrustBrowserPostmaster(options: PgrustBrowserEngineO
         manifest,
         channels: [...channels.map((channel) => channel.transfer()), storeChannel.transfer()],
         doorbell: doorbell.buffer,
-        options:
-          storage.port === "opfs"
+        options: {
+          ...(storage.port === "opfs"
             ? {
                 port: "opfs",
                 opfsDir: storage.opfsDir,
                 durability: storage.durability ?? "relaxed",
                 reset: storage.reset === true,
               }
-            : { port: "memory", durability: storage.durability ?? "relaxed" },
+            : { port: "memory", durability: storage.durability ?? "relaxed" }),
+          // Only when asked for, so a default boot's options are exactly what they always were.
+          ...(storeLevers.length === 0 ? {} : { storeLevers }),
+        },
+        ...(spinUs > 0 ? { brokerSpinUs: spinUs } : {}),
         ...(ioStats === null ? {} : { ioStats: ioStats.buffer }),
       },
       [image],
@@ -941,6 +958,7 @@ export async function startPgrustBrowserPostmaster(options: PgrustBrowserEngineO
       relayPorts: relayChannels.map((channel) => channel.port2),
       // Only when asked for, so a default boot's message is exactly what it always was.
       ...(gather ? { brokerGather: true } : {}),
+      ...(spinUs > 0 ? { brokerSpinUs: spinUs } : {}),
       ...(ioStats === null ? {} : { ioStats: ioStats.buffer }),
     },
     [guestImage, ...relayChannels.map((channel) => channel.port2)],

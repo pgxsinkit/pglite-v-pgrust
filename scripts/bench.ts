@@ -33,6 +33,8 @@
  *   bun run bench --suite speedtest --pgrust-module 3624f82c  # the threads columns on an alternate module
  *   bun run bench --suite speedtest --broker-stats            # plus the store tables under each table
  *   bun run bench --suite speedtest --broker-stats --broker-gather  # the broker's gathered writes too
+ *   bun run bench --suite speedtest --broker-stats --broker-spin 200  # the broker spins 200 µs before parking
+ *   bun run bench --suite speedtest --broker-stats --store-levers grow,coalesce  # the pgrust store levers
  *   bun run bench --ephemeral-context              # the pre-2026-09-24 lane: OPFS in memory, one IPC per call
  *   bun run bench --keep-profile                   # leave the Run's profile in tmp/bench-profiles/
  *
@@ -51,7 +53,9 @@
  * `--broker-stats` and `--broker-gather` are the page's own `?brokerStats=1` and `?brokerGather=1`
  * (`src/broker-switches.ts`): the store tables under every Suite's results table, and the pgrust
  * broker's one write per `fd_pwrite`. The lane fails the Run if the environment line does not then
- * say `broker stats: on` / `broker gather: on`.
+ * say `broker stats: on` / `broker gather: on`. `--broker-spin <µs>` and `--store-levers <list>` are
+ * `?brokerSpin=` and `?storeLevers=`, checked the same way against `broker spin: <µs> µs` and
+ * `store levers: <list> (pgrust columns only)`.
  */
 
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -62,7 +66,20 @@ import type { Browser, BrowserContext, BrowserType, LaunchOptions, Page } from "
 import { chromium, firefox } from "@playwright/test";
 import type { Server } from "bun";
 
-import { BROKER_GATHER_LINE, BROKER_GATHER_PARAM, BROKER_STATS_LINE, BROKER_STATS_PARAM } from "../src/broker-switches";
+import type { StoreLever } from "../src/broker-switches";
+import {
+  BROKER_GATHER_LINE,
+  BROKER_GATHER_PARAM,
+  BROKER_SPIN_MAX_US,
+  BROKER_SPIN_PARAM,
+  BROKER_STATS_LINE,
+  BROKER_STATS_PARAM,
+  brokerSpinLine,
+  parseBrokerSpin,
+  STORE_LEVERS,
+  STORE_LEVERS_PARAM,
+  storeLeversLine,
+} from "../src/broker-switches";
 import { formatSelectionSearch, resolveConfigurationSelection } from "../src/configuration-selection";
 import { BASELINE_CANDIDATE_IDS, BASELINE_CONFIGURATION_ID, CONFIGURATION_IDS } from "../src/configurations";
 import { describePgrustModule, isPgrustModuleId, PGRUST_MODULE_PARAM, threadsModulePath } from "../src/pgrust-module";
@@ -182,6 +199,10 @@ export interface BenchOptions {
   readonly brokerStats: boolean;
   /** The pgrust broker's gathered writes, as `?brokerGather=1`. Off by default. */
   readonly brokerGather: boolean;
+  /** The pgrust broker's spin before parking in µs, as `?brokerSpin=`; null (not on the URL) by default. */
+  readonly brokerSpinUs: number | null;
+  /** The pgrust coordinator's store levers, as `?storeLevers=`; none by default. */
+  readonly storeLevers: readonly StoreLever[];
   /**
    * The browser context the page lives in: `persistent` unless `--ephemeral-context`. See
    * {@link BrowserContextKind}.
@@ -226,6 +247,8 @@ export const DEFAULT_BENCH_OPTIONS: BenchOptions = {
   pgrustModule: null,
   brokerStats: false,
   brokerGather: false,
+  brokerSpinUs: null,
+  storeLevers: [],
   contextKind: "persistent",
   keepProfile: false,
   build: true,
@@ -485,6 +508,12 @@ function pageUrl(port: number, options: BenchOptions): string {
   if (options.brokerGather) {
     params.set(BROKER_GATHER_PARAM, "1");
   }
+  if (options.brokerSpinUs !== null) {
+    params.set(BROKER_SPIN_PARAM, String(options.brokerSpinUs));
+  }
+  if (options.storeLevers.length > 0) {
+    params.set(STORE_LEVERS_PARAM, options.storeLevers.join(","));
+  }
   const query = params.size === 0 ? "" : `?${params.toString()}`;
   const search =
     options.configurationIds === null && options.baselineId === null
@@ -660,12 +689,22 @@ export async function runBench(overrides: Partial<BenchOptions> = {}): Promise<B
         );
       }
       for (const [asked, param, line] of [
-        [options.brokerStats, BROKER_STATS_PARAM, BROKER_STATS_LINE],
-        [options.brokerGather, BROKER_GATHER_PARAM, BROKER_GATHER_LINE],
+        [options.brokerStats, `${BROKER_STATS_PARAM}=1`, BROKER_STATS_LINE],
+        [options.brokerGather, `${BROKER_GATHER_PARAM}=1`, BROKER_GATHER_LINE],
+        [
+          options.brokerSpinUs !== null,
+          `${BROKER_SPIN_PARAM}=${options.brokerSpinUs ?? ""}`,
+          brokerSpinLine(options.brokerSpinUs ?? 0),
+        ],
+        [
+          options.storeLevers.length > 0,
+          `${STORE_LEVERS_PARAM}=${options.storeLevers.join(",")}`,
+          storeLeversLine(options.storeLevers),
+        ],
       ] as const) {
         if (asked && !environmentLine.includes(line)) {
           throw new Error(
-            `the page did not take ?${param}=1: its environment line does not say "${line}", so this Run ` +
+            `the page did not take ?${param}: its environment line does not say "${line}", so this Run ` +
               "would be the default page under a switched Run's name",
           );
         }
@@ -715,6 +754,10 @@ const USAGE = `Usage: bun run bench [options]
                                        ?brokerStats=1: store tables under each results table
   --broker-gather                      One pgrust broker write per fd_pwrite over 256 KiB channel
                                        payloads, as the page's ?brokerGather=1
+  --broker-spin <us>                   The pgrust broker spins up to <us> µs (0-${BROKER_SPIN_MAX_US}) before
+                                       parking, both sides, as the page's ?brokerSpin=
+  --store-levers <grow,coalesce>       The pgrust coordinator's store levers, as the page's
+                                       ?storeLevers= (pgrust broker columns only)
   --ephemeral-context                  The pre-2026-09-24 lane: an off-the-record context, OPFS in
                                        memory in the browser process, one IPC per call (default: a
                                        persistent context on a fresh profile in tmp/bench-profiles/)
@@ -824,6 +867,28 @@ function parsePostmasterTuningArgument(raw: string, flag: string): string {
   return entries.join(",");
 }
 
+/** A spin the page would take, or an error: the page ignores one it does not, which here is a mistake. */
+function parseBrokerSpinArgument(raw: string, flag: string): number {
+  const spinUs = parseBrokerSpin(raw);
+  if (spinUs === null) {
+    throw new Error(`${flag} expects a whole number of µs from 0 to ${BROKER_SPIN_MAX_US}, got "${raw}"`);
+  }
+  return spinUs;
+}
+
+/** Store levers by name, in canonical order; a name the page does not know is an error, not a drop. */
+function parseStoreLeversArgument(raw: string, flag: string): readonly StoreLever[] {
+  const names = raw
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name !== "");
+  const unknown = names.filter((name) => !(STORE_LEVERS as readonly string[]).includes(name));
+  if (names.length === 0 || unknown.length > 0) {
+    throw new Error(`${flag} expects a comma-separated list of ${STORE_LEVERS.join(", ")}, got "${raw}"`);
+  }
+  return STORE_LEVERS.filter((lever) => names.includes(lever));
+}
+
 /**
  * Refuse an id the page could only ignore.
  *
@@ -881,6 +946,8 @@ export function parseBenchArguments(rawArgv: readonly string[]): CliInvocation {
     pgrustModule?: string;
     brokerStats?: boolean;
     brokerGather?: boolean;
+    brokerSpinUs?: number;
+    storeLevers?: readonly StoreLever[];
     contextKind?: BrowserContextKind;
     keepProfile?: boolean;
     build?: boolean;
@@ -940,6 +1007,14 @@ export function parseBenchArguments(rawArgv: readonly string[]): CliInvocation {
         break;
       case "--broker-gather":
         options.brokerGather = true;
+        break;
+      case "--broker-spin":
+        index += 1;
+        options.brokerSpinUs = parseBrokerSpinArgument(requireValue(argv, index, flag), flag);
+        break;
+      case "--store-levers":
+        index += 1;
+        options.storeLevers = parseStoreLeversArgument(requireValue(argv, index, flag), flag);
         break;
       case "--ephemeral-context":
         options.contextKind = "ephemeral";

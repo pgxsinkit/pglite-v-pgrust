@@ -613,6 +613,40 @@ column beside it, and the same with the gathered writes:
 
 `bun run bench --broker-stats [--broker-gather]` drives them headlessly.
 
+### `?brokerSpin=<µs>` and `?storeLevers=grow,coalesce` — the broker hand-off and the store's calls
+
+Two more switches, off by default, for asking a phone whether pgrust's per-request broker cost comes
+down. Read them with `?brokerStats=1`: the **Broker** table's two per-request columns are what they
+aim at.
+
+`?brokerSpin=<µs>` targets the hand-off — the difference between what a guest thread was blocked on a
+request and what the coordinator spent answering it. Before either side of every pgrust broker column
+parks in `Atomics.wait`, it polls the word it is about to wait on for up to that many µs: a guest for
+its reply, the coordinator for the next request (pgrust's `wasm/broker-spin.js`). Each spin is bounded
+per wait, and the coordinator skips it after a park that timed out, so an idle coordinator does not
+burn a core. The values offered are 0, 50 and 200; any whole number up to 1000 is accepted. 0 is the
+default behaviour, and is still announced, so the control Run of an A/B carries its label.
+
+`?storeLevers=grow,coalesce` targets the coordinator's own serving: `grow` makes the arena file grow in
+4 MiB chunks instead of one truncate per allocation (and trims it back on close), `coalesce` makes
+contiguous arena writes inside one store call one access handle write. They are levers U1 and U2 of
+[the store-levers note](docs/results/2026-09-24-store-levers.md), carried as a wrapper around the port
+in pgrust's coordinator (`wasm/store-levers.js`), never in the store package: **the pgrust broker
+columns only**. The PGlite OPFS columns keep the published store untouched, so a pgrust-against-PGlite
+ratio from such a Run is not like for like. Either name may be given alone.
+
+Both are never silent: the environment header and every Markdown export carry `broker spin: <N> µs`
+and `store levers: grow, coalesce (pgrust columns only)`. The phone ladder, PGlite Memory against the
+postmaster on OPFS:
+
+- control: <https://pgxsinkit.github.io/pglite-v-pgrust/?brokerStats=1&brokerSpin=0&configurations=pglite-memory,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-memory>
+- spin 50 µs: <https://pgxsinkit.github.io/pglite-v-pgrust/?brokerStats=1&brokerSpin=50&configurations=pglite-memory,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-memory>
+- spin 200 µs: <https://pgxsinkit.github.io/pglite-v-pgrust/?brokerStats=1&brokerSpin=200&configurations=pglite-memory,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-memory>
+- store levers: <https://pgxsinkit.github.io/pglite-v-pgrust/?brokerStats=1&storeLevers=grow,coalesce&configurations=pglite-memory,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-memory>
+- both: <https://pgxsinkit.github.io/pglite-v-pgrust/?brokerStats=1&brokerSpin=200&storeLevers=grow,coalesce&configurations=pglite-memory,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-memory>
+
+`bun run bench --broker-stats --broker-spin <µs> --store-levers grow,coalesce` drives them headlessly.
+
 ## pgrust assets
 
 PGlite installs from npm; pgrust does not. Its host JavaScript is vendored into this repo and
@@ -1110,6 +1144,8 @@ bun run bench --suite rtt \
 | `--pgrust-module <id>`     | Passes `?pgrustModule=` to the page: the threads columns on the alternate module `<id>`       |
 | `--broker-stats`           | Passes `?brokerStats=1` to the page: the store tables under every Suite's results table       |
 | `--broker-gather`          | Passes `?brokerGather=1` to the page: one pgrust broker write per `fd_pwrite`                 |
+| `--broker-spin <µs>`       | Passes `?brokerSpin=` to the page: the pgrust broker spins that long before parking           |
+| `--store-levers <list>`    | Passes `?storeLevers=` to the page: `grow`, `coalesce`, the pgrust coordinator only           |
 | `--ephemeral-context`      | The pre-2026-09-24 lane: an off-the-record context, OPFS in memory in the browser process     |
 | `--keep-profile`           | Leave the persistent context's profile in `tmp/bench-profiles/` after the Run                 |
 | `--no-build`               | Reuse the existing `dist/` instead of rebuilding                                              |

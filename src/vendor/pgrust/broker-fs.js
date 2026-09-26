@@ -39,6 +39,8 @@
 //
 // Override with PGRUST_REPACKED_BUNDLE (Node) or ?bundle= (browser).
 
+import { installReplySpin } from './broker-spin.js';
+
 export const VENDOR_BUNDLE_PATH = './vendor/pglite-opfs-repacked.js';
 
 // A guest that talks to a coordinator which has gone away must fail loudly rather than park
@@ -56,6 +58,11 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 60000;
 // docs/results/2026-09-24-store-levers.md (§11): rows 11/6/14 at 0.79x/0.78x/0.91x alone.
 export const GATHER_TRANSFER_BYTES = 256 * 1024;
 export const GATHER_PAYLOAD_BYTES = GATHER_TRANSFER_BYTES + 64;
+
+// THE SPIN OPTION (`spinUs`), 0 by default. After ringing for a request, this agent polls its own
+// channel's state word for up to `spinUs` µs before it parks, so a reply that lands within that time
+// costs no futex wake (wasm/broker-spin.js, which also holds the coordinator's half). Bounded per
+// request: a guest spins only while its own request is in flight.
 
 // WASI errno `io`: what a gathered write that throws answers, as the adapter's own guard does.
 const WASI_EIO = 29;
@@ -83,9 +90,22 @@ export async function loadRepackedBundle(url) {
  *
  * `gather: true` makes one `fd_pwrite` one broker write (see THE GATHER OPTION above); the
  * channel's payload is the host's to size, at channel creation, before it reaches this worker.
+ * `spinUs` is THE SPIN OPTION above: 0 (the default) installs nothing.
  */
-export function createBrokerFs({ bundle, channel, memory, label = 'guest', onLog, requestTimeoutMs, fdBase, gather = false }) {
+export function createBrokerFs({
+  bundle,
+  channel,
+  memory,
+  label = 'guest',
+  onLog,
+  requestTimeoutMs,
+  fdBase,
+  gather = false,
+  spinUs = 0,
+}) {
   const attached = bundle.RepackedChannel.attach(channel);
+  // Before the client exists, so every request it ever makes goes through it.
+  const spinning = installReplySpin(attached, spinUs);
   const client = new bundle.RepackedSyncClient(attached, {
     requestTimeoutMs: requestTimeoutMs || DEFAULT_REQUEST_TIMEOUT_MS,
   });
@@ -115,6 +135,8 @@ export function createBrokerFs({ bundle, channel, memory, label = 'guest', onLog
     channelId: attached.id,
     client,
     adapter,
+    // The reply spin this seam runs with, in µs; 0 when there is none.
+    replySpinUs: spinning ? spinUs : 0,
     compose: (base) => adapter.compose(base),
     // Called when a guest thread returns: without it the coordinator holds this thread's store
     // descriptors until the whole channel detaches.

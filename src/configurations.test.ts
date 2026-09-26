@@ -3,13 +3,22 @@ import { describe, expect, test } from "bun:test";
 import {
   BROKER_GATHER_LINE,
   BROKER_GATHER_PARAM,
+  BROKER_SPIN_MAX_US,
+  BROKER_SPIN_OFFERED_US,
+  BROKER_SPIN_PARAM,
   BROKER_STATS_LINE,
   BROKER_STATS_PARAM,
   brokerGatherOptions,
+  brokerSpinLine,
+  brokerSpinOptions,
   describeBrokerSwitches,
   NO_BROKER_SWITCHES,
   parseBrokerSwitches,
   readBrokerSwitches,
+  STORE_LEVERS,
+  STORE_LEVERS_PARAM,
+  storeLeverOptions,
+  storeLeversLine,
   storeStatsOptions,
 } from "./broker-switches";
 import {
@@ -304,17 +313,19 @@ describe("the alternate pgrust threads module", () => {
   });
 });
 
-// `?brokerStats=1` counts every Measurement's store work and `?brokerGather=1` turns on the pgrust
-// broker's gathered writes; neither may change a Configuration's options when it is off.
+// `?brokerStats=1` counts every Measurement's store work, `?brokerGather=1` turns on the pgrust
+// broker's gathered writes, `?brokerSpin=` its spin before parking and `?storeLevers=` the pgrust
+// coordinator's store levers; none may change a Configuration's options when it is off.
 describe("the store-seam switches", () => {
   test("turn on for exactly `1`, and are ignored for anything else", () => {
-    expect(parseBrokerSwitches(`?${BROKER_STATS_PARAM}=1`)).toEqual({ stats: true, gather: false });
-    expect(parseBrokerSwitches(`?${BROKER_GATHER_PARAM}=1`)).toEqual({ stats: false, gather: true });
+    expect(parseBrokerSwitches(`?${BROKER_STATS_PARAM}=1`)).toEqual({ ...NO_BROKER_SWITCHES, stats: true });
+    expect(parseBrokerSwitches(`?${BROKER_GATHER_PARAM}=1`)).toEqual({ ...NO_BROKER_SWITCHES, gather: true });
     expect(parseBrokerSwitches(`?${BROKER_STATS_PARAM}=1&${BROKER_GATHER_PARAM}=1`)).toEqual({
+      ...NO_BROKER_SWITCHES,
       stats: true,
       gather: true,
     });
-    expect(parseBrokerSwitches(`?${BROKER_STATS_PARAM}=%201%20`)).toEqual({ stats: true, gather: false });
+    expect(parseBrokerSwitches(`?${BROKER_STATS_PARAM}=%201%20`)).toEqual({ ...NO_BROKER_SWITCHES, stats: true });
     for (const value of ["", "0", "true", "on", "yes", "2"]) {
       expect(parseBrokerSwitches(`?${BROKER_STATS_PARAM}=${value}&${BROKER_GATHER_PARAM}=${value}`)).toEqual(
         NO_BROKER_SWITCHES,
@@ -323,18 +334,69 @@ describe("the store-seam switches", () => {
     expect(parseBrokerSwitches("")).toEqual(NO_BROKER_SWITCHES);
   });
 
+  test("take a spin of 0 to the maximum µs, the offered ones included, and ignore anything else", () => {
+    for (const spinUs of [...BROKER_SPIN_OFFERED_US, 1, 999, BROKER_SPIN_MAX_US]) {
+      expect(parseBrokerSwitches(`?${BROKER_SPIN_PARAM}=${spinUs}`)).toEqual({ ...NO_BROKER_SWITCHES, spinUs });
+    }
+    expect(BROKER_SPIN_OFFERED_US).toEqual([0, 50, 200]);
+    expect(parseBrokerSwitches(`?${BROKER_SPIN_PARAM}=%20200%20`).spinUs).toBe(200);
+    for (const value of ["", "-1", "1001", "50.5", "5e1", "0x10", "fast", "200us", "99999"]) {
+      expect(parseBrokerSwitches(`?${BROKER_SPIN_PARAM}=${value}`)).toEqual(NO_BROKER_SWITCHES);
+    }
+  });
+
+  test("take the two store levers by name, in canonical order, and drop any other name", () => {
+    expect(parseBrokerSwitches(`?${STORE_LEVERS_PARAM}=grow,coalesce`).storeLevers).toEqual(["grow", "coalesce"]);
+    expect(parseBrokerSwitches(`?${STORE_LEVERS_PARAM}=coalesce,%20grow,grow`).storeLevers).toEqual([
+      "grow",
+      "coalesce",
+    ]);
+    expect(parseBrokerSwitches(`?${STORE_LEVERS_PARAM}=coalesce`).storeLevers).toEqual(["coalesce"]);
+    // U3 and U4 of the store-levers note are deliberately not offered.
+    expect(parseBrokerSwitches(`?${STORE_LEVERS_PARAM}=grow,zeroskip,metacoalesce`).storeLevers).toEqual(["grow"]);
+    for (const value of ["", "1", "zeroskip", "metacoalesce", "GROW", "grow;coalesce"]) {
+      expect(parseBrokerSwitches(`?${STORE_LEVERS_PARAM}=${value}`)).toEqual(NO_BROKER_SWITCHES);
+    }
+  });
+
+  test("name the same spin bound and the same levers as the pgrust host they are handed to", async () => {
+    const spin = await import("./vendor/pgrust/broker-spin.js");
+    const levers = await import("./vendor/pgrust/store-levers.js");
+    expect(BROKER_SPIN_MAX_US).toBe(spin.MAX_BROKER_SPIN_US);
+    expect<readonly string[]>(STORE_LEVERS).toEqual(levers.STORE_LEVER_NAMES);
+    expect(spin.normalizeSpinUs(BROKER_SPIN_MAX_US)).toBe(BROKER_SPIN_MAX_US);
+    expect(() => spin.normalizeSpinUs(BROKER_SPIN_MAX_US + 1)).toThrow(RangeError);
+    expect(() => levers.normalizeStoreLevers(["zeroskip"])).toThrow(RangeError);
+  });
+
   test("announce themselves in a fixed order, and say nothing when off", () => {
     expect(describeBrokerSwitches(NO_BROKER_SWITCHES)).toEqual([]);
-    expect(describeBrokerSwitches({ stats: true, gather: true })).toEqual([BROKER_STATS_LINE, BROKER_GATHER_LINE]);
+    expect(
+      describeBrokerSwitches({ stats: true, gather: true, spinUs: 200, storeLevers: ["grow", "coalesce"] }),
+    ).toEqual([
+      BROKER_STATS_LINE,
+      BROKER_GATHER_LINE,
+      "broker spin: 200 µs",
+      "store levers: grow, coalesce (pgrust columns only)",
+    ]);
     expect(BROKER_STATS_LINE).toBe("broker stats: on");
     expect(BROKER_GATHER_LINE).toBe("broker gather: on");
+    expect(brokerSpinLine(50)).toBe("broker spin: 50 µs");
+    expect(storeLeversLine(["coalesce"])).toBe("store levers: coalesce (pgrust columns only)");
+    // A 0-µs spin changes nothing and is still announced, so the control Run of an A/B carries its label.
+    expect(describeBrokerSwitches({ ...NO_BROKER_SWITCHES, spinUs: 0 })).toEqual(["broker spin: 0 µs"]);
   });
 
   test("add nothing to the open options unless they are on", () => {
     expect(Object.keys(storeStatsOptions(NO_BROKER_SWITCHES))).toEqual([]);
     expect(Object.keys(brokerGatherOptions(NO_BROKER_SWITCHES))).toEqual([]);
-    expect(storeStatsOptions({ stats: true, gather: false })).toEqual({ storeStats: true });
-    expect(brokerGatherOptions({ stats: false, gather: true })).toEqual({ brokerGather: true });
+    expect(Object.keys(brokerSpinOptions(NO_BROKER_SWITCHES))).toEqual([]);
+    expect(Object.keys(brokerSpinOptions({ ...NO_BROKER_SWITCHES, spinUs: 0 }))).toEqual([]);
+    expect(Object.keys(storeLeverOptions(NO_BROKER_SWITCHES))).toEqual([]);
+    expect(storeStatsOptions({ ...NO_BROKER_SWITCHES, stats: true })).toEqual({ storeStats: true });
+    expect(brokerGatherOptions({ ...NO_BROKER_SWITCHES, gather: true })).toEqual({ brokerGather: true });
+    expect(brokerSpinOptions({ ...NO_BROKER_SWITCHES, spinUs: 50 })).toEqual({ brokerSpinUs: 50 });
+    expect(storeLeverOptions({ ...NO_BROKER_SWITCHES, storeLevers: ["grow"] })).toEqual({ storeLevers: ["grow"] });
   });
 
   test("are read as off where there is no page URL, so every default Configuration is unchanged", () => {
@@ -343,6 +405,10 @@ describe("the store-seam switches", () => {
       expect(config.options?.storeStats).toBeUndefined();
       expect(config.options?.pgrustThreads?.brokerGather).toBeUndefined();
       expect(config.options?.pgrustPostmaster?.brokerGather).toBeUndefined();
+      expect(config.options?.pgrustThreads?.brokerSpinUs).toBeUndefined();
+      expect(config.options?.pgrustPostmaster?.brokerSpinUs).toBeUndefined();
+      expect(config.options?.pgrustThreads?.storeLevers).toBeUndefined();
+      expect(config.options?.pgrustPostmaster?.storeLevers).toBeUndefined();
     }
     // The two single-session pgrust columns and every Memory column that has nothing to count carry
     // no options at all, exactly as before the switch existed.
@@ -357,5 +423,35 @@ describe("the store-seam switches", () => {
       expect(config?.options?.pgrustThreads?.fs ?? "broker").toBe("broker");
     }
     expect(findConfiguration("pgrust-threads-memory")?.options?.pgrustThreads?.fs).toBe("copy");
+  });
+
+  // The Configurations read the URL once, when their module loads; a second copy of the module,
+  // loaded under a page URL, is how the spread itself is seen.
+  test("reach the pgrust broker columns alone: never PGlite's OPFS pair, never the copy seam", async () => {
+    const scope = globalThis as { location?: { search: string } };
+    scope.location = {
+      search: `?${BROKER_GATHER_PARAM}=1&${BROKER_SPIN_PARAM}=200&${STORE_LEVERS_PARAM}=grow,coalesce`,
+    };
+    // A query string makes it a second module instance; a variable keeps tsc from resolving it as a path.
+    const specifier = "./configurations.ts?switched";
+    let switched: typeof CONFIGURATIONS;
+    try {
+      switched = ((await import(specifier)) as { readonly CONFIGURATIONS: typeof CONFIGURATIONS }).CONFIGURATIONS;
+    } finally {
+      delete scope.location;
+    }
+    const levers = { brokerGather: true, brokerSpinUs: 200, storeLevers: ["grow", "coalesce"] };
+    for (const config of switched) {
+      const pgrust = config.options?.pgrustThreads ?? config.options?.pgrustPostmaster;
+      if (BROKER_CONFIGURATION_IDS.includes(config.id)) {
+        expect(pgrust).toMatchObject(levers);
+      } else {
+        expect(pgrust?.brokerGather).toBeUndefined();
+        expect(pgrust?.brokerSpinUs).toBeUndefined();
+        expect(pgrust?.storeLevers).toBeUndefined();
+        expect(JSON.stringify(config.options ?? {})).toBe(JSON.stringify(findConfiguration(config.id)?.options ?? {}));
+      }
+    }
+    expect(switched.filter((config) => BROKER_CONFIGURATION_IDS.includes(config.id))).toHaveLength(5);
   });
 });

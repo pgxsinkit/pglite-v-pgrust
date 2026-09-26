@@ -97,8 +97,23 @@
 // agent: this worker counts what it answers — each broker request by opcode, and the ms its serve
 // loop spent answering — and, on the OPFS port, every synchronous access handle call. Absent,
 // nothing is wrapped.
+//
+// SPIN (`msg.brokerSpinUs`, optional, 0 by default). Before the serve loop parks on the doorbell it
+// polls the doorbell's ticket for up to that many µs, so a request that rings within it is answered
+// without a futex wake (wasm/broker-spin.js; the guests' half is wasm/broker-fs.js's). Bounded per
+// wait, and skipped after a park that timed out, so an idle coordinator does not spin. Absent or 0,
+// nothing is wrapped.
+//
+// STORE LEVERS (`options.storeLevers`, optional). A list of wasm/store-levers.js's names — `grow`
+// (the arena grows in 4 MiB chunks, trimmed back on close) and `coalesce` (contiguous arena writes
+// inside one store call become one handle write) — put around the ROOT store's port, whatever the
+// port is; a mount's store is never levered. Every consumer of the store here, the seed and the
+// broker alike, then goes through the levers' call boundary. What they did is reported with
+// `storage-stopped`. Absent or empty, nothing is wrapped.
 
 import { IoStats, countBrokerService, countHandleCalls } from './io-stats.js';
+import { installRequestSpin, normalizeSpinUs } from './broker-spin.js';
+import { applyStoreLevers, normalizeStoreLevers, storeLeverList } from './store-levers.js';
 
 // The one path the fresh/existing fork is about. Everything else in the image (the timezone
 // database under /share, say) rides along with it but never decides anything.
@@ -298,6 +313,9 @@ async function boot(msg) {
     throw new Error(`unknown storage durability ${durability}`);
   }
 
+  // Both refuse a malformed value here, before anything is opened (or, on OPFS, reset).
+  const spinUs = normalizeSpinUs(msg.brokerSpinUs);
+  const leverNames = storeLeverList(normalizeStoreLevers(options.storeLevers));
   const stats = msg.ioStats ? IoStats.attach(msg.ioStats) : null;
   const tOpen = Date.now();
   let storePort;
@@ -309,7 +327,8 @@ async function boot(msg) {
   } else {
     storePort = new bundle.MemoryRepackedPort();
   }
-  const rootVfs = await bundle.RepackedVfs.open(storePort, { extentSize });
+  const levered = applyStoreLevers(storePort, leverNames);
+  const rootVfs = await bundle.RepackedVfs.open(levered ? levered.port : storePort, { extentSize });
 
   // THE FRESH/EXISTING FORK, asked HERE — of the root store, before a single mount exists. See the
   // header: the datadir decides, not the store. `MountedRepackedVfs` mkdirs a placeholder directory
@@ -336,13 +355,16 @@ async function boot(msg) {
     const mountVfs = await bundle.RepackedVfs.open(new bundle.MemoryRepackedPort(), { extentSize });
     mounted.push({ prefix, port: kind, durable: false, vfs: mountVfs });
   }
-  const vfs =
+  const composite =
     mounted.length === 0
       ? rootVfs
       : new bundle.MountedRepackedVfs({
           root: rootVfs,
           mounts: mounted.map((m) => ({ prefix: m.prefix, vfs: m.vfs, durable: m.durable })),
         });
+  // With store levers, the one call boundary every consumer below goes through: the seed, the walks,
+  // the broker, the final sync and the close.
+  const vfs = levered ? levered.view(composite) : composite;
   const openMs = Date.now() - tOpen;
   const nowMs = BigInt(Date.now());
   const EEXIST = bundle.WASI_ERRNO.EXIST;
@@ -401,6 +423,7 @@ async function boot(msg) {
   }
 
   doorbell = bundle.RepackedDoorbell.attach(msg.doorbell);
+  installRequestSpin(doorbell, spinUs);
   const broker = new bundle.RepackedSyncBroker({
     vfs: durability === 'strict' ? strictView(vfs) : vfs,
     doorbell,
@@ -431,6 +454,9 @@ async function boot(msg) {
     arenaBytes: Number(metrics.totalExtents) * extentSize,
     mounts: mounted.map((m) => ({ prefix: m.prefix, port: m.port, durable: m.durable })),
     channels: broker.attachedIds(),
+    // Only when set, so a default boot's answer is exactly what it always was.
+    ...(spinUs > 0 ? { brokerSpinUs: spinUs } : {}),
+    ...(leverNames.length > 0 ? { storeLevers: leverNames } : {}),
   });
 
   // Turn the event loop once so `storage-ready` is actually flushed: the very next statement
@@ -477,6 +503,9 @@ async function boot(msg) {
     datadirFiles: after.files,
     datadirBytes: after.bytes,
     ports,
+    // What the levers did to the arena: the store's writes and truncates against the handle calls
+    // they became, and the slack trimmed off at close. Absent without levers.
+    ...(levered ? { storeLevers: levered.report() } : {}),
   });
 }
 

@@ -23,7 +23,13 @@
  * `./configuration-selection`). The order below is the column order in every case.
  */
 
-import { brokerGatherOptions, readBrokerSwitches, storeStatsOptions } from "./broker-switches";
+import {
+  brokerGatherOptions,
+  brokerSpinOptions,
+  readBrokerSwitches,
+  storeLeverOptions,
+  storeStatsOptions,
+} from "./broker-switches";
 import type { Configuration, EngineId, EngineOpenOptions, SqlDialect } from "./engines/contract";
 import { configurationDialect } from "./engines/contract";
 import { OPFS_DIRECTORY_PREFIX, opfsOwnedRootDirectory } from "./opfs";
@@ -48,16 +54,22 @@ const POSTMASTER_TUNING = postmasterTuningOptions(readPostmasterTuning());
 const PGRUST_MODULE = pgrustModuleOptions(readPgrustModule());
 
 /**
- * The two store-seam switches this page was opened on (see `./broker-switches.ts`).
+ * The four store-seam switches this page was opened on (see `./broker-switches.ts`).
  *
  * `STORE_STATS` is spread into every Configuration with store work to count — every pgrust one and
- * PGlite's OPFS pair — and `BROKER_GATHER` into the pgrust options of every broker one. Both are
- * EMPTY objects unless the URL turned them on, so every Configuration's options are then byte-for-byte
- * the ones this repo's tables were produced with.
+ * PGlite's OPFS pair. `BROKER_LEVERS` — the gathered writes, the spin before parking and the
+ * coordinator's store levers — goes into the pgrust options of every broker one and nowhere else: the
+ * copy seam has no broker, and PGlite's OPFS columns open the published store in their own worker.
+ * Both are EMPTY objects unless the URL turned something on, so every Configuration's options are then
+ * byte-for-byte the ones this repo's tables were produced with.
  */
 const BROKER_SWITCHES = readBrokerSwitches();
 const STORE_STATS = storeStatsOptions(BROKER_SWITCHES);
-const BROKER_GATHER = brokerGatherOptions(BROKER_SWITCHES);
+const BROKER_LEVERS = {
+  ...brokerGatherOptions(BROKER_SWITCHES),
+  ...brokerSpinOptions(BROKER_SWITCHES),
+  ...storeLeverOptions(BROKER_SWITCHES),
+};
 
 /**
  * `STORE_STATS` as the `options` of a Configuration that has no options of its own: absent, rather
@@ -173,7 +185,7 @@ export const CONFIGURATIONS: readonly Configuration[] = [
     label: "pgrust Threads Memory (broker, pre-release store)",
     engine: "pgrust-threads",
     dataDir: "",
-    options: { pgrustThreads: { fs: "broker", ...PGRUST_MODULE, ...BROKER_GATHER }, ...STORE_STATS },
+    options: { pgrustThreads: { fs: "broker", ...PGRUST_MODULE, ...BROKER_LEVERS }, ...STORE_STATS },
   },
   {
     // The broker column's store moved off the coordinator's heap and onto OPFS: the same four
@@ -190,7 +202,7 @@ export const CONFIGURATIONS: readonly Configuration[] = [
     engine: "pgrust-threads",
     dataDir: opfsOwnedRootDirectory("threads-opfs-repacked-relaxed"),
     options: {
-      pgrustThreads: { fs: "broker", port: "opfs", durability: "relaxed", ...PGRUST_MODULE, ...BROKER_GATHER },
+      pgrustThreads: { fs: "broker", port: "opfs", durability: "relaxed", ...PGRUST_MODULE, ...BROKER_LEVERS },
       ...STORE_STATS,
     },
   },
@@ -204,7 +216,7 @@ export const CONFIGURATIONS: readonly Configuration[] = [
     engine: "pgrust-threads",
     dataDir: opfsOwnedRootDirectory("threads-opfs-repacked-strict"),
     options: {
-      pgrustThreads: { fs: "broker", port: "opfs", durability: "strict", ...PGRUST_MODULE, ...BROKER_GATHER },
+      pgrustThreads: { fs: "broker", port: "opfs", durability: "strict", ...PGRUST_MODULE, ...BROKER_LEVERS },
       ...STORE_STATS,
     },
   },
@@ -229,7 +241,7 @@ export const CONFIGURATIONS: readonly Configuration[] = [
         durability: "relaxed",
         ...POSTMASTER_TUNING,
         ...PGRUST_MODULE,
-        ...BROKER_GATHER,
+        ...BROKER_LEVERS,
       },
       ...STORE_STATS,
     },
@@ -248,7 +260,7 @@ export const CONFIGURATIONS: readonly Configuration[] = [
         durability: "relaxed",
         ...POSTMASTER_TUNING,
         ...PGRUST_MODULE,
-        ...BROKER_GATHER,
+        ...BROKER_LEVERS,
       },
       ...STORE_STATS,
     },

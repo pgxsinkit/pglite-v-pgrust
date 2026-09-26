@@ -975,6 +975,9 @@ export function makeSpawner({
   // `--fs broker` with wasm/broker-fs.js's gather option: every slot's adapter makes one broker
   // write per `fd_pwrite`. The channels' payload is sized by whoever minted them.
   brokerGather = false,
+  // `--fs broker` with wasm/broker-spin.js's reply spin: every slot's client polls its channel for
+  // up to this many µs after each request before it parks. 0 installs nothing.
+  brokerSpinUs = 0,
   // Optional counters (wasm/io-stats.js), handed to every slot with its agent index (slot + 1).
   ioStats = null,
   // The host-backed fd registry as DESCRIPTORS (see the header): a spawned
@@ -1032,6 +1035,7 @@ export function makeSpawner({
       fdBase: slotFdBase(slot),
       // Only when asked for, so a payload without them is byte-for-byte what it always was.
       ...(brokerGather ? { brokerGather: true } : {}),
+      ...(brokerSpinUs > 0 ? { brokerSpinUs } : {}),
       ...(ioStats ? { ioStats, ioAgent: slot + 1 } : {}),
     };
     w.postMessage(payload, relay ? [imageCopy, relay] : [imageCopy]);

@@ -7,6 +7,7 @@
  * browser is not stored here — it is computed at runtime in `./availability`.
  */
 
+import type { StoreLever } from "../broker-switches";
 import type { StoreStats } from "../results/store-stats";
 import type { EngineStats } from "./protocol";
 import type { ConcurrentScenario, ScenarioReport } from "./scenario";
@@ -142,6 +143,20 @@ export interface PgrustThreadsOpenOptions {
    * environment line of every table it produces says so.
    */
   readonly brokerGather?: boolean;
+  /**
+   * The broker's spin before parking, in µs (`wasm/broker-spin.js`): every guest polls its channel for
+   * its reply, and the coordinator the doorbell for the next request, for up to this long before it
+   * parks in `Atomics.wait`. Only meaningful with `fs: "broker"`; absent or 0 is no spin. Set only by
+   * `?brokerSpin=` (see `src/broker-switches.ts`), which the environment line announces.
+   */
+  readonly brokerSpinUs?: number;
+  /**
+   * The coordinator's store levers (`wasm/store-levers.js`): `grow`, the arena in 4 MiB chunks,
+   * trimmed on close; `coalesce`, contiguous arena writes within one store call as one handle write.
+   * Only meaningful with `fs: "broker"`, and only ever on pgrust columns: PGlite's OPFS columns keep
+   * the published store. Set only by `?storeLevers=`, which the environment line announces.
+   */
+  readonly storeLevers?: readonly StoreLever[];
 }
 
 /**
@@ -201,6 +216,10 @@ export interface PgrustPostmasterOpenOptions {
   readonly alternateModule?: string;
   /** The broker's gathered writes, exactly as {@link PgrustThreadsOpenOptions.brokerGather}. */
   readonly brokerGather?: boolean;
+  /** The broker's spin before parking, exactly as {@link PgrustThreadsOpenOptions.brokerSpinUs}. */
+  readonly brokerSpinUs?: number;
+  /** The coordinator's store levers, exactly as {@link PgrustThreadsOpenOptions.storeLevers}. */
+  readonly storeLevers?: readonly StoreLever[];
   /**
    * A **prepared store** to boot on: one `.repacked.tar.gz` holding the four files a repacked store
    * IS, written into this Configuration's OPFS store directory before the coordinator opens it.

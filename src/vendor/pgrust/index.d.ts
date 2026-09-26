@@ -83,3 +83,12 @@ export {
   HANDLE_CALL_KINDS,
   IoStats,
 } from "./io-stats.js";
+
+export { MAX_BROKER_SPIN_US, normalizeSpinUs } from "./broker-spin.js";
+
+export {
+  normalizeStoreLevers,
+  STORE_LEVER_COALESCE_BYTES,
+  STORE_LEVER_GROW_BYTES,
+  STORE_LEVER_NAMES,
+} from "./store-levers.js";
