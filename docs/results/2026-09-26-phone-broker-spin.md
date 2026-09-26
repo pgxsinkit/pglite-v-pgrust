@@ -17,6 +17,9 @@
   focus, keyguard and wakefulness every 30 s, a screenshot at the click and at completion. Every table
   below is printed from the Runs' own Markdown exports by `tmp/agents/s22/report.ts` and
   `tmp/agents/spin-adopt/tables.ts` (untracked).
+- The confirmation and the CPU cost (§8, §9) are a second session on bench `a2edf4b`, the page with
+  the 200 µs default: the same phone, browser and columns, driven by `tmp/agents/spin-adopt/drive.ts`
+  (untracked), which also reads Chrome's CPU time around every Run.
 
 ## What this answers
 
@@ -42,6 +45,13 @@ blocked about 1.8 s of every Suite and 32–47% of every blocked request as hand
    no-switch spread. They are parked (§6).
 4. **Adopted:** every pgrust broker Configuration now spins 200 µs by default, and `?brokerSpin=0` is
    the page as it was (§7).
+5. **Confirmed on the deployed default.** Three Runs of the page with no parameter against three at
+   `?brokerSpin=0`, interleaved: 12 956–13 612 ms against 14 418–14 622 ms, **−8.5%** on the means,
+   the ranges apart; the Session backend's blocked time −29% (§8).
+6. **200 µs costs no measurable CPU per Suite; 1000 µs costs about 4%.** Chrome's CPU time over a
+   whole Run is 57.2 s at spin 0 and 57.2 s at 200: the spin keeps more cores busy while the pgrust
+   column runs (2.1–2.3 against 2.1) and the column finishes sooner, and the two cancel. 500 µs is
+   58.2 s and 1000 µs 59.7 s, one Run each (§9).
 
 ## 1. Method
 
@@ -214,9 +224,9 @@ Rows 9 and 10, the two UPDATE rows and more than two-fifths of the Suite, do not
 do get shorter — row 9's blocked time per request falls from 412–436 to 336–352 µs — but at about
 745 requests that is some 60 ms of a 2.8 s row: those rows are the guest's own work. Neither does
 row 2, which is the noisiest row on this phone (1 451–1 564 ms at X0, 1 579 and 1 710 at S200,
-1 462–1 665 at S500 and S1000). Coordinator serving time falls with the spin (922–930 ms
-against 1 356–1 427 ms at X0), because the coordinator's own wake-up is inside what it counts as
-serving.
+1 462–1 665 at S500 and S1000); the confirmation (§8) has it slower with the spin again.
+Coordinator serving time falls with the spin (922–930 ms against 1 356–1 427 ms at X0), because the
+coordinator's own wake-up is inside what it counts as serving.
 
 **`brokerSpin=500`.** Beyond the spread, and indistinguishable from 200 at two Runs each: 12 940 and
 12 945 ms (−7.8%), Session backend blocked 1 186 and 1 211 ms (−35%), per-request figures the same as
@@ -287,7 +297,114 @@ store factory keeps no spin).
 200 rather than 1000: past 200 µs the phone bought another 3% of total for five times the spin
 bound, and every µs of it is a waiting thread polling on a core that could otherwise sleep.
 
-## 8. What this does not show
+## 8. Confirmation on the deployed default (bench `a2edf4b`)
+
+After the default was deployed, the same Speedtest on the same two columns, `?brokerStats=1` on
+every Run, in a second session: **D** is the page with no parameter (so the 200 µs default), **Z** is
+`&brokerSpin=0`. They were interleaved with a third arm, **F** (`&pgrustModule=be79c787`, the
+default spin on a pgrust module with a file-open fix), which is
+[the absent-fork-cache note](2026-09-26-absent-fork-cache.md)'s; the order was D F Z, Z F D, D F Z.
+Before every click the driver refused the Run unless the environment line named `broker spin:
+200 µs` (D, F) or `broker spin: 0 µs` (Z) and no other spin, F carried
+`pgrust module: be79c787 (alternate)` and D and Z no `pgrust module:` entry at all, the header had
+the `pgrust broker spin` row that only the new build renders, and a `HEAD` of
+`pgrust/alt/be79c787/postgres-threads.wasm` (only `a2edf4b` serves it) answered 200. Every one did.
+
+**Conditions.** The ambient temperature was close to 30 °C, and the first attempt at this session
+(before `a2edf4b`, with the gate at a battery of 31.8 °C) never cleared in two 10-minute waits: after
+about two hours of screen-on the battery held at 32.2–32.4 °C and the CPUs at 1 363/1 882/2 170 MHz.
+For this session the screen was dimmed to its minimum (`screen_brightness` 1, manual; the owner's 4,
+automatic, restored after) and the gate was thermal status 0, the battery at or below 33.0 °C and
+every cluster at its hardware maximum, 15-s polls, at most 15 minutes. Every Run cleared it in 0–1 s,
+with the battery at 29.5–31.4 °C before the click (30.2–32.4 °C after, AP 36.7–44.6 °C, skin
+32.1–33.7 °C). No Run hit the hard cap. A one-step cap on the X2 or the A710 came and went inside the
+pgrust column of r1-D, r1-F, r3-D, r3-F and cpu-S500; the three Z Runs, r2-D, r2-F and cpu-S1000 had
+none. The phone stayed awake and unlocked throughout (wakefulness read every 5 s), every Run was
+visible from click to completion, and `stay_on_while_plugged_in` stayed 7. r1-D was the first Run of
+the new build and loaded it cold: 44 s from click to completion against 32–33 s for every other Run.
+Its cells are timed inside the worker and are in line with the others; it is left out of the CPU
+table only.
+
+| Run | arm | pgrust total (ms) | PGlite Memory total (ms) | pgrust ÷ PGlite | Warm-up pgrust (ms) | Session backend blocked ms | every thread blocked ms | coordinator serving ms | caps in the pgrust column |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| r1-D | D | 13 304.8 | 7 263.0 | 1.83× | 1 222.8 | 1 450.5 | 1 726.8 | 1 052.5 | step |
+| r1-Z | Z | 14 622.1 | 7 211.7 | 2.03× | 1 294.5 | 2 019.1 | 2 509.9 | 1 526.2 | none |
+| r2-Z | Z | 14 513.9 | 7 253.8 | 2.00× | 1 271.4 | 1 871.7 | 2 459.3 | 1 505.7 | none |
+| r2-D | D | 12 955.6 | 7 318.8 | 1.77× | 1 335.3 | 1 293.3 | 1 586.3 | 1 006.3 | none |
+| r3-D | D | 13 611.6 | 7 212.8 | 1.89× | 1 330.2 | 1 365.3 | 1 670.8 | 1 009.2 | step |
+| r3-Z | Z | 14 418.0 | 7 382.0 | 1.95× | 1 478.9 | 1 879.0 | 2 358.7 | 1 427.3 | none |
+
+| arm | Runs | pgrust total (ms) | Session backend blocked ms | every thread blocked ms | coordinator serving ms |
+| --- | --- | --- | --- | --- | --- |
+| Z (spin 0) | 3 | 14 518 (14 418–14 622) | 1 923 (1 872–2 019) | 2 443 (2 359–2 510) | 1 486 (1 427–1 526) |
+| D (spin 200, the default) | 3 | 13 291 (12 956–13 612), **−8.5%** | 1 370 (1 293–1 451), **−29%** | 1 661 (1 586–1 727), −32% | 1 023 (1 006–1 053), −31% |
+
+pgrust ms per row, mean of the three Runs:
+
+| arm | row 2 | row 2.1 | row 3 | row 3.1 | row 6 | row 9 | row 10 | row 11 | row 14 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Z | 1 497 | 351 | 1 562 | 406 | 101 | 2 997 | 3 431 | 658 | 576 |
+| D | 1 592 | 245 | 1 262 | 264 | 66 | 2 976 | 3 366 | 341 | 277 |
+| D ÷ Z | 1.06× | 0.70× | 0.81× | 0.65× | 0.65× | 0.99× | 0.98× | 0.52× | 0.48× |
+
+µs per broker request, blocked / serving:
+
+| Run | arm | row 2 | row 3 | row 9 | row 11 | row 14 |
+| --- | --- | --- | --- | --- | --- | --- |
+| r1-D | D | 792 / 332 | 243 / 169 | 442 / 253 | 169 / 124 | 151 / 127 |
+| r1-Z | Z | 600 / 310 | 402 / 239 | 496 / 253 | 463 / 316 | 457 / 327 |
+| r2-Z | Z | 645 / 340 | 361 / 249 | 440 / 229 | 427 / 306 | 445 / 304 |
+| r2-D | D | 591 / 374 | 238 / 164 | 383 / 200 | 148 / 116 | 161 / 134 |
+| r3-D | D | 725 / 322 | 256 / 171 | 388 / 209 | 156 / 128 | 140 / 115 |
+| r3-Z | Z | 487 / 281 | 326 / 212 | 428 / 224 | 371 / 243 | 481 / 337 |
+
+**Verdict: the default does on the deployed page what `?brokerSpin=200` did in phase 2.** −8.5% on
+the pgrust total with the two arms' ranges 800 ms apart (phase 2: −6.8%), −29% on the Session
+backend's blocked time (−33%), rows 11 and 14 halved again (0.52× and 0.48×; phase 2 0.48× and
+0.48×), rows 2.1, 3.1 and 6 a third down, rows 9 and 10 flat. PGlite Memory, which no arm touches,
+was 7 212–7 382 ms in the six Runs. The D Runs had the only step caps of the six, so if anything
+they ran at slightly lower clocks than the Z Runs.
+
+**Row 2 is slower with the spin, in both sessions.** 1 592 against 1 497 ms here (+6%), 1 645
+against 1 489 in phase 2 (+10%); in each session the ranges overlap, but over the eleven Runs of the
+two sessions that did not hit the hard cap the five at 200 µs average 1 613 ms and the six without a
+spin 1 493. Its blocked time per request rises with the spin too (591–792 against 487–645 µs here).
+Row 2 is 25 000 INSERTs in one transaction; why it comes out slower was not investigated.
+
+## 9. What the spin costs in CPU
+
+Chrome's own CPU time is the battery-cost proxy: the summed `utime + stime` (fields 14 and 15 of
+`/proc/<pid>/stat`, `CLK_TCK` 100) over every `com.android.chrome` process, read per process right
+before the click and right after the Suite completed, as `scripts/probe-idle-cpu-android.ts` reads it.
+A process present at both readings counts its difference and one that appeared counts all of it; none
+appeared and none exited, except in the cold r1-D (one of eight processes exited mid-Run). The
+readings are adb-only and never touch the page. The Run covers both columns, so the PGlite column
+(about 15–17 CPU-s, the same in every arm) is inside every figure; the arm-to-arm difference is the
+pgrust column's. The same sums were read at every 5-s poll, and the pgrust column's share below is
+interpolated from them at the page's own column boundaries: an estimate, ±2–3 CPU-s.
+
+| spin | Runs | pgrust total (ms) | Chrome CPU-s per Run | vs spin 0 | ≈ CPU-s in the pgrust column | pgrust column wall (s) | ≈ cores busy in the pgrust column |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 (Z) | 3 | 14 518 (14 418–14 622) | 57.21 (56.61–57.75) | — | 39.5 (39.1–39.9) | 19.0–19.3 | 2.05–2.09 |
+| 200 (D; r1-D, the cold Run, left out) | 2 | 13 284 (12 956–13 612) | 57.17 (56.31–58.02) | −0.1% | 39.3 (39.3–39.3) | 17.0–18.5 | 2.12–2.31 |
+| 200 (F, the other module) | 3 | 13 193 (13 165–13 224) | 57.47 (56.29–58.31) | +0.5% | 40.4 (39.5–41.2) | 17.3–20.0 | 2.05–2.33 |
+| 500 (cpu-S500) | 1 | 13 373 | 58.15 | +1.6% | 40.9 | 17.3 | 2.36 |
+| 1000 (cpu-S1000) | 1 | 13 479 | 59.65 | +4.3% | 42.9 | 17.4 | 2.47 |
+
+- **200 µs costs nothing measurable per Suite.** 57.2 CPU-s a Run at spin 0 and at 200: the spin
+  keeps more cores busy while the pgrust column runs and the column ends up to 2 s sooner, and the two
+  cancel within the Runs' own spread of about 1.5 CPU-s.
+- **Past 200 the cost shows.** 500 µs is +0.9 CPU-s a Run and 1000 µs +2.4 (+1.6% and +4.3%), the
+  pgrust column running at 2.36 and 2.47 cores against 2.1. One Run each, so these two are
+  indications, not measurements with a spread.
+- **And past 200 the gain did not repeat.** The one 500 µs Run (13 373 ms) and the one 1000 µs Run
+  (13 479 ms) are inside the 200 µs arm's range here, where phase 2 had 1000 µs 3% under 200.
+  1000 µs costs CPU that this session could not show it buys anything for.
+
+The 200 µs default stands on both counts: the confirmation reproduces the gain, and the gain is not
+paid for in CPU time.
+
+## 10. What this does not show
 
 - **The OnePlus, or any other phone.** One Galaxy S22+, one Chrome. The spin trades a parked wait
   for a poll, and what a wake-up costs is the core's and the kernel's; another SoC can move the
@@ -299,11 +416,15 @@ bound, and every µs of it is a waiting thread polling on a core that could othe
   for a core) and the Prepared Suite were not run with the spin on this phone.
 - **Any other column.** Only `pgrust Postmaster OPFS repacked (relaxed)` was measured; the default
   also reaches the Memory broker columns and the two threads OPFS columns.
-- **What the spin costs in energy.** CPU time, heat and battery drain were not measured; the
-  after-Run temperatures above are 30 seconds of heat, not a battery figure.
+- **What the spin costs in energy.** §9 measures CPU-seconds, the proxy; not joules, mAh or the
+  battery's drain. A CPU-second on an X2 at 3 GHz and one on an A510 are not the same energy, and
+  which cores the spinning threads ran on was not recorded. The after-Run temperatures are 30 seconds
+  of heat, not a battery figure.
+- **Why row 2 is slower with the spin.** It is, in both sessions (§8), and it was not investigated.
 - **Spins between 200 and 500, or above 1000.** 1000 µs is pgrust's own bound.
-- **A significance test.** Two Runs per spin arm; the verdicts are against the spread of three
-  uncapped X0 Runs, not a statistical test.
+- **A significance test.** Two Runs per spin arm in phase 2 and three in the confirmation; the
+  verdicts are against the spread of the no-spin Runs, not a statistical test. 500 and 1000 µs have
+  one CPU Run each.
 
 ## Reproduction
 
@@ -317,6 +438,9 @@ bun tmp/agents/s22/drive.ts --p2 r3-01-X0,r3-02-LS --ls-spin 1000 --cool 318
 # the tables
 bun tmp/agents/s22/report.ts
 bun tmp/agents/spin-adopt/tables.ts p2
+# the confirmation and the CPU cost (bench a2edf4b; the F Runs are the absent-fork-cache note's)
+bun tmp/agents/spin-adopt/drive.ts --runs r1-D,r1-F,r1-Z,r2-Z,r2-F,r2-D,r3-D,r3-F,r3-Z,cpu-S500,cpu-S1000
+SPIN_PER_REQUEST_ROWS=2,3,9,11,14 bun tmp/agents/spin-adopt/tables.ts galaxy
 ```
 
 Any single arm by hand, on any phone:
