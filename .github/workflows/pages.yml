@@ -63,8 +63,10 @@ jobs:
       # e2e7a2f9: the default, the profile-guided threads module.
       # 3624f82c: the last threads module before the profile-guided one.
       # be79c787: the profile-guided module with the absent-fork cache and no memory watchdog on WASI.
-      - name: Sync the pgrust assets from the pinned release, and the two alternate threads modules
-        run: bun run sync:pgrust --release pgrust-assets/e2e7a2f9 --alt-release pgrust-assets/3624f82c --alt-release pgrust-assets/be79c787
+      # efe65be6: six engine commits on be79c787's source, built without a profile.
+      # 95d47509: the same source, profile-guided with a profile re-collected on it.
+      - name: Sync the pgrust assets from the pinned release, and the four alternate threads modules
+        run: bun run sync:pgrust --release pgrust-assets/e2e7a2f9 --alt-release pgrust-assets/3624f82c --alt-release pgrust-assets/be79c787 --alt-release pgrust-assets/efe65be6 --alt-release pgrust-assets/95d47509
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
