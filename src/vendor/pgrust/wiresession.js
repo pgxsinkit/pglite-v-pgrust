@@ -22,6 +22,7 @@
 
 import { makeWasi, GuestExit } from './pgrust-wasi.js';
 import { WireReader, encodeStartup, encodeQuery, TERMINATE, parseMessage, canonMessage } from './wire.js';
+import { IoStats, countGuestFileCalls } from './io-stats.js';
 
 export function jspiSupported() {
   return typeof WebAssembly.Suspending === 'function' &&
@@ -49,9 +50,13 @@ export function defaultWireArgv(extraGucs = []) {
 export class WireSessionDead extends Error {}
 
 export class WireSession {
-  constructor({ wasmModule, vfs, argv, env, onStderr, onMessage }) {
+  // `ioStats` (optional): a wasm/io-stats.js buffer with room for one agent. Every file call the
+  // guest makes is then counted as agent 0, which is also this session's backend — there is no
+  // other thread to tell it from.
+  constructor({ wasmModule, vfs, argv, env, onStderr, onMessage, ioStats }) {
     this.wasmModule = wasmModule;
     this.vfs = vfs;
+    this.ioStats = ioStats || null;
     this.argv = argv || defaultWireArgv();
     this.env = env;
     this.onStderr = onStderr || (() => {});
@@ -159,6 +164,12 @@ export class WireSession {
       argv: this.argv,
       env: this.env,
     });
+    let memory = null;
+    if (this.ioStats) {
+      const stats = IoStats.attach(this.ioStats);
+      countGuestFileCalls(h.wasi, { stats, agent: 0, memory: () => memory.buffer });
+      stats.markSession(0, 0);
+    }
     const imports = {
       wasi_snapshot_preview1: {
         ...h.wasi,
@@ -169,6 +180,7 @@ export class WireSession {
     };
     const instance = await WebAssembly.instantiate(this.wasmModule, imports);
     h.setMemory(instance.exports.memory);
+    memory = instance.exports.memory;
     const startAsync = WebAssembly.promising(instance.exports._start);
     this.startPromise = startAsync()
       .then(() => { this.exitCode = 0; this._fail(new WireSessionDead('session exited (code 0)')); return 0; })

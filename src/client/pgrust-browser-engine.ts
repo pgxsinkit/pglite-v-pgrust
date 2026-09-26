@@ -50,6 +50,7 @@
 import { SHARED_MEMORY_REQUIREMENT_MESSAGE } from "../engines/availability";
 import type * as BrokerFs from "../vendor/pgrust/broker-fs.js";
 import type { RepackedBundle, RepackedChannel, RepackedDoorbell } from "../vendor/pgrust/broker-fs.js";
+import { IoStats } from "../vendor/pgrust/io-stats.js";
 import type { VfsManifest } from "../vendor/pgrust/pgrust-wasi.js";
 import type * as SabPipes from "../vendor/pgrust/sab-pipe.js";
 import type { SabPipe } from "../vendor/pgrust/sab-pipe.js";
@@ -304,6 +305,19 @@ export interface PgrustBrowserEngineOptions {
   readonly storageOpenAttempts?: number;
   /** The linear backoff between those attempts, in milliseconds. 500 by default. */
   readonly storageRetryMs?: number;
+  /**
+   * Count the store work (the vendored host's `io-stats.js`): every guest agent's file calls, the
+   * coordinator's broker requests and, on the OPFS port, its access handle calls. The engine sizes
+   * the counters to its own pool and exposes them as {@link PgrustBrowserEngine.ioStats}. Off by
+   * default, and then nothing is counted and nothing is wrapped.
+   */
+  readonly ioStats?: boolean;
+  /**
+   * The broker's gathered writes (`wasm/broker-fs.js`): every guest makes one broker write per
+   * `fd_pwrite`, and every guest channel is minted at the host's `GATHER_PAYLOAD_BYTES` instead of
+   * the library's 64 KiB. This host's own store channel is 1 MiB either way. Off by default.
+   */
+  readonly brokerGather?: boolean;
 }
 
 /**
@@ -344,6 +358,8 @@ export interface PgrustBrowserEngine {
   readonly sharedMemory: WebAssembly.Memory;
   /** The tail of the server's stderr, for a caller building its own error message. */
   serverLog(): string;
+  /** The store counters every agent writes, when {@link PgrustBrowserEngineOptions.ioStats} asked for them. */
+  readonly ioStats: IoStats | null;
   /** Close the listener — the fast-shutdown request — and wait for the guest's own `exit(0)`. Idempotent. */
   shutdown(): Promise<PgrustEngineShutdown>;
 }
@@ -548,6 +564,9 @@ export async function startPgrustBrowserPostmaster(options: PgrustBrowserEngineO
   const poolSize = (options.poolBase ?? DEFAULT_POOL_BASE_SIZE) + sessionCount;
   const assetBase = directoryUrl(options.assetBase);
   const hostBase = `${assetBase}host/`;
+  // One agent for the process instance plus one per pool slot, as the host numbers them.
+  const ioStats = options.ioStats === true ? IoStats.create({ agents: poolSize + 1 }) : null;
+  const gather = options.brokerGather === true;
 
   /** One decoder for the whole run: a multi-byte character can straddle two stderr chunks. */
   const stderrDecoder = new TextDecoder("utf-8", { fatal: false });
@@ -638,7 +657,11 @@ export async function startPgrustBrowserPostmaster(options: PgrustBrowserEngineO
     // One channel per pool slot PLUS one for the process instance: the protocol is one request in
     // flight per channel, so two agents may never share one.
     const channels: RepackedChannel[] = Array.from({ length: poolSize + 1 }, (_unused, index) =>
-      bundle.RepackedChannel.create({ id: index + 1, doorbell }),
+      bundle.RepackedChannel.create({
+        id: index + 1,
+        doorbell,
+        ...(gather ? { payloadBytes: brokerFs.GATHER_PAYLOAD_BYTES } : {}),
+      }),
     );
     // And one more for THIS host, which is an agent like any other. Attached with the rest, because
     // the coordinator can accept no channel once its blocking serve loop is entered.
@@ -708,6 +731,7 @@ export async function startPgrustBrowserPostmaster(options: PgrustBrowserEngineO
                 reset: storage.reset === true,
               }
             : { port: "memory", durability: storage.durability ?? "relaxed" },
+        ...(ioStats === null ? {} : { ioStats: ioStats.buffer }),
       },
       [image],
     );
@@ -915,6 +939,9 @@ export async function startPgrustBrowserPostmaster(options: PgrustBrowserEngineO
       poolSize,
       trace: 0,
       relayPorts: relayChannels.map((channel) => channel.port2),
+      // Only when asked for, so a default boot's message is exactly what it always was.
+      ...(gather ? { brokerGather: true } : {}),
+      ...(ioStats === null ? {} : { ioStats: ioStats.buffer }),
     },
     [guestImage, ...relayChannels.map((channel) => channel.port2)],
   );
@@ -954,6 +981,7 @@ export async function startPgrustBrowserPostmaster(options: PgrustBrowserEngineO
     store,
     sharedMemory: memory,
     serverLog: logTail,
+    ioStats,
     reserveSession,
 
     openSession(): PgrustSessionPipes {

@@ -113,6 +113,9 @@ const VENDORED_FILES: readonly string[] = [
   // The `--fs broker` seam, and the storage coordinator on the other end of it.
   "wasm/broker-fs.js",
   "wasm/storage-worker.js",
+  // The optional store counters every host above can be handed (`?brokerStats=1`): guest file
+  // calls per agent, the coordinator's broker requests and its storage handle calls.
+  "wasm/io-stats.js",
   "LICENSE",
   "NOTICE",
 ];
@@ -121,8 +124,8 @@ const VENDORED_FILES: readonly string[] = [
  * The vendored host JS the threads Engine loads at **runtime**, copied from `src/vendor/pgrust/`
  * into `public/pgrust/host/` and served verbatim.
  *
- * These five (plus `pgrust-wasi.js`, which `threads-host.js` imports) cannot be bundled: the host
- * builds its workers from URLs it computes at run time — `threadWorkerUrl(base)`,
+ * These five (plus `pgrust-wasi.js` and `io-stats.js`, which `threads-host.js` imports) cannot be
+ * bundled: the host builds its workers from URLs it computes at run time — `threadWorkerUrl(base)`,
  * `storageWorkerUrl(base)` — and Vite only rewrites the literal
  * `new Worker(new URL("./x", import.meta.url))` form. Bundling them would either break those URLs
  * or force an edit to a file that must stay byte-identical to pgrust's. Served as static assets
@@ -139,6 +142,8 @@ const HOST_RUNTIME_FILES: readonly string[] = [
   "broker-fs.js",
   "storage-worker.js",
   "pgrust-wasi.js",
+  // Imported by `threads-host.js`, `storage-worker.js` and `wiresession.js`.
+  "io-stats.js",
   // The Node/bun worker entries, laid out beside the `.js` they re-export: the browser Engines never
   // touch them, but the bun lane loads the host from this same directory and `IS_NODE` sends
   // `threadWorkerUrl`/`storageWorkerUrl` at the `.mjs` names.

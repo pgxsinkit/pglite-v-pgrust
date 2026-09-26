@@ -15,9 +15,11 @@ import { describe, expect, test } from "bun:test";
 
 import type { BenchReport } from "../../scripts/bench";
 import { runBench, WEBKIT_SKIP_MESSAGE } from "../../scripts/bench";
+import { BROKER_GATHER_LINE, BROKER_STATS_LINE } from "../../src/broker-switches";
 import { CONFIGURATIONS } from "../../src/configurations";
 import { EMPTY_CELL } from "../../src/results/format";
 import { markdownColumnHeader } from "../../src/results/markdown";
+import { STORE_STATS_HEADING } from "../../src/results/store-markdown";
 import { describeRttIterations } from "../../src/rtt-iterations";
 import { SUITES } from "../../src/suites";
 import { CONCURRENCY_CLIENTS, CONCURRENCY_SUITE, INTERLEAVED_ON_ONE_SESSION } from "../../src/suites/concurrency";
@@ -298,6 +300,57 @@ const report: BenchReport = await runBench({
   timeoutMs: LANE_TIMEOUT_MS,
 });
 
+/**
+ * Five columns that between them have every part of the store tables: a guest on the single-session
+ * build, a broker on memory, a broker on OPFS under a postmaster, and PGlite's OPFS handles — plus
+ * the Baseline, which has nothing to count and must not appear in them.
+ */
+const STORE_CONFIGURATION_IDS: readonly string[] = [
+  "pglite-memory",
+  "pglite-opfs-repacked-relaxed",
+  "pgrust-memory",
+  "pgrust-threads-memory-broker",
+  "pgrust-postmaster-opfs-repacked-relaxed",
+];
+
+/**
+ * A second, short Run with both store-seam switches on (`?brokerStats=1&brokerGather=1`): the
+ * Speedtest Suite on those five columns, on the build the lane above already made.
+ */
+const storeReport: BenchReport = await runBench({
+  browser: "chromium",
+  suites: ["speedtest"],
+  configurationIds: STORE_CONFIGURATION_IDS,
+  brokerStats: true,
+  brokerGather: true,
+  build: false,
+  timeoutMs: LANE_TIMEOUT_MS,
+});
+
+/** The body rows of the store table under one `#####` heading, split into trimmed cells. */
+function storeTableRows(markdown: string, heading: string): readonly (readonly string[])[] {
+  const lines = markdown.split("\n");
+  const start = lines.indexOf(heading);
+  if (start < 0) {
+    return [];
+  }
+  const body: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (line.startsWith("#")) {
+      break;
+    }
+    if (line.startsWith("|")) {
+      body.push(line);
+    }
+  }
+  return body.slice(2).map((line) =>
+    line
+      .slice(1, -1)
+      .split("|")
+      .map((cell) => cell.trim()),
+  );
+}
+
 describe("bench lane", () => {
   test("reports the environment, including the non-standard RTT iteration count", () => {
     expect(report.skipped).toBe(false);
@@ -521,6 +574,52 @@ describe("the Prepared Suite", () => {
       )
       .map(describeRow);
     expect(offenders).toEqual([]);
+  });
+});
+
+describe("the store tables (`?brokerStats=1&brokerGather=1`)", () => {
+  const markdown = storeReport.suites[0]?.markdown ?? "";
+  const speedtestRows = 1 + SPEEDTEST_BENCHMARK_IDS.length;
+  const labelOf = (id: string): string => CONFIGURATIONS.find((config) => config.id === id)?.label ?? id;
+
+  test("says both switches are on, and every column ran", () => {
+    expect(storeReport.environmentLine).toContain(BROKER_STATS_LINE);
+    expect(storeReport.environmentLine).toContain(BROKER_GATHER_LINE);
+    expect(storeReport.suites[0]?.failures).toBe("");
+  });
+
+  test("puts the three store tables under the results table", () => {
+    expect(markdown).toContain(STORE_STATS_HEADING);
+    expect(markdown.indexOf(STORE_STATS_HEADING)).toBeGreaterThan(markdown.indexOf("| Test 16"));
+  });
+
+  test("gives each pgrust column a guest row per Benchmark, and the Warm-up does file calls", () => {
+    const rows = storeTableRows(markdown, "##### pgrust guest file calls");
+    const pgrust = ["pgrust-memory", "pgrust-threads-memory-broker", "pgrust-postmaster-opfs-repacked-relaxed"];
+    expect(rows).toHaveLength(pgrust.length * speedtestRows);
+    expect(new Set(rows.map((row) => row[1]))).toEqual(new Set(pgrust.map(labelOf)));
+    for (const row of rows.filter((cells) => cells[0] === WARMUP_LABEL)) {
+      expect(row).toHaveLength(16);
+      expect(Number(row[15])).toBeGreaterThan(0);
+    }
+  });
+
+  test("gives each broker column a row of requests, and the coordinator served them", () => {
+    const rows = storeTableRows(markdown, "##### Broker");
+    const broker = ["pgrust-threads-memory-broker", "pgrust-postmaster-opfs-repacked-relaxed"];
+    expect(rows).toHaveLength(broker.length * speedtestRows);
+    expect(new Set(rows.map((row) => row[1]))).toEqual(new Set(broker.map(labelOf)));
+    for (const row of rows.filter((cells) => cells[0] === WARMUP_LABEL)) {
+      expect(Number(row[11])).toBeGreaterThan(0);
+      expect(Number(row[16])).toBeGreaterThan(0);
+    }
+  });
+
+  test("gives both engines' OPFS columns a row of access handle calls", () => {
+    const rows = storeTableRows(markdown, "##### OPFS access handles");
+    const opfs = ["pglite-opfs-repacked-relaxed", "pgrust-postmaster-opfs-repacked-relaxed"];
+    expect(rows).toHaveLength(opfs.length * speedtestRows);
+    expect(new Set(rows.map((row) => row[1]))).toEqual(new Set(opfs.map(labelOf)));
   });
 });
 

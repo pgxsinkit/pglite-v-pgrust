@@ -6,6 +6,7 @@
  * the Engine call is inside the timed window.
  */
 
+import type { StoreStats } from "../results/store-stats";
 import type { EngineOpenOptions, Measurement } from "./contract";
 import type { ConcurrentScenario, ScenarioReport } from "./scenario";
 
@@ -146,6 +147,11 @@ export interface EngineOkResponse {
   readonly measurement: Measurement | null;
   /** Present only in answer to a `concurrent` request. */
   readonly report?: ScenarioReport;
+  /**
+   * The store work behind a `measure` or `concurrent` answer, when the Run counts it
+   * (`?brokerStats=1`). Taken outside the Measurement window; absent on every other Run.
+   */
+  readonly storeStats?: StoreStats;
   /** Present only in answer to a `stats` request. */
   readonly stats?: EngineStats;
   /**

@@ -144,6 +144,16 @@ export declare const VENDOR_BUNDLE_PATH: string;
 /** How long a guest waits for a coordinator that has gone away before failing rather than parking. */
 export declare const DEFAULT_REQUEST_TIMEOUT_MS: number;
 
+/**
+ * The broker's gather option: one broker write per `fd_pwrite` instead of one per iovec. A host that
+ * turns it on (`brokerGather: true` to the process worker, which hands it to every pool slot) also
+ * mints its guest channels at `GATHER_PAYLOAD_BYTES`: 256 KiB of data per request
+ * (`GATHER_TRANSFER_BYTES`) plus room for the request's own fields, where the library's default is
+ * 64 KiB of payload in all.
+ */
+export declare const GATHER_TRANSFER_BYTES: number;
+export declare const GATHER_PAYLOAD_BYTES: number;
+
 /** The bundle URL, resolved from the module URL of whatever is asking. */
 export declare function repackedBundleUrl(base: string | URL): string;
 

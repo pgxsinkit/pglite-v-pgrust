@@ -101,6 +101,7 @@
 
 import { makeWasi, GuestExit, monotonicNs } from './pgrust-wasi.js';
 import { SabPipe } from './sab-pipe.js';
+import { IoStats, countGuestFileCalls, markSessionReads } from './io-stats.js';
 
 export const PAGE_BYTES = 65536;
 // Must equal wasm/wasm-build.sh's PGRUST_WASM_INITIAL_MEMORY / _MAX_MEMORY.
@@ -432,6 +433,11 @@ export function makeThreadsHost({
   pipes = null,
   // Where this instance's FILE table allocates fds from (per-agent, disjoint).
   fdBase = PROCESS_FD_BASE,
+  // Optional counters (wasm/io-stats.js): the buffer every agent shares, and which agent this
+  // instance is — 0 for the process instance, slot + 1 for a pool slot. null counts nothing and
+  // installs nothing.
+  ioStats = null,
+  ioAgent = 0,
 }) {
   const info = inspectImports(wasmModule);
   if (!info.memory) {
@@ -689,6 +695,12 @@ export function makeThreadsHost({
   // whatever ends up being called.
   if (fs) wasi = fs.compose(wasi);
 
+  // Optional counters, part one: every FILE call, timed. Here, below the pipe layer that follows,
+  // because that layer answers every host-backed fd (stdio, the listener, the sessions) itself —
+  // so what reaches these wrappers is the file table and nothing else, on either seam.
+  const stats = ioStats ? IoStats.attach(ioStats) : null;
+  if (stats) countGuestFileCalls(wasi, { stats, agent: ioAgent, memory: () => memory.buffer });
+
   // ---------------------------------------------------------------------
   // Host-backed pipe fds, LAST — after the fd-0 stdio arrangement the base
   // host builds and after the broker adapter, because the adapter owns every
@@ -781,6 +793,21 @@ export function makeThreadsHost({
       view.setBigUint64(bufPtr + 16, 0xffffffffffffffffn, true);
       return WASI_ESUCCESS;
     };
+  }
+
+  // Optional counters, part two: the agent that reads a Session's input IS that Session's backend
+  // (fd 0 under --stdio-wire-threaded, the session's in fd under --host-pipes). Above the pipe
+  // layer, where those reads are still visible.
+  if (stats) {
+    markSessionReads(wasi, {
+      stats,
+      agent: ioAgent,
+      sessionOf: (fd) => {
+        if (fd === 0) return registry.get(0) ? 0 : -1;
+        const k = fd - HOSTPIPES_LISTEN_FD - 1;
+        return k >= 0 && k % 2 === 0 && fd < HOSTPIPES_LISTEN_FD + 1000 && registry.get(fd) ? k / 2 : -1;
+      },
+    });
   }
 
   // Diagnostics: keep the last `trace` WASI calls in a ring so a guest abort
@@ -945,6 +972,11 @@ export function makeSpawner({
   fsMode = 'copy',
   bundleUrl = null,
   poolChannels = [],
+  // `--fs broker` with wasm/broker-fs.js's gather option: every slot's adapter makes one broker
+  // write per `fd_pwrite`. The channels' payload is sized by whoever minted them.
+  brokerGather = false,
+  // Optional counters (wasm/io-stats.js), handed to every slot with its agent index (slot + 1).
+  ioStats = null,
   // The host-backed fd registry as DESCRIPTORS (see the header): a spawned
   // backend must see the same listener and session fds the process instance
   // does, and it must see them through the same SharedArrayBuffers so a close
@@ -998,6 +1030,9 @@ export function makeSpawner({
       channel: poolChannels[slot] || null,
       pipes,
       fdBase: slotFdBase(slot),
+      // Only when asked for, so a payload without them is byte-for-byte what it always was.
+      ...(brokerGather ? { brokerGather: true } : {}),
+      ...(ioStats ? { ioStats, ioAgent: slot + 1 } : {}),
     };
     w.postMessage(payload, relay ? [imageCopy, relay] : [imageCopy]);
     return rec;

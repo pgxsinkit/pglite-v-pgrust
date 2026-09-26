@@ -1,5 +1,6 @@
 import type { JSX } from "react";
 
+import { BROKER_GATHER_LINE, BROKER_STATS_LINE } from "../broker-switches";
 import type { EnvironmentInfo } from "../environment";
 import { formatEnvironmentLine } from "../environment";
 import { describePgrustModule } from "../pgrust-module";
@@ -84,6 +85,18 @@ export function EnvironmentHeader({ environment }: EnvironmentHeaderProps): JSX.
       {environment.rttIterationsOverride === null ? null : (
         <p className="non-standard-note">{describeRttIterations(environment.rttIterationsOverride)}</p>
       )}
+      {environment.brokerSwitches.stats ? (
+        <p className="non-standard-note" data-testid="broker-stats-note">
+          {`${BROKER_STATS_LINE}: every Suite's Markdown export ends with its store work per Benchmark and ` +
+            "Configuration — the pgrust guests' file calls, the broker's requests and the OPFS access handle calls."}
+        </p>
+      ) : null}
+      {environment.brokerSwitches.gather ? (
+        <p className="non-standard-note" data-testid="broker-gather-note">
+          {`${BROKER_GATHER_LINE}: every pgrust broker column makes one broker write per fd_pwrite, over 256 KiB ` +
+            "channel payloads."}
+        </p>
+      ) : null}
       {environment.pgrustModule === null ? null : (
         <p className="non-standard-note" data-testid="pgrust-module-note">
           {`${describePgrustModule(environment.pgrustModule)}: the six pgrust Threads and Postmaster columns load ` +

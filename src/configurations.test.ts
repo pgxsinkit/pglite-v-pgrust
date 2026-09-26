@@ -1,6 +1,18 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  BROKER_GATHER_LINE,
+  BROKER_GATHER_PARAM,
+  BROKER_STATS_LINE,
+  BROKER_STATS_PARAM,
+  brokerGatherOptions,
+  describeBrokerSwitches,
+  NO_BROKER_SWITCHES,
+  parseBrokerSwitches,
+  readBrokerSwitches,
+  storeStatsOptions,
+} from "./broker-switches";
+import {
   BASELINE_CANDIDATE_IDS,
   BASELINE_CONFIGURATION_DIALECT,
   BASELINE_CONFIGURATION_ID,
@@ -289,5 +301,61 @@ describe("the alternate pgrust threads module", () => {
     expect(Object.keys(pgrustModuleOptions(null))).toEqual([]);
     expect(pgrustModuleOptions("3624f82c")).toEqual({ alternateModule: "3624f82c" });
     expect(describePgrustModule("3624f82c")).toBe("pgrust module: 3624f82c (alternate)");
+  });
+});
+
+// `?brokerStats=1` counts every Measurement's store work and `?brokerGather=1` turns on the pgrust
+// broker's gathered writes; neither may change a Configuration's options when it is off.
+describe("the store-seam switches", () => {
+  test("turn on for exactly `1`, and are ignored for anything else", () => {
+    expect(parseBrokerSwitches(`?${BROKER_STATS_PARAM}=1`)).toEqual({ stats: true, gather: false });
+    expect(parseBrokerSwitches(`?${BROKER_GATHER_PARAM}=1`)).toEqual({ stats: false, gather: true });
+    expect(parseBrokerSwitches(`?${BROKER_STATS_PARAM}=1&${BROKER_GATHER_PARAM}=1`)).toEqual({
+      stats: true,
+      gather: true,
+    });
+    expect(parseBrokerSwitches(`?${BROKER_STATS_PARAM}=%201%20`)).toEqual({ stats: true, gather: false });
+    for (const value of ["", "0", "true", "on", "yes", "2"]) {
+      expect(parseBrokerSwitches(`?${BROKER_STATS_PARAM}=${value}&${BROKER_GATHER_PARAM}=${value}`)).toEqual(
+        NO_BROKER_SWITCHES,
+      );
+    }
+    expect(parseBrokerSwitches("")).toEqual(NO_BROKER_SWITCHES);
+  });
+
+  test("announce themselves in a fixed order, and say nothing when off", () => {
+    expect(describeBrokerSwitches(NO_BROKER_SWITCHES)).toEqual([]);
+    expect(describeBrokerSwitches({ stats: true, gather: true })).toEqual([BROKER_STATS_LINE, BROKER_GATHER_LINE]);
+    expect(BROKER_STATS_LINE).toBe("broker stats: on");
+    expect(BROKER_GATHER_LINE).toBe("broker gather: on");
+  });
+
+  test("add nothing to the open options unless they are on", () => {
+    expect(Object.keys(storeStatsOptions(NO_BROKER_SWITCHES))).toEqual([]);
+    expect(Object.keys(brokerGatherOptions(NO_BROKER_SWITCHES))).toEqual([]);
+    expect(storeStatsOptions({ stats: true, gather: false })).toEqual({ storeStats: true });
+    expect(brokerGatherOptions({ stats: false, gather: true })).toEqual({ brokerGather: true });
+  });
+
+  test("are read as off where there is no page URL, so every default Configuration is unchanged", () => {
+    expect(readBrokerSwitches()).toEqual(NO_BROKER_SWITCHES);
+    for (const config of CONFIGURATIONS) {
+      expect(config.options?.storeStats).toBeUndefined();
+      expect(config.options?.pgrustThreads?.brokerGather).toBeUndefined();
+      expect(config.options?.pgrustPostmaster?.brokerGather).toBeUndefined();
+    }
+    // The two single-session pgrust columns and every Memory column that has nothing to count carry
+    // no options at all, exactly as before the switch existed.
+    for (const id of ["pglite-memory", "pglite-memory-unlogged", "pgrust-memory", "pgrust-memory-unlogged"]) {
+      expect(findConfiguration(id)?.options).toBeUndefined();
+    }
+  });
+
+  test("gather only on the broker columns: the copy seam has no broker to gather for", () => {
+    for (const id of BROKER_CONFIGURATION_IDS) {
+      const config = findConfiguration(id);
+      expect(config?.options?.pgrustThreads?.fs ?? "broker").toBe("broker");
+    }
+    expect(findConfiguration("pgrust-threads-memory")?.options?.pgrustThreads?.fs).toBe("copy");
   });
 });

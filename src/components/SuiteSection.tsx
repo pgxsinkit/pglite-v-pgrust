@@ -10,7 +10,7 @@ import { configurationDialect } from "../engines/contract";
 import type { EngineStats } from "../engines/protocol";
 import type { EnvironmentInfo } from "../environment";
 import { formatEnvironmentLine } from "../environment";
-import type { GridCells, GridColumn, GridDetails, ResultsGrid } from "../results/grid";
+import type { GridCells, GridColumn, GridDetails, GridStoreStats, ResultsGrid } from "../results/grid";
 import { cellKey } from "../results/grid";
 import { toMarkdown } from "../results/markdown";
 import { applyRttIterations, describeRttIterations } from "../rtt-iterations";
@@ -96,6 +96,12 @@ export function SuiteSection({ suite, environment, configurations, baseline }: S
   const [warmupCells, setWarmupCells] = useState<GridCells>({});
   /** The Detail of the cells that have one; keyed exactly as the cells are. */
   const [details, setDetails] = useState<GridDetails>({});
+  /**
+   * The store work behind each cell, keyed exactly as the cells are, and the Warm-up's keyed by
+   * Configuration id — both empty unless `?brokerStats=1` asked for it.
+   */
+  const [storeStats, setStoreStats] = useState<GridStoreStats>({});
+  const [warmupStoreStats, setWarmupStoreStats] = useState<GridStoreStats>({});
   const [runState, setRunState] = useState<RunState>("idle");
   const [activeColumnId, setActiveColumnId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -146,7 +152,8 @@ export function SuiteSection({ suite, environment, configurations, baseline }: S
     baselineColumnId: baseline?.id ?? "",
     cells,
     details,
-    warmup: { label: WARMUP_LABEL, cells: warmupCells },
+    storeStats,
+    warmup: { label: WARMUP_LABEL, cells: warmupCells, storeStats: warmupStoreStats },
   };
 
   /** Recomputed every render, so the exported element and the clipboard can never disagree. */
@@ -163,6 +170,7 @@ export function SuiteSection({ suite, environment, configurations, baseline }: S
     baselineLabel,
     ...(runnableSuite.headerLine === undefined ? {} : { suiteLine: runnableSuite.headerLine }),
     warmupLine: WARMUP_EXPORT_LINE,
+    measurementsPerBenchmark: runnableSuite.iterations,
   });
 
   function recordFailure(configuration: Configuration, message: string): void {
@@ -178,6 +186,8 @@ export function SuiteSection({ suite, environment, configurations, baseline }: S
     setCells({});
     setWarmupCells({});
     setDetails({});
+    setStoreStats({});
+    setWarmupStoreStats({});
     setFailures({});
     setEngineStats({});
     try {
@@ -199,6 +209,10 @@ export function SuiteSection({ suite, environment, configurations, baseline }: S
             warmupSql: WARMUP_SQL,
             onWarmup: (result) => {
               setWarmupCells((previous) => ({ ...previous, [result.configurationId]: result.elapsedMs }));
+              const counted = result.storeStats;
+              if (counted !== undefined) {
+                setWarmupStoreStats((previous) => ({ ...previous, [result.configurationId]: counted }));
+              }
             },
             onStats: (configurationId, stats) => {
               setEngineStats((previous) => ({ ...previous, [configurationId]: stats }));
@@ -213,6 +227,13 @@ export function SuiteSection({ suite, environment, configurations, baseline }: S
                 setDetails((previous) => ({
                   ...previous,
                   [cellKey(result.configurationId, result.benchmarkId)]: detail,
+                }));
+              }
+              const counted = result.storeStats;
+              if (counted !== undefined) {
+                setStoreStats((previous) => ({
+                  ...previous,
+                  [cellKey(result.configurationId, result.benchmarkId)]: counted,
                 }));
               }
             },

@@ -3,6 +3,9 @@ import { describe, expect, test } from "bun:test";
 import type { ResultsGrid } from "./grid";
 import { cellKey } from "./grid";
 import { markdownHeaderCells, toMarkdown } from "./markdown";
+import { STORE_STATS_HEADING } from "./store-markdown";
+import type { StoreKindTotals, StoreStats } from "./store-stats";
+import { GUEST_KINDS, HANDLE_KINDS } from "./store-stats";
 
 const GRID: ResultsGrid = {
   rows: [
@@ -238,5 +241,115 @@ describe("toMarkdown, a column the Suite does not run on", () => {
   test("reports every row of it skipped, the Warm-up included, and never a ratio", () => {
     expect(lines[6]).toBe("| Warm-up | 60.000 | skipped | – |");
     expect(lines[7]).toBe(`${PREPARED_LINE} 805.000 | skipped | – |`);
+  });
+});
+
+/** A table of totals with one kind set and every other kind zero. */
+function onlyKind<K extends string>(kinds: readonly K[], kind: K, totals: StoreKindTotals): Record<K, StoreKindTotals> {
+  const table = Object.fromEntries(kinds.map((each) => [each, { calls: 0, bytes: 0, ms: 0 }])) as Record<
+    K,
+    StoreKindTotals
+  >;
+  table[kind] = totals;
+  return table;
+}
+
+describe("toMarkdown, a Run that counted store work (`?brokerStats=1`)", () => {
+  const writes = onlyKind(GUEST_KINDS, "write", { calls: 32, bytes: 32 * 8192, ms: 4.5 });
+  const backendWrites = onlyKind(GUEST_KINDS, "write", { calls: 30, bytes: 30 * 8192, ms: 4 });
+  const broker: StoreStats = {
+    guest: { all: writes, backend: backendWrites },
+    broker: {
+      requests: { read: 0, write: 32, fsync: 1, allocate: 0, open: 0, close: 0, stat: 2, other: 0 },
+      servingMs: 1.75,
+    },
+    handles: onlyKind(HANDLE_KINDS, "flush", { calls: 1, bytes: 0, ms: 1.25 }),
+  };
+  const copySeam: StoreStats = { guest: { all: writes, backend: writes } };
+  const pgliteOpfs: StoreStats = { handles: onlyKind(HANDLE_KINDS, "write", { calls: 8, bytes: 8 * 8192, ms: 0.5 }) };
+  const grid: ResultsGrid = {
+    rows: [{ id: "1", label: "Test 1: 1000 INSERTs" }],
+    columns: [
+      { id: "pglite-memory", label: "PGlite Memory", available: true },
+      { id: "pglite-opfs-repacked-relaxed", label: "PGlite OPFS repacked (relaxed)", available: true },
+      { id: "pgrust-threads-memory", label: "pgrust Threads Memory", available: true },
+      { id: "pgrust-postmaster-opfs-repacked-relaxed", label: "pgrust Postmaster OPFS", available: true },
+    ],
+    baselineColumnId: "pglite-memory",
+    cells: {
+      [cellKey("pglite-memory", "1")]: 16,
+      [cellKey("pglite-opfs-repacked-relaxed", "1")]: 20,
+      [cellKey("pgrust-threads-memory", "1")]: 18,
+      [cellKey("pgrust-postmaster-opfs-repacked-relaxed", "1")]: 40,
+    },
+    storeStats: {
+      [cellKey("pglite-opfs-repacked-relaxed", "1")]: pgliteOpfs,
+      [cellKey("pgrust-threads-memory", "1")]: copySeam,
+      [cellKey("pgrust-postmaster-opfs-repacked-relaxed", "1")]: broker,
+    },
+    warmup: {
+      label: "Warm-up",
+      cells: { "pgrust-postmaster-opfs-repacked-relaxed": 90 },
+      storeStats: { "pgrust-postmaster-opfs-repacked-relaxed": broker },
+    },
+  };
+  const markdown = toMarkdown(grid, OPTIONS);
+  const lines = markdown.split("\n");
+  const rowOf = (prefix: string, heading: string): string | undefined =>
+    lines.slice(lines.indexOf(heading)).find((line) => line.startsWith(prefix));
+
+  test("puts the store work under the results table, and only on a Run that counted it", () => {
+    expect(lines).toContain(STORE_STATS_HEADING);
+    expect(lines.indexOf(STORE_STATS_HEADING)).toBeGreaterThan(lines.findIndex((line) => line.startsWith("| Test 1")));
+    expect(toMarkdown({ ...grid, storeStats: {}, warmup: { label: "Warm-up", cells: {} } }, OPTIONS)).not.toContain(
+      STORE_STATS_HEADING,
+    );
+    expect(toMarkdown(GRID, OPTIONS)).not.toContain("Store work");
+  });
+
+  test("leaves the results table byte-identical to the same grid without store work", () => {
+    const without = toMarkdown(
+      { ...grid, storeStats: {}, warmup: { label: "Warm-up", cells: grid.warmup?.cells ?? {} } },
+      OPTIONS,
+    );
+    expect(markdown.startsWith(without.trimEnd())).toBe(true);
+  });
+
+  test("gives every pgrust Configuration a guest file-call row: calls · ms by kind, bytes, backend and all", () => {
+    expect(rowOf("| Test 1: 1000 INSERTs | pgrust Threads Memory |", "##### pgrust guest file calls")).toBe(
+      "| Test 1: 1000 INSERTs | pgrust Threads Memory | 18.000 | 0 | 32 · 4.50 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0.0 | 256.0 | 4.50 | 4.50 |",
+    );
+    expect(rowOf("| Test 1: 1000 INSERTs | pgrust Postmaster OPFS |", "##### pgrust guest file calls")).toContain(
+      "| 4.00 | 4.50 |",
+    );
+  });
+
+  test("gives the broker Configurations a row of requests, blocked and serving ms, and both per request", () => {
+    expect(rowOf("| Test 1: 1000 INSERTs | pgrust Postmaster OPFS |", "##### Broker")).toBe(
+      "| Test 1: 1000 INSERTs | pgrust Postmaster OPFS | 40.000 | 0 | 32 | 1 | 0 | 0 | 0 | 2 | 0 | 35 | 0.0 | 256.0 | 4.00 | 4.50 | 1.75 | 129 | 50 |",
+    );
+    expect(rowOf("| Test 1: 1000 INSERTs | pgrust Threads Memory |", "##### Broker")).toBeUndefined();
+  });
+
+  test("gives every OPFS Configuration, PGlite's too, a row of access handle calls", () => {
+    const handleRows = lines.slice(lines.indexOf("##### OPFS access handles")).filter((line) => line.startsWith("| "));
+    expect(handleRows.map((line) => line.split(" | ")[1])).toEqual([
+      "Configuration",
+      "---",
+      "pgrust Postmaster OPFS",
+      "PGlite OPFS repacked (relaxed)",
+      "pgrust Postmaster OPFS",
+    ]);
+    expect(rowOf("| Test 1: 1000 INSERTs | PGlite OPFS repacked (relaxed) |", "##### OPFS access handles")).toBe(
+      "| Test 1: 1000 INSERTs | PGlite OPFS repacked (relaxed) | 20.000 | 0 | 8 · 0.50 | 0 | 0 | 0 | 0.0 | 64.0 | 0.50 |",
+    );
+  });
+
+  test("leads each table with the Warm-up, and says what a row sums", () => {
+    expect(rowOf("| Warm-up |", "##### Broker")).toContain("| Warm-up | pgrust Postmaster OPFS | 90.000 |");
+    expect(markdown).toContain("Each row is one Measurement's store work.");
+    expect(toMarkdown(grid, { ...OPTIONS, measurementsPerBenchmark: 100 })).toContain(
+      "Each Benchmark's row is the sum over its 100 Measurements",
+    );
   });
 });

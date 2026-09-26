@@ -22,6 +22,8 @@
  *   Suite states the mode in the column header so the number underneath can be read.
  */
 
+import type { StoreStats } from "../results/store-stats";
+
 /** One statement, run once. */
 export interface ScenarioStatementStep {
   readonly sql: string;
@@ -128,6 +130,11 @@ export interface ScenarioReport {
   /** The Scenario's wall time: from the first Client starting to the last one finishing. */
   readonly totalMs: number;
   readonly clients: readonly ScenarioClientReport[];
+  /**
+   * What the store did while the Scenario ran, on a Run with `?brokerStats=1`; attached by the
+   * runner from the worker's answer, never by the Scenario runner itself.
+   */
+  readonly storeStats?: StoreStats;
 }
 
 /** Apply a rewrite to every SQL string in a Scenario — a Configuration's `modSql`, and nothing else. */

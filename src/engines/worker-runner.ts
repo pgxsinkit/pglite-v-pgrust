@@ -56,11 +56,11 @@ export class WorkerEngineRunner implements EngineRunner {
   }
 
   async measure(sql: string): Promise<Measurement> {
-    const { measurement } = await this.#call({ kind: "measure", sql });
+    const { measurement, storeStats } = await this.#call({ kind: "measure", sql });
     if (measurement === null) {
       throw new Error("Engine worker returned no Measurement for a measure request");
     }
-    return measurement;
+    return storeStats === undefined ? measurement : { ...measurement, storeStats };
   }
 
   async scalar(sql: string): Promise<{ readonly elapsedMs: number; readonly value: string | null }> {
@@ -79,11 +79,11 @@ export class WorkerEngineRunner implements EngineRunner {
    * trip between every statement and make the main thread the thing that serialises them.
    */
   async concurrent(scenario: ConcurrentScenario): Promise<ScenarioReport> {
-    const { report } = await this.#call({ kind: "concurrent", scenario });
+    const { report, storeStats } = await this.#call({ kind: "concurrent", scenario });
     if (report === undefined) {
       throw new Error("Engine worker returned no report for a concurrent request");
     }
-    return report;
+    return storeStats === undefined ? report : { ...report, storeStats };
   }
 
   async stats(): Promise<EngineStats> {

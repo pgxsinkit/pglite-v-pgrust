@@ -578,6 +578,41 @@ Markdown export carry `pgrust module: 3624f82c (alternate)`. The pair to compare
 `bun run sync:pgrust --alt-release pgrust-assets/<commit>` (repeatable) installs an alternate for a
 local build, and `bun run bench --pgrust-module <commit>` drives one headlessly.
 
+### `?brokerStats=1` and `?brokerGather=1` — the store seam, per Benchmark
+
+Two diagnostic switches, off by default, for asking a phone what the pgrust broker crossing costs
+each Benchmark.
+
+`?brokerStats=1` counts the store work of every Measurement and adds a **Store work** section under
+each Suite's results table in the Markdown export, one row per Benchmark per Configuration, the
+Warm-up first:
+
+- **pgrust guest file calls** — every pgrust column, broker or not: the WASI file calls the guest
+  made, by kind (`calls · ms`), the bytes read and written, and the ms spent inside them by the
+  Session's backend and by every guest thread. On a broker seam that time is the thread blocked on
+  the coordinator; on the copy seam and the single-session build it is the in-memory filesystem's.
+- **Broker** — the broker columns: the requests the coordinator answered by kind, the blocked ms,
+  the coordinator's own ms answering, and both per request.
+- **OPFS access handles** — every OPFS column, PGlite's too: the synchronous access handle calls by
+  kind, with bytes and ms, counted by the same code in both engines.
+
+The counters are read outside the Measurement window; what they cost is a clock read on either side
+of every file call and handle call, which is inside it — which is why this is a switch.
+
+`?brokerGather=1` is the one pgrust-only broker lever: every broker column's guests make one broker
+write per `fd_pwrite` instead of one per iovec, over channels with room for 256 KiB of data per
+request instead of the store library's 64 KiB of payload (pgrust's `wasm/broker-fs.js`). The broker
+is pgrust's transport, not the store, so PGlite's columns are unaffected by construction.
+
+Both are never silent: the environment header and every Markdown export carry `broker stats: on`
+and `broker gather: on`. The phone ladder, PGlite Memory to the postmaster on OPFS with PGlite's OPFS
+column beside it, and the same with the gathered writes:
+
+- <https://pgxsinkit.github.io/pglite-v-pgrust/?brokerStats=1&configurations=pglite-memory,pglite-opfs-repacked-relaxed,pgrust-threads-memory,pgrust-threads-memory-broker,pgrust-postmaster-memory-broker,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-memory>
+- <https://pgxsinkit.github.io/pglite-v-pgrust/?brokerStats=1&brokerGather=1&configurations=pglite-memory,pglite-opfs-repacked-relaxed,pgrust-threads-memory,pgrust-threads-memory-broker,pgrust-postmaster-memory-broker,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-memory>
+
+`bun run bench --broker-stats [--broker-gather]` drives them headlessly.
+
 ## pgrust assets
 
 PGlite installs from npm; pgrust does not. Its host JavaScript is vendored into this repo and
@@ -1073,6 +1108,8 @@ bun run bench --suite rtt \
 | `--configurations <id,id>` | Passes `?configurations=` to the page: only these columns, in Configuration order; repeatable |
 | `--baseline <id>`          | Passes `?baseline=` to the page: the column every ratio is taken against                      |
 | `--pgrust-module <id>`     | Passes `?pgrustModule=` to the page: the threads columns on the alternate module `<id>`       |
+| `--broker-stats`           | Passes `?brokerStats=1` to the page: the store tables under every Suite's results table       |
+| `--broker-gather`          | Passes `?brokerGather=1` to the page: one pgrust broker write per `fd_pwrite`                 |
 | `--ephemeral-context`      | The pre-2026-09-24 lane: an off-the-record context, OPFS in memory in the browser process     |
 | `--keep-profile`           | Leave the persistent context's profile in `tmp/bench-profiles/` after the Run                 |
 | `--no-build`               | Reuse the existing `dist/` instead of rebuilding                                              |

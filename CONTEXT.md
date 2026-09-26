@@ -48,6 +48,10 @@ _Avoid_: flag, event, barrier, latch
 The supporting numbers of a Measurement whose single figure cannot say what happened — per-Client percentiles, statement counts, SQLSTATE counts, the writer's own total. It is rendered under the table in the Markdown export (one line per Configuration per Benchmark) and folded away under the row in the page; never inside a cell, which is one number.
 _Avoid_: metadata, extras, breakdown, stats
 
+**Store work**:
+What a Configuration's store did while one Measurement ran, counted only when the page is opened with `?brokerStats=1`: on every pgrust Configuration the guest's file calls by kind (bytes, and the ms spent inside them by the Session's backend and by every guest thread), on the Broker ones the requests the coordinator answered and the ms it spent answering, and on every Storage Configuration on OPFS — PGlite's included — the synchronous access handle calls by kind. It is exported as tables of its own under the results table (one row per Benchmark per Configuration, summed over the Benchmark's Measurements), never in a cell and never in a Detail.
+_Avoid_: IO stats, broker counts, store counters (the counters are how it is measured, not what it is)
+
 **Engine**:
 One of the WebAssembly databases under comparison: PGlite, pgrust, pgrust Threads, pgrust Postmaster, or wa-sqlite. PGlite and the pgrust Engines are the subjects; wa-sqlite is the Reference Engine.
 _Avoid_: database, backend, target, implementation

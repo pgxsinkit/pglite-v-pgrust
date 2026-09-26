@@ -7,6 +7,7 @@
  * browser is not stored here — it is computed at runtime in `./availability`.
  */
 
+import type { StoreStats } from "../results/store-stats";
 import type { EngineStats } from "./protocol";
 import type { ConcurrentScenario, ScenarioReport } from "./scenario";
 
@@ -62,6 +63,12 @@ export function engineDialect(engine: EngineId): SqlDialect {
 export interface Measurement {
   readonly elapsedMs: number;
   readonly detail?: MeasurementDetail;
+  /**
+   * The store work done while the Measurement ran, on a Run with `?brokerStats=1`
+   * (`src/broker-switches.ts`); absent otherwise. Counted outside the Measurement window and never
+   * part of the number: it is exported as a table of its own under the results table.
+   */
+  readonly storeStats?: StoreStats;
 }
 
 /** A Measurement's supporting numbers, in the order they should be read. Keys carry their own units. */
@@ -128,6 +135,13 @@ export interface PgrustThreadsOpenOptions {
    * line of every table it produces.
    */
   readonly alternateModule?: string;
+  /**
+   * The broker's gathered writes: one broker write per `fd_pwrite`, over 256 KiB channel payloads
+   * (`wasm/broker-fs.js`). Only meaningful with `fs: "broker"`. No Configuration sets it of its own;
+   * `?brokerGather=1` spreads it into every broker column (see `src/broker-switches.ts`), and the
+   * environment line of every table it produces says so.
+   */
+  readonly brokerGather?: boolean;
 }
 
 /**
@@ -185,6 +199,8 @@ export interface PgrustPostmasterOpenOptions {
   readonly initialMemoryBytes?: number;
   /** An alternate threads module, exactly as {@link PgrustThreadsOpenOptions.alternateModule}. */
   readonly alternateModule?: string;
+  /** The broker's gathered writes, exactly as {@link PgrustThreadsOpenOptions.brokerGather}. */
+  readonly brokerGather?: boolean;
   /**
    * A **prepared store** to boot on: one `.repacked.tar.gz` holding the four files a repacked store
    * IS, written into this Configuration's OPFS store directory before the coordinator opens it.
@@ -262,6 +278,14 @@ export interface EngineOpenOptions {
    * Suite says which mode each column ran in.
    */
   readonly sessions?: number;
+  /**
+   * Count the store work of every Measurement (`?brokerStats=1`, see `src/broker-switches.ts`).
+   *
+   * A Run setting rather than an Engine's, like `sessions`, and spread into every Configuration that
+   * has store work to count: every pgrust one, and PGlite's OPFS pair. An Engine with nothing to
+   * count ignores it.
+   */
+  readonly storeStats?: boolean;
 }
 
 /** The PGlite-shaped subset of the open settings; `undefined` when there is nothing to pass. */

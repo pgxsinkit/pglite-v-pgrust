@@ -13,8 +13,13 @@
  * Deliberately no wasm module cache (the pgrust demo keeps one in IndexedDB): a benchmark must not
  * carry hidden state between Runs, and a compile that sometimes happens and sometimes does not is
  * exactly that. Every Run pays the same, visible boot cost outside the measured window.
+ *
+ * With `?brokerStats=1` the session is handed the vendored host's store counters, and every
+ * `measure` and `concurrent` answer carries the guest's file calls on its in-memory `Vfs`: the one
+ * thread there is, which is also the Session's backend.
  */
 
+import { IoStats } from "../../vendor/pgrust/io-stats.js";
 import { Vfs } from "../../vendor/pgrust/pgrust-wasi.js";
 import type { VfsManifest } from "../../vendor/pgrust/pgrust-wasi.js";
 import { defaultWireArgv, jspiSupported, WireSession, WireSessionDead } from "../../vendor/pgrust/wiresession.js";
@@ -22,6 +27,7 @@ import { JSPI_REQUIREMENT_MESSAGE } from "../availability";
 import { toErrorPayload } from "../protocol";
 import type { EngineOkResponse, EngineReadyMessage, EngineRequest, EngineResponse } from "../protocol";
 import { runScenario } from "../scenario-runner";
+import { aroundStoreStats, StoreStatsProbe } from "../store-stats-probe";
 import type { QueryResult } from "./pgwire";
 import { assertNoQueryError, decodeQueryResult } from "./pgwire";
 import { wireScenarioExecutor } from "./wire-executor";
@@ -39,6 +45,9 @@ const SYNC_HINT = "Run `bun run sync:pgrust` after building the pgrust wasm asse
 const MAX_STDERR_CHARS = 4_000;
 
 let session: WireSession | null = null;
+
+/** The guest's file-call counters, on a Run with `?brokerStats=1`; null otherwise. */
+let storeStats: StoreStatsProbe | null = null;
 
 /** One decoder for the whole session: a multi-byte character can straddle two stderr chunks. */
 const stderrDecoder = new TextDecoder("utf-8", { fatal: false });
@@ -105,7 +114,7 @@ async function compileEngineModule(url: string): Promise<WebAssembly.Module> {
   return WebAssembly.compile(await buffered.arrayBuffer());
 }
 
-async function openEngine(dataDir: string, relaxedDurability: boolean): Promise<void> {
+async function openEngine(dataDir: string, relaxedDurability: boolean, countStore: boolean): Promise<void> {
   if (!jspiSupported()) {
     throw new Error(JSPI_REQUIREMENT_MESSAGE);
   }
@@ -125,7 +134,18 @@ async function openEngine(dataDir: string, relaxedDurability: boolean): Promise<
   // The VFS takes ownership of the image, and the worker is discarded after one Run, so the freshly
   // fetched bytes can be handed over directly — there is no pristine template to preserve here.
   const vfs = new Vfs(image, manifest);
-  const started = new WireSession({ wasmModule, vfs, argv: defaultWireArgv(), onStderr: collectStderr });
+  // One agent, in this worker: a plain buffer where the page has no SharedArrayBuffer to give.
+  const stats = countStore
+    ? IoStats.create({ agents: 1, shared: typeof SharedArrayBuffer === "function" && ctx.crossOriginIsolated })
+    : null;
+  storeStats = stats === null ? null : new StoreStatsProbe(stats, { guest: true, broker: false, handles: false });
+  const started = new WireSession({
+    wasmModule,
+    vfs,
+    argv: defaultWireArgv(),
+    onStderr: collectStderr,
+    ...(stats === null ? {} : { ioStats: stats.buffer }),
+  });
   try {
     await started.start();
   } catch (error: unknown) {
@@ -172,7 +192,11 @@ async function scenarioQuery(sql: string): Promise<QueryResult> {
 async function handle(request: EngineRequest): Promise<void> {
   switch (request.kind) {
     case "open": {
-      await openEngine(request.dataDir, request.options?.relaxedDurability === true);
+      await openEngine(
+        request.dataDir,
+        request.options?.relaxedDurability === true,
+        request.options?.storeStats === true,
+      );
       ok(request.id, null);
       return;
     }
@@ -183,15 +207,31 @@ async function handle(request: EngineRequest): Promise<void> {
       return;
     }
     case "measure": {
-      const { result, elapsedMs } = await measureQuery(request.sql);
+      const {
+        value: { result, elapsedMs },
+        storeStats: counted,
+      } = await aroundStoreStats(storeStats, async () => await measureQuery(request.sql));
       assertNoQueryError(result);
-      ok(request.id, { elapsedMs });
+      post({
+        kind: "ok",
+        id: request.id,
+        measurement: { elapsedMs },
+        ...(counted === undefined ? {} : { storeStats: counted }),
+      });
       return;
     }
     case "concurrent": {
       requireSession();
-      const report = await runScenario(request.scenario, wireScenarioExecutor(scenarioQuery));
-      post({ kind: "ok", id: request.id, measurement: null, report });
+      const { value: report, storeStats: counted } = await aroundStoreStats(storeStats, async () =>
+        runScenario(request.scenario, wireScenarioExecutor(scenarioQuery)),
+      );
+      post({
+        kind: "ok",
+        id: request.id,
+        measurement: null,
+        report,
+        ...(counted === undefined ? {} : { storeStats: counted }),
+      });
       return;
     }
     case "stats": {
@@ -204,6 +244,7 @@ async function handle(request: EngineRequest): Promise<void> {
     case "close": {
       const engine = session;
       session = null;
+      storeStats = null;
       await engine?.terminate();
       ok(request.id, null);
       return;

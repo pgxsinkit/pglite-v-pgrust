@@ -41,12 +41,20 @@
  * Deliberately no wasm module cache and no reuse of anything across Runs, for the same reason the
  * single-session worker has none: a benchmark must not carry hidden state, and every worker this
  * one creates is terminated in `close`.
+ *
+ * **The two store-seam switches.** With `?brokerStats=1` this worker hands the process worker, every
+ * pool slot through it, and the coordinator one buffer of the vendored host's store counters, and
+ * every `measure` and `concurrent` answer carries what moved in it: the guest's file calls on either
+ * seam, the broker's requests and the coordinator's OPFS handle calls. With `?brokerGather=1` a
+ * broker column's guests make one broker write per `fd_pwrite`, over channels minted at the host's
+ * gather payload instead of the library's 64 KiB.
  */
 
 import { removeOpfsDirectory } from "../../opfs";
 import { threadsModulePath } from "../../pgrust-module";
 import type * as BrokerFs from "../../vendor/pgrust/broker-fs.js";
 import type { RepackedChannel, RepackedDoorbell } from "../../vendor/pgrust/broker-fs.js";
+import { IoStats } from "../../vendor/pgrust/io-stats.js";
 import type { VfsManifest } from "../../vendor/pgrust/pgrust-wasi.js";
 import type * as SabPipes from "../../vendor/pgrust/sab-pipe.js";
 import type { SabPipe } from "../../vendor/pgrust/sab-pipe.js";
@@ -63,6 +71,7 @@ import { wireScenarioExecutor } from "../pgrust/wire-executor";
 import { toErrorPayload } from "../protocol";
 import type { EngineOkResponse, EngineReadyMessage, EngineRequest, EngineResponse, EngineStats } from "../protocol";
 import { runScenario } from "../scenario-runner";
+import { aroundStoreStats, StoreStatsProbe } from "../store-stats-probe";
 
 /**
  * The three vendored host modules, loaded from `public/pgrust/host/` rather than bundled.
@@ -260,6 +269,9 @@ let session: ThreadsSession | null = null;
  */
 let storeDirectory: string | null = null;
 
+/** The store counters, on a Run with `?brokerStats=1`; null otherwise. */
+let storeStats: StoreStatsProbe | null = null;
+
 async function fetchAsset(url: string): Promise<Response> {
   let response: Response;
   try {
@@ -382,6 +394,7 @@ async function startStorageCoordinator(
   manifest: VfsManifest,
   storageStopped: Gate,
   settings: StoragePortSettings,
+  seam: { readonly ioStats: IoStats | null; readonly gather: boolean },
 ): Promise<StorageCoordinator> {
   const bundleUrl = brokerFs.repackedBundleUrl(HOST_BASE);
   let bundle;
@@ -399,7 +412,12 @@ async function startStorageCoordinator(
   // One channel per pool slot PLUS one for the process instance: the protocol is one request in
   // flight per channel, so two agents may never share one.
   const channels = Array.from({ length: POOL_SIZE + 1 }, (_unused, index) =>
-    bundle.RepackedChannel.create({ id: index + 1, doorbell }),
+    bundle.RepackedChannel.create({
+      id: index + 1,
+      doorbell,
+      // `?brokerGather=1`: room for 256 KiB of data per request, where the library's default is 64 KiB.
+      ...(seam.gather ? { payloadBytes: brokerFs.GATHER_PAYLOAD_BYTES } : {}),
+    }),
   );
 
   const worker = host.makeWorker(host.storageWorkerUrl(HOST_BASE), { name: "pgrust-threads-storage" });
@@ -454,6 +472,7 @@ async function startStorageCoordinator(
       channels: channels.map((channel) => channel.transfer()),
       doorbell: doorbell.buffer,
       options: storageBootOptions(settings),
+      ...(seam.ioStats === null ? {} : { ioStats: seam.ioStats.buffer }),
     },
     [image],
   );
@@ -511,6 +530,15 @@ async function openEngine(dataDir: string, options: EngineOpenOptions | undefine
   const exited = gate();
   const storageStopped = gate();
 
+  // `?brokerStats=1`: one agent for the process instance plus one per pool slot, as the host numbers
+  // them. `?brokerGather=1` only means anything on the broker seam.
+  const ioStats = options?.storeStats === true ? IoStats.create({ agents: POOL_SIZE + 1 }) : null;
+  storeStats =
+    ioStats === null
+      ? null
+      : new StoreStatsProbe(ioStats, { guest: true, broker: fs === "broker", handles: port === "opfs" });
+  const gather = fs === "broker" && threads?.brokerGather === true;
+
   // The coordinator goes first and its store must be seeded before the first backend can ask for a
   // file: once its blocking serve loop is entered it never reaches its event loop again, so there
   // is no attaching anything afterwards. It also takes ownership of the packed image.
@@ -522,7 +550,10 @@ async function openEngine(dataDir: string, options: EngineOpenOptions | undefine
     storeDirectory = port === "opfs" ? dataDir : null;
     const settings: StoragePortSettings = { port, durability, directory: dataDir };
     try {
-      storage = await startStorageCoordinator(host, brokerFs, image, manifest, storageStopped, settings);
+      storage = await startStorageCoordinator(host, brokerFs, image, manifest, storageStopped, settings, {
+        ioStats,
+        gather,
+      });
     } catch (error: unknown) {
       // Nothing else is up yet, so this is the whole teardown: it takes the directory away.
       await closeEngine();
@@ -643,6 +674,9 @@ async function openEngine(dataDir: string, options: EngineOpenOptions | undefine
       poolSize: POOL_SIZE,
       trace: 0,
       relayPorts: relayChannels.map((channel) => channel.port2),
+      // Only when asked for, so a default Run's message is exactly what it always was.
+      ...(gather ? { brokerGather: true } : {}),
+      ...(ioStats === null ? {} : { ioStats: ioStats.buffer }),
     },
     [guestImage, ...relayChannels.map((channel) => channel.port2)],
   );
@@ -772,6 +806,7 @@ async function closeEngine(): Promise<void> {
   const engine = session;
   session = null;
   sharedMemory = null;
+  storeStats = null;
   const directory = storeDirectory;
   storeDirectory = null;
   try {
@@ -857,15 +892,31 @@ async function handle(request: EngineRequest): Promise<void> {
       return;
     }
     case "measure": {
-      const { result, elapsedMs } = await measureQuery(request.sql);
+      const {
+        value: { result, elapsedMs },
+        storeStats: counted,
+      } = await aroundStoreStats(storeStats, async () => await measureQuery(request.sql));
       assertNoQueryError(result);
-      ok(request.id, { elapsedMs });
+      post({
+        kind: "ok",
+        id: request.id,
+        measurement: { elapsedMs },
+        ...(counted === undefined ? {} : { storeStats: counted }),
+      });
       return;
     }
     case "concurrent": {
       requireSession();
-      const report = await runScenario(request.scenario, wireScenarioExecutor(scenarioQuery));
-      post({ kind: "ok", id: request.id, measurement: null, report });
+      const { value: report, storeStats: counted } = await aroundStoreStats(storeStats, async () =>
+        runScenario(request.scenario, wireScenarioExecutor(scenarioQuery)),
+      );
+      post({
+        kind: "ok",
+        id: request.id,
+        measurement: null,
+        report,
+        ...(counted === undefined ? {} : { storeStats: counted }),
+      });
       return;
     }
     case "stats": {

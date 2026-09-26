@@ -9,6 +9,7 @@
  */
 
 import type { MeasurementDetail } from "../engines/contract";
+import type { StoreStats } from "./store-stats";
 
 export interface GridRow {
   readonly id: string;
@@ -38,6 +39,12 @@ export type GridCells = Readonly<Record<string, number>>;
 export type GridDetails = Readonly<Record<string, MeasurementDetail>>;
 
 /**
+ * The store work behind the cells, keyed exactly as the cells are, on a Run with `?brokerStats=1`
+ * (`src/broker-switches.ts`); the Warm-up's is keyed by column id alone, as its cells are.
+ */
+export type GridStoreStats = Readonly<Record<string, StoreStats>>;
+
+/**
  * The **Warm-up** line: one Measurement per column, shown above the Benchmarks with a ratio like any
  * row, and never one of them.
  *
@@ -50,6 +57,8 @@ export interface GridWarmup {
   readonly label: string;
   /** The Warm-up's Measurement per column, keyed by column id; a missing key means "not measured yet". */
   readonly cells: GridCells;
+  /** The Warm-up's store work per column, keyed by column id, on a Run that counts it. */
+  readonly storeStats?: GridStoreStats;
 }
 
 export interface ResultsGrid {
@@ -58,6 +67,8 @@ export interface ResultsGrid {
   readonly baselineColumnId: string;
   readonly cells: GridCells;
   readonly details?: GridDetails;
+  /** Present, and exported as tables of their own, only on a Run that counts store work. */
+  readonly storeStats?: GridStoreStats;
   /** Absent for a grid that has no Warm-up line; every Suite Run has one. */
   readonly warmup?: GridWarmup;
 }

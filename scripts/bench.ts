@@ -31,6 +31,8 @@
  *   bun run bench --suite speedtest --configurations pgrust-postmaster-opfs-repacked-relaxed \
  *     --postmaster-tuning fsync=off,wal_buffers=4MB  # a non-standard pgrust Postmaster Run
  *   bun run bench --suite speedtest --pgrust-module 3624f82c  # the threads columns on an alternate module
+ *   bun run bench --suite speedtest --broker-stats            # plus the store tables under each table
+ *   bun run bench --suite speedtest --broker-stats --broker-gather  # the broker's gathered writes too
  *   bun run bench --ephemeral-context              # the pre-2026-09-24 lane: OPFS in memory, one IPC per call
  *   bun run bench --keep-profile                   # leave the Run's profile in tmp/bench-profiles/
  *
@@ -45,6 +47,11 @@
  * `bun run sync:pgrust --alt-release pgrust-assets/<id>`. The page ignores an id its build does not
  * carry, so the lane refuses one whose module is not in `dist/` before it launches a browser, and
  * fails the Run if the page's environment line does not then announce it.
+ *
+ * `--broker-stats` and `--broker-gather` are the page's own `?brokerStats=1` and `?brokerGather=1`
+ * (`src/broker-switches.ts`): the store tables under every Suite's results table, and the pgrust
+ * broker's one write per `fd_pwrite`. The lane fails the Run if the environment line does not then
+ * say `broker stats: on` / `broker gather: on`.
  */
 
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -55,6 +62,7 @@ import type { Browser, BrowserContext, BrowserType, LaunchOptions, Page } from "
 import { chromium, firefox } from "@playwright/test";
 import type { Server } from "bun";
 
+import { BROKER_GATHER_LINE, BROKER_GATHER_PARAM, BROKER_STATS_LINE, BROKER_STATS_PARAM } from "../src/broker-switches";
 import { formatSelectionSearch, resolveConfigurationSelection } from "../src/configuration-selection";
 import { BASELINE_CANDIDATE_IDS, BASELINE_CONFIGURATION_ID, CONFIGURATION_IDS } from "../src/configurations";
 import { describePgrustModule, isPgrustModuleId, PGRUST_MODULE_PARAM, threadsModulePath } from "../src/pgrust-module";
@@ -170,6 +178,10 @@ export interface BenchOptions {
    * `postgres-threads.wasm`, which is what every table this repo publishes was produced with.
    */
   readonly pgrustModule: string | null;
+  /** Count the store work of every Measurement, as `?brokerStats=1`. Off by default. */
+  readonly brokerStats: boolean;
+  /** The pgrust broker's gathered writes, as `?brokerGather=1`. Off by default. */
+  readonly brokerGather: boolean;
   /**
    * The browser context the page lives in: `persistent` unless `--ephemeral-context`. See
    * {@link BrowserContextKind}.
@@ -212,6 +224,8 @@ export const DEFAULT_BENCH_OPTIONS: BenchOptions = {
   baselineId: null,
   postmasterTuning: null,
   pgrustModule: null,
+  brokerStats: false,
+  brokerGather: false,
   contextKind: "persistent",
   keepProfile: false,
   build: true,
@@ -465,6 +479,12 @@ function pageUrl(port: number, options: BenchOptions): string {
   if (options.pgrustModule !== null) {
     params.set(PGRUST_MODULE_PARAM, options.pgrustModule);
   }
+  if (options.brokerStats) {
+    params.set(BROKER_STATS_PARAM, "1");
+  }
+  if (options.brokerGather) {
+    params.set(BROKER_GATHER_PARAM, "1");
+  }
   const query = params.size === 0 ? "" : `?${params.toString()}`;
   const search =
     options.configurationIds === null && options.baselineId === null
@@ -639,6 +659,17 @@ export async function runBench(overrides: Partial<BenchOptions> = {}): Promise<B
             "alternate's name",
         );
       }
+      for (const [asked, param, line] of [
+        [options.brokerStats, BROKER_STATS_PARAM, BROKER_STATS_LINE],
+        [options.brokerGather, BROKER_GATHER_PARAM, BROKER_GATHER_LINE],
+      ] as const) {
+        if (asked && !environmentLine.includes(line)) {
+          throw new Error(
+            `the page did not take ?${param}=1: its environment line does not say "${line}", so this Run ` +
+              "would be the default page under a switched Run's name",
+          );
+        }
+      }
 
       for (const suiteId of options.suites) {
         console.error(`bench: running ${suiteId}…`);
@@ -680,6 +711,10 @@ const USAGE = `Usage: bun run bench [options]
                                        (pool:<n>, initial:<bytes>, name=value GUCs; comma-separated)
   --pgrust-module <id>                 Load the alternate threads module dist/pgrust/alt/<id>/ in the
                                        threads and postmaster columns, as the page's ?pgrustModule=
+  --broker-stats                       Count every Measurement's store work, as the page's
+                                       ?brokerStats=1: store tables under each results table
+  --broker-gather                      One pgrust broker write per fd_pwrite over 256 KiB channel
+                                       payloads, as the page's ?brokerGather=1
   --ephemeral-context                  The pre-2026-09-24 lane: an off-the-record context, OPFS in
                                        memory in the browser process, one IPC per call (default: a
                                        persistent context on a fresh profile in tmp/bench-profiles/)
@@ -844,6 +879,8 @@ export function parseBenchArguments(rawArgv: readonly string[]): CliInvocation {
     baselineId?: string;
     postmasterTuning?: string;
     pgrustModule?: string;
+    brokerStats?: boolean;
+    brokerGather?: boolean;
     contextKind?: BrowserContextKind;
     keepProfile?: boolean;
     build?: boolean;
@@ -897,6 +934,12 @@ export function parseBenchArguments(rawArgv: readonly string[]): CliInvocation {
       case "--pgrust-module":
         index += 1;
         options.pgrustModule = parsePgrustModuleArgument(requireValue(argv, index, flag), flag);
+        break;
+      case "--broker-stats":
+        options.brokerStats = true;
+        break;
+      case "--broker-gather":
+        options.brokerGather = true;
         break;
       case "--ephemeral-context":
         options.contextKind = "ephemeral";

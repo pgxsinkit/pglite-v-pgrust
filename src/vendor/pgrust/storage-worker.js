@@ -93,6 +93,13 @@
 // `options.extentSize`. It is an identity of an EXISTING store: reopening with a different
 // one raises `ExtentSizeMismatchError`, which is reported by name like every other store error.
 
+// COUNTERS (`msg.ioStats`, optional). The buffer of wasm/io-stats.js, shared with every guest
+// agent: this worker counts what it answers — each broker request by opcode, and the ms its serve
+// loop spent answering — and, on the OPFS port, every synchronous access handle call. Absent,
+// nothing is wrapped.
+
+import { IoStats, countBrokerService, countHandleCalls } from './io-stats.js';
+
 // The one path the fresh/existing fork is about. Everything else in the image (the timezone
 // database under /share, say) rides along with it but never decides anything.
 const DATADIR = '/pgdata';
@@ -291,11 +298,12 @@ async function boot(msg) {
     throw new Error(`unknown storage durability ${durability}`);
   }
 
+  const stats = msg.ioStats ? IoStats.attach(msg.ioStats) : null;
   const tOpen = Date.now();
   let storePort;
   if (portKind === 'opfs') {
     const directory = await openOpfsDirectory(opfsDir, options.reset === true);
-    storePort = new bundle.OpfsRepackedPort(directory);
+    storePort = new bundle.OpfsRepackedPort(stats ? countHandleCalls(directory, stats) : directory);
   } else if (portKind === 'file') {
     storePort = new bundle.FileRepackedPort(await prepareFileDirectory(fileDir, options.reset === true));
   } else {
@@ -400,7 +408,9 @@ async function boot(msg) {
     // is never routine, so it goes to the driver rather than to a console nobody reads.
     log: (text) => post({ type: 'storage-log', text }),
   });
-  for (const transfer of msg.channels) broker.attach(bundle.RepackedChannel.attach(transfer));
+  const attachedChannels = msg.channels.map((transfer) => bundle.RepackedChannel.attach(transfer));
+  for (const channel of attachedChannels) broker.attach(channel);
+  if (stats) countBrokerService(broker, attachedChannels, stats);
 
   const metrics = vfs.metrics();
   post({

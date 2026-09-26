@@ -6,6 +6,7 @@
 import { EMPTY_CELL, formatDetail, formatMs, formatRatio } from "./format";
 import type { GridColumn, ResultsGrid } from "./grid";
 import { hasRatioColumn, readCell, readWarmup, rowDetails, unmeasuredCellText } from "./grid";
+import { storeStatsMarkdown } from "./store-markdown";
 
 export interface MarkdownExportOptions {
   readonly title: string;
@@ -29,6 +30,11 @@ export interface MarkdownExportOptions {
    * Suite's first Benchmark paid the Engine's first-use costs itself.
    */
   readonly warmupLine?: string;
+  /**
+   * How many Measurements each Benchmark's store row sums, on a Run with `?brokerStats=1`: the RTT
+   * Suite's iteration count, 1 for every other Suite. Ignored when the grid carries no store work.
+   */
+  readonly measurementsPerBenchmark?: number;
 }
 
 function row(cells: readonly string[]): string {
@@ -133,5 +139,7 @@ export function toMarkdown(grid: ResultsGrid, options: MarkdownExportOptions): s
   if (details.length > 0) {
     lines.push("", "#### Detail", "", ...details);
   }
+  // Only on a Run that counted store work: every other export is exactly what it always was.
+  lines.push(...storeStatsMarkdown(grid, options.measurementsPerBenchmark ?? 1));
   return `${lines.join("\n")}\n`;
 }

@@ -9,18 +9,24 @@
  * own factory, which owns PGlite's `dataDir`, `fs` and `relaxedDurability` and needs a dedicated,
  * otherwise-empty OPFS directory — so this worker empties that directory before every Run and
  * removes it again on close. No state carries over between Configurations, and none is left behind.
+ *
+ * With `?brokerStats=1` the store's directory is handed over wrapped in the vendored pgrust host's
+ * `countHandleCalls` — the same code that counts the pgrust coordinator's handle calls — and every
+ * `measure` and `concurrent` answer carries what the store's synchronous access handles did.
  */
 
 import { PGlite } from "@electric-sql/pglite";
 import { createOpfsRepackedPGlite } from "@pgxsinkit/pglite-opfs-repacked";
 
 import { emptyOpfsDirectory, removeOpfsDirectory } from "../../opfs";
+import { countHandleCalls, IoStats } from "../../vendor/pgrust/io-stats.js";
 import type { EngineOpenOptions, PgliteStoreSettings } from "../contract";
 import { pgliteOpenOptions, pgliteStore } from "../contract";
 import { toErrorPayload } from "../protocol";
 import type { EngineOkResponse, EngineReadyMessage, EngineRequest, EngineResponse, EngineStats } from "../protocol";
 import type { ScenarioExecutor } from "../scenario-runner";
 import { runScenario } from "../scenario-runner";
+import { aroundStoreStats, StoreStatsProbe } from "../store-stats-probe";
 import { toStoreError } from "./store-error";
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
@@ -29,6 +35,9 @@ let pg: PGlite | null = null;
 
 /** The OPFS directory this Run owns, or null when PGlite opened its own data directory. */
 let storeDirectory: string | null = null;
+
+/** The store's counters, on a Run with `?brokerStats=1` on a store; null otherwise. */
+let storeStats: StoreStatsProbe | null = null;
 
 function post(message: EngineResponse): void {
   ctx.postMessage(message);
@@ -149,9 +158,13 @@ async function openPglite(dataDir: string, options: EngineOpenOptions | undefine
  * `storeDirectory` is set before the factory runs, not after: a create that fails still leaves a
  * directory behind, and `close` is what removes it.
  */
-async function openStore(dataDir: string, settings: PgliteStoreSettings): Promise<PGlite> {
-  const directory = await emptyOpfsDirectory(dataDir);
+async function openStore(dataDir: string, settings: PgliteStoreSettings, countStore: boolean): Promise<PGlite> {
+  const emptied = await emptyOpfsDirectory(dataDir);
   storeDirectory = dataDir;
+  // One agent and no guest: PGlite's store is in this worker, and only its handle calls are counted.
+  const stats = countStore ? IoStats.create({ agents: 1, shared: false }) : null;
+  storeStats = stats === null ? null : new StoreStatsProbe(stats, { guest: false, broker: false, handles: true });
+  const directory = stats === null ? emptied : countHandleCalls(emptied, stats);
   try {
     return await createOpfsRepackedPGlite({
       directory,
@@ -186,10 +199,11 @@ async function handle(request: EngineRequest): Promise<void> {
   switch (request.kind) {
     case "open": {
       const settings = pgliteStore(request.options);
+      storeStats = null;
       pg =
         settings === undefined
           ? await openPglite(request.dataDir, request.options)
-          : await openStore(request.dataDir, settings);
+          : await openStore(request.dataDir, settings, request.options?.storeStats === true);
       ok(request.id, null);
       return;
     }
@@ -200,10 +214,17 @@ async function handle(request: EngineRequest): Promise<void> {
     }
     case "measure": {
       const engine = requireEngine();
-      const startTime = performance.now();
-      await engine.exec(request.sql);
-      const elapsedMs = performance.now() - startTime;
-      ok(request.id, { elapsedMs });
+      const { value: elapsedMs, storeStats: counted } = await aroundStoreStats(storeStats, async () => {
+        const startTime = performance.now();
+        await engine.exec(request.sql);
+        return performance.now() - startTime;
+      });
+      post({
+        kind: "ok",
+        id: request.id,
+        measurement: { elapsedMs },
+        ...(counted === undefined ? {} : { storeStats: counted }),
+      });
       return;
     }
     case "scalar": {
@@ -215,8 +236,17 @@ async function handle(request: EngineRequest): Promise<void> {
       return;
     }
     case "concurrent": {
-      const report = await runScenario(request.scenario, pgliteExecutor(requireEngine()));
-      post({ kind: "ok", id: request.id, measurement: null, report });
+      const engine = requireEngine();
+      const { value: report, storeStats: counted } = await aroundStoreStats(storeStats, async () =>
+        runScenario(request.scenario, pgliteExecutor(engine)),
+      );
+      post({
+        kind: "ok",
+        id: request.id,
+        measurement: null,
+        report,
+        ...(counted === undefined ? {} : { storeStats: counted }),
+      });
       return;
     }
     case "stats": {
@@ -228,6 +258,7 @@ async function handle(request: EngineRequest): Promise<void> {
       const directory = storeDirectory;
       pg = null;
       storeDirectory = null;
+      storeStats = null;
       try {
         await engine?.close();
       } finally {

@@ -85,6 +85,17 @@ describe("parseBenchArguments", () => {
     expect(() => parseBenchArguments(["--pgrust-module"])).toThrow("--pgrust-module needs a value");
   });
 
+  test("passes the two store-seam switches through, both off by default", () => {
+    expect(DEFAULT_BENCH_OPTIONS.brokerStats).toBe(false);
+    expect(DEFAULT_BENCH_OPTIONS.brokerGather).toBe(false);
+    expect(parseBenchArguments([]).options.brokerStats).toBeUndefined();
+    expect(parseBenchArguments([]).options.brokerGather).toBeUndefined();
+    expect(parseBenchArguments(["--broker-stats"]).options.brokerStats).toBe(true);
+    expect(parseBenchArguments(["--broker-gather"]).options.brokerGather).toBe(true);
+    const both = parseBenchArguments(["--broker-stats", "--broker-gather"]).options;
+    expect([both.brokerStats, both.brokerGather]).toEqual([true, true]);
+  });
+
   // Since 2026-09-24 the lane's OPFS is on disk; the off-the-record lane every older OPFS number was
   // taken in is only ever asked for by name.
   test("runs in a persistent context by default, and the ephemeral one only by name", () => {

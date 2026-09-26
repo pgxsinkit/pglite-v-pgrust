@@ -66,3 +66,20 @@ export type {
   RepackedSyncClient,
 } from "./broker-fs.js";
 export { loadRepackedBundle, repackedBundleUrl } from "./broker-fs.js";
+export { GATHER_PAYLOAD_BYTES, GATHER_TRANSFER_BYTES } from "./broker-fs.js";
+
+export type {
+  BrokerRequestKind,
+  GuestCallKind,
+  HandleCallKind,
+  IoKindTotals,
+  IoStatsDescription,
+} from "./io-stats.js";
+export {
+  BROKER_REQUEST_KINDS,
+  countHandleCalls,
+  describeIoStats,
+  GUEST_CALL_KINDS,
+  HANDLE_CALL_KINDS,
+  IoStats,
+} from "./io-stats.js";

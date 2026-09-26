@@ -19,9 +19,12 @@ import type { Configuration, EngineId, EngineRunner, Measurement } from "../engi
 import { applyModSql, configurationDialect } from "../engines/contract";
 import type { EngineStats } from "../engines/protocol";
 import { createEngineRunner } from "../engines/registry";
+import type { ScenarioReport } from "../engines/scenario";
 import { mapScenarioSql } from "../engines/scenario";
 import { aggregateRun } from "../results/aggregate";
-import type { Benchmark, StatementBenchmark, Suite } from "../suites/types";
+import type { StoreStats } from "../results/store-stats";
+import { sumStoreStats } from "../results/store-stats";
+import type { Benchmark, ScenarioBenchmark, StatementBenchmark, Suite } from "../suites/types";
 import { isScenarioBenchmark, suiteSessions, suiteUnsupportedReason } from "../suites/types";
 
 /** Every SQL string one Run will execute, with the Configuration's rewrite already applied. */
@@ -101,6 +104,11 @@ export interface BenchmarkResult {
   readonly elapsedMs: number;
   /** The Measurement's supporting numbers, where the Benchmark produced any. */
   readonly detail?: Measurement["detail"];
+  /**
+   * The store work of every one of this Benchmark's Measurements, summed, on a Run that counts it
+   * (`?brokerStats=1`); absent otherwise.
+   */
+  readonly storeStats?: StoreStats;
 }
 
 /**
@@ -113,6 +121,8 @@ export interface WarmupResult {
   readonly configurationId: string;
   /** The Warm-up's wall time in milliseconds, taken inside the worker as a Benchmark's is. */
   readonly elapsedMs: number;
+  /** The Warm-up's store work, on a Run that counts it. */
+  readonly storeStats?: StoreStats;
 }
 
 export interface RunOptions {
@@ -150,6 +160,15 @@ function assertNotAborted(signal: AbortSignal | undefined): void {
   }
 }
 
+/**
+ * A Scenario's Measurement, as the Suite summarizes it, carrying the store work the worker counted
+ * beside the report: the Suite knows nothing about it, so it is attached here.
+ */
+function summarizeScenario(benchmark: ScenarioBenchmark, report: ScenarioReport): Measurement {
+  const measurement = benchmark.summarize(report);
+  return report.storeStats === undefined ? measurement : { ...measurement, storeStats: report.storeStats };
+}
+
 /** Send each untimed text of a Benchmark's setup or teardown, in order, each as its own query text. */
 async function execEach(
   runner: EngineRunner,
@@ -178,7 +197,11 @@ export async function runSuite(options: RunOptions): Promise<void> {
     if (plan.warmupSql !== null) {
       assertNotAborted(signal);
       const warmup = await runner.measure(plan.warmupSql);
-      onWarmup({ configurationId: configuration.id, elapsedMs: warmup.elapsedMs });
+      onWarmup({
+        configurationId: configuration.id,
+        elapsedMs: warmup.elapsedMs,
+        ...(warmup.storeStats === undefined ? {} : { storeStats: warmup.storeStats }),
+      });
     }
     if (plan.setupSql.trim() !== "") {
       assertNotAborted(signal);
@@ -198,7 +221,7 @@ export async function runSuite(options: RunOptions): Promise<void> {
         // Client of it at once, inside the worker, and the Suite says which number the cell carries.
         measurements.push(
           isScenarioBenchmark(benchmark)
-            ? benchmark.summarize(await runner.concurrent(benchmark.scenario))
+            ? summarizeScenario(benchmark, await runner.concurrent(benchmark.scenario))
             : await runner.measure(benchmark.sql),
         );
       }
@@ -206,11 +229,13 @@ export async function runSuite(options: RunOptions): Promise<void> {
         await execEach(runner, benchmark.teardown, signal);
       }
       const aggregated = aggregateRun(measurements, suite.aggregation);
+      const storeStats = sumStoreStats(measurements);
       onResult({
         configurationId: configuration.id,
         benchmarkId: benchmark.id,
         elapsedMs: aggregated.elapsedMs,
         ...(aggregated.detail === undefined ? {} : { detail: aggregated.detail }),
+        ...(storeStats === undefined ? {} : { storeStats }),
       });
     }
     if (onStats !== undefined) {

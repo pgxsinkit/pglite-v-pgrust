@@ -21,6 +21,11 @@ export interface WireSessionOptions {
   readonly onStderr?: (bytes: Uint8Array) => void;
   /** Optional tap on every backend message, called before it is collected. */
   readonly onMessage?: (t: string, body: Uint8Array) => void;
+  /**
+   * Optional counters (`./io-stats.js`) with room for one agent: every guest file call is counted
+   * as agent 0, which is also the session's backend.
+   */
+  readonly ioStats?: ArrayBufferLike;
 }
 
 export interface WireStartOptions {

@@ -44,7 +44,10 @@
 // `brokerFsFor()` below turns it into a WASI filesystem adapter composed over
 // the host's WASI object — so every file call lands on the ONE store while fd
 // 0/1/2 and every non-filesystem import are untouched. Each role releases its
-// store descriptors when its guest thread returns (`releaseFs`).
+// store descriptors when its guest thread returns (`releaseFs`). Two optional
+// fields ride along with it: `brokerGather` (one broker write per `fd_pwrite`,
+// wasm/broker-fs.js) and `ioStats` (the counters of wasm/io-stats.js, this
+// instance being agent `ioAgent`); absent, nothing changes.
 //
 // Node entry is thread-worker.mjs (a one-line re-export of this file) so
 // Node's module resolution sees ESM without relying on syntax detection.
@@ -103,6 +106,7 @@ async function brokerFsFor(msg, label, fdBase) {
     label,
     fdBase,
     onLog: (text) => post({ type: 'log', text }),
+    gather: msg.brokerGather === true,
   });
 }
 
@@ -127,6 +131,8 @@ async function runProcess(msg) {
     fsMode: msg.fs || 'copy',
     bundleUrl: msg.bundleUrl || null,
     poolChannels: msg.poolChannels || [],
+    brokerGather: msg.brokerGather === true,
+    ioStats: msg.ioStats || null,
     // Every pool slot rebuilds the SAME pipes from these descriptors.
     pipes: msg.pipes || null,
     // Spawn bookkeeping the PROCESS instance itself observes (it is not yet
@@ -151,6 +157,8 @@ async function runProcess(msg) {
     fs,
     pipes: PipeRegistry.from(msg.pipes || {}),
     fdBase: PROCESS_FD_BASE,
+    ioStats: msg.ioStats || null,
+    ioAgent: 0,
   });
 
   post({
@@ -248,6 +256,8 @@ async function prewarmThread(msg) {
     // the driver wrote, and its `secure_close` is seen by everyone.
     pipes: PipeRegistry.from(msg.pipes || {}),
     fdBase: msg.fdBase,
+    ioStats: msg.ioStats || null,
+    ioAgent: msg.ioAgent || 0,
   });
   const instance = await WebAssembly.instantiate(msg.module, host.imports);
   if (typeof instance.exports.wasi_thread_start !== 'function') {

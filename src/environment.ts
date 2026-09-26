@@ -3,6 +3,8 @@
  * export, because a benchmark number without its environment is not a result.
  */
 
+import type { BrokerSwitches } from "./broker-switches";
+import { describeBrokerSwitches, readBrokerSwitches } from "./broker-switches";
 import { describeConcurrencyClientsOverride, readConcurrencyClientsOverride } from "./concurrency-clients";
 import { detectOpfsSyncAccess } from "./opfs-sync-access";
 import { describePgrustModule, readPgrustModule } from "./pgrust-module";
@@ -69,6 +71,12 @@ export interface EnvironmentInfo {
    * threads and postmaster columns then run another pgrust build than {@link pgrustVersion} names.
    */
   readonly pgrustModule: string | null;
+  /**
+   * The two store-seam switches, `?brokerStats=1` and `?brokerGather=1`, both off unless the URL
+   * turned them on. Reported for the same reason as the four above: counted store work is a Run
+   * with a clock read on either side of every file call, and gathered writes are another broker.
+   */
+  readonly brokerSwitches: BrokerSwitches;
 }
 
 /**
@@ -121,6 +129,7 @@ export async function readEnvironment(): Promise<EnvironmentInfo> {
     concurrencyClientsOverride: readConcurrencyClientsOverride(),
     postmasterTuning: readPostmasterTuning(),
     pgrustModule: readPgrustModule(),
+    brokerSwitches: readBrokerSwitches(),
   };
 }
 
@@ -148,5 +157,6 @@ export function formatEnvironmentLine(environment: EnvironmentInfo): string {
   if (environment.pgrustModule !== null) {
     parts.push(describePgrustModule(environment.pgrustModule));
   }
+  parts.push(...describeBrokerSwitches(environment.brokerSwitches));
   return parts.join(" | ");
 }

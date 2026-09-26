@@ -7,6 +7,8 @@ import type { Configuration, EngineRunner, Measurement } from "../engines/contra
 import { configurationDialect } from "../engines/contract";
 import type { EngineStats } from "../engines/protocol";
 import type { ConcurrentScenario, ScenarioReport } from "../engines/scenario";
+import type { StoreKindTotals, StoreStats } from "../results/store-stats";
+import { GUEST_KINDS } from "../results/store-stats";
 import { buildConcurrencyBenchmarks, CONCURRENCY_CLIENTS, concurrencySetupFor } from "../suites/concurrency";
 import type { PreparedBenchmarkId } from "../suites/prepared/benchmarks";
 import {
@@ -490,5 +492,80 @@ describe("runSuite, a Suite that does not run on an Engine", () => {
     expect(refusal).toBeInstanceOf(Error);
     expect(String(refusal)).toContain("Prepared Suite does not run on wa-sqlite Memory");
     expect(runner.calls).toEqual([]);
+  });
+});
+
+/** One Measurement's store work: `reads` guest reads of 8 KiB, 0.25 ms each, and one broker request each. */
+function readsOnly(reads: number): StoreStats {
+  const zero: StoreKindTotals = { calls: 0, bytes: 0, ms: 0 };
+  const totals = Object.fromEntries(GUEST_KINDS.map((kind) => [kind, zero])) as Record<
+    (typeof GUEST_KINDS)[number],
+    StoreKindTotals
+  >;
+  const read = { calls: reads, bytes: reads * 8192, ms: reads * 0.25 };
+  return {
+    guest: { all: { ...totals, read }, backend: { ...totals, read } },
+    broker: {
+      requests: { read: reads, write: 0, fsync: 0, allocate: 0, open: 0, close: 0, stat: 0, other: 0 },
+      servingMs: reads * 0.1,
+    },
+  };
+}
+
+/** The recording Engine again, answering every Measurement with some store work. */
+class CountingRunner extends RecordingRunner {
+  override async measure(sql: string): Promise<Measurement> {
+    const measurement = await super.measure(sql);
+    return { ...measurement, storeStats: readsOnly(2) };
+  }
+}
+
+describe("runSuite, store work (`?brokerStats=1`)", () => {
+  const THREE_ITERATIONS: Suite = {
+    ...EDITABLE_SETUP_SUITE,
+    benchmarks: [{ id: "1", label: "Test 1: one", sql: "SELECT 1;" }],
+    iterations: 3,
+  };
+
+  async function run(runner: RecordingRunner): Promise<{
+    readonly warmups: readonly WarmupResult[];
+    readonly results: readonly BenchmarkResult[];
+  }> {
+    const warmups: WarmupResult[] = [];
+    const results: BenchmarkResult[] = [];
+    await runSuite({
+      suite: THREE_ITERATIONS,
+      configuration: configuration("pgrust-threads-memory-broker"),
+      setupSql: "",
+      warmupSql: "SELECT 0;",
+      onWarmup: (result) => warmups.push(result),
+      onResult: (result) => results.push(result),
+      createRunner: () => runner,
+    });
+    return { warmups, results };
+  }
+
+  test("sums a Benchmark's store work over every one of its Measurements", async () => {
+    const { results } = await run(new CountingRunner());
+    const counted = results[0]?.storeStats;
+    expect(counted?.guest?.all.read).toEqual({ calls: 6, bytes: 6 * 8192, ms: 1.5 });
+    expect(counted?.guest?.backend.read.calls).toBe(6);
+    expect(counted?.guest?.all.write).toEqual({ calls: 0, bytes: 0, ms: 0 });
+    expect(counted?.broker?.requests.read).toBe(6);
+    expect(counted?.broker?.servingMs).toBeCloseTo(0.6, 10);
+    // The cell is still the aggregate of the three Measurements, and nothing else.
+    expect(results[0]?.elapsedMs).toBe(3);
+  });
+
+  test("reports the Warm-up's store work with the Warm-up, once", async () => {
+    const { warmups } = await run(new CountingRunner());
+    expect(warmups).toHaveLength(1);
+    expect(warmups[0]?.storeStats?.guest?.all.read.calls).toBe(2);
+  });
+
+  test("adds no store work to a Run whose Engine counted none", async () => {
+    const { warmups, results } = await run(new RecordingRunner());
+    expect(warmups[0] !== undefined && "storeStats" in warmups[0]).toBe(false);
+    expect(results[0] !== undefined && "storeStats" in results[0]).toBe(false);
   });
 });

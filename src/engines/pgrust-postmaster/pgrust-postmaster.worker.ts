@@ -31,6 +31,11 @@
  *
  * Like every other Engine worker: no wasm module cache, no reuse of anything across Runs, and every
  * worker it creates is terminated in `close`.
+ *
+ * **The two store-seam switches.** `?brokerStats=1` asks the engine for its store counters and every
+ * `measure` and `concurrent` answer then carries what moved in them — the guests' file calls (all of
+ * them, and the Session backends' alone), the broker's requests and, on OPFS, the coordinator's
+ * access handle calls. `?brokerGather=1` asks it for one broker write per `fd_pwrite`.
  */
 
 import type { PgrustBrowserEngine, PgrustBrowserSession } from "../../client/pgrust-browser-engine";
@@ -56,6 +61,7 @@ import type {
 } from "../protocol";
 import type { ScenarioExecutor } from "../scenario-runner";
 import { runScenario } from "../scenario-runner";
+import { aroundStoreStats, StoreStatsProbe } from "../store-stats-probe";
 import type { StoreSeedRequest, StoreSeedResponse } from "./store-seed.worker";
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
@@ -83,6 +89,9 @@ interface PostmasterRun {
 }
 
 let run: PostmasterRun | null = null;
+
+/** The store counters, on a Run with `?brokerStats=1`; null otherwise. */
+let storeStats: StoreStatsProbe | null = null;
 
 /**
  * The OPFS directory this Run's store owns, or null on the memory port.
@@ -442,6 +451,8 @@ async function openEngine(dataDir: string, options: EngineOpenOptions | undefine
           : { port: "memory", durability },
       ...(settings?.settings === undefined ? {} : { settings: settings.settings }),
       ...(settings?.env === undefined ? {} : { env: settings.env }),
+      ...(options?.storeStats === true ? { ioStats: true } : {}),
+      ...(settings?.brokerGather === true ? { brokerGather: true } : {}),
       onStorageReady: (line: string) => {
         console.info(line);
       },
@@ -464,6 +475,10 @@ async function openEngine(dataDir: string, options: EngineOpenOptions | undefine
 
   const sessions: PipeSession[] = [];
   run = { engine, sessions };
+  storeStats =
+    engine.ioStats === null
+      ? null
+      : new StoreStatsProbe(engine.ioStats, { guest: true, broker: true, handles: port === "opfs" });
 
   try {
     for (let index = 0; index < sessionCount; index += 1) {
@@ -564,6 +579,7 @@ async function closeEngine(): Promise<void> {
     }
   } finally {
     run = null;
+    storeStats = null;
     // Last, and unconditionally: the coordinator closes the store — releasing its four synchronous
     // access handles — before it reports it has stopped, so the directory can only go afterwards.
     if (directory !== null) {
@@ -647,9 +663,18 @@ async function handle(request: EngineRequest): Promise<void> {
       return;
     }
     case "measure": {
-      const { result, elapsedMs } = await requireSession(request.session ?? 0).query(request.sql);
+      const session = requireSession(request.session ?? 0);
+      const {
+        value: { result, elapsedMs },
+        storeStats: counted,
+      } = await aroundStoreStats(storeStats, async () => await session.query(request.sql));
       assertNoQueryError(result);
-      ok(request.id, { elapsedMs });
+      post({
+        kind: "ok",
+        id: request.id,
+        measurement: { elapsedMs },
+        ...(counted === undefined ? {} : { storeStats: counted }),
+      });
       return;
     }
     case "scalar": {
@@ -665,8 +690,16 @@ async function handle(request: EngineRequest): Promise<void> {
     }
     case "concurrent": {
       requireRun();
-      const report = await runScenario(request.scenario, postmasterExecutor());
-      post({ kind: "ok", id: request.id, measurement: null, report });
+      const { value: report, storeStats: counted } = await aroundStoreStats(storeStats, async () =>
+        runScenario(request.scenario, postmasterExecutor()),
+      );
+      post({
+        kind: "ok",
+        id: request.id,
+        measurement: null,
+        report,
+        ...(counted === undefined ? {} : { storeStats: counted }),
+      });
       return;
     }
     case "stats": {
