@@ -65,6 +65,9 @@ type BrokerFsModule = typeof BrokerFs;
 
 const SYNC_HINT = "Run `bun run sync:pgrust` after building the pgrust wasm assets.";
 
+/** The threads module under the asset directory, unless `threadsModule` names another. */
+const DEFAULT_THREADS_MODULE = "postgres-threads.wasm";
+
 /**
  * The prewarmed `wasi` `thread-spawn` pool: eight slots for the server, plus one per session.
  *
@@ -248,6 +251,12 @@ export interface PgrustBrowserEngineOptions {
    * its own siblings from it; a caller derives it from `import.meta.url` or from the app's base.
    */
   readonly assetBase: string;
+  /**
+   * The threads module, relative to {@link assetBase}: `postgres-threads.wasm` by default. The
+   * benchmark page's `?pgrustModule=` points it at an alternate module under `alt/<id>/`; the host
+   * JS, `vfs.img` and the store bundle are the asset directory's either way.
+   */
+  readonly threadsModule?: string;
   /** How many sessions may be opened. Every ring is created before the guest starts, so this is a ceiling. */
   readonly sessions?: number;
   /** Pool slots for the server's own children, before the one added per session. Eight by default. */
@@ -574,7 +583,7 @@ export async function startPgrustBrowserPostmaster(options: PgrustBrowserEngineO
   ]);
 
   const [wasmModule, manifest] = await Promise.all([
-    compileEngineModule(`${assetBase}postgres-threads.wasm`),
+    compileEngineModule(`${assetBase}${options.threadsModule ?? DEFAULT_THREADS_MODULE}`),
     fetchAsset(`${assetBase}vfs.json`).then(async (response) => (await response.json()) as VfsManifest),
   ]);
 

@@ -2,10 +2,22 @@ import type { JSX } from "react";
 
 import type { EnvironmentInfo } from "../environment";
 import { formatEnvironmentLine } from "../environment";
+import { describePgrustModule } from "../pgrust-module";
 import { describeRttIterations } from "../rtt-iterations";
 
 export interface EnvironmentHeaderProps {
   readonly environment: EnvironmentInfo;
+}
+
+/**
+ * Which pgrust build each module is: one commit for both, unless `?pgrustModule=` swapped the
+ * threads module for an alternate, in which case the two are named apart.
+ */
+function describePgrustModules(environment: EnvironmentInfo): string {
+  if (environment.pgrustModule === null) {
+    return `${environment.pgrustVersion} (postgres.wasm + postgres-threads.wasm)`;
+  }
+  return `${environment.pgrustVersion} (postgres.wasm) + ${environment.pgrustModule} (postgres-threads.wasm, alternate)`;
 }
 
 function describeOpfsSyncAccess(environment: EnvironmentInfo): string {
@@ -33,11 +45,12 @@ export function EnvironmentHeader({ environment }: EnvironmentHeaderProps): JSX.
           <dt>@pgxsinkit/pglite-opfs-repacked</dt>
           <dd>{environment.opfsRepackedVersion}</dd>
         </div>
-        <div>
+        <div className={environment.pgrustModule === null ? undefined : "non-standard"}>
           {/* One commit, two wasm modules: the pgrust columns and the pgrust Threads columns are the
-              same source tree built for two targets, so there is only ever one commit to name. */}
+              same source tree built for two targets, so there is only ever one commit to name —
+              unless `?pgrustModule=` swapped the threads module, and then there are two. */}
           <dt>pgrust</dt>
-          <dd>{`${environment.pgrustVersion} (postgres.wasm + postgres-threads.wasm)`}</dd>
+          <dd>{describePgrustModules(environment)}</dd>
         </div>
         <div>
           <dt>wa-sqlite</dt>
@@ -70,6 +83,12 @@ export function EnvironmentHeader({ environment }: EnvironmentHeaderProps): JSX.
       </pre>
       {environment.rttIterationsOverride === null ? null : (
         <p className="non-standard-note">{describeRttIterations(environment.rttIterationsOverride)}</p>
+      )}
+      {environment.pgrustModule === null ? null : (
+        <p className="non-standard-note" data-testid="pgrust-module-note">
+          {`${describePgrustModule(environment.pgrustModule)}: the six pgrust Threads and Postmaster columns load ` +
+            `this pgrust build's threads module instead of ${environment.pgrustVersion}'s.`}
+        </p>
       )}
     </>
   );

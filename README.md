@@ -562,6 +562,22 @@ is `strict` (the store factory's `strict` mode keeps `fsync=on` beside `synchron
 [the store-levers note](docs/results/2026-09-24-store-levers.md#adopted-2026-09-24) has what each one
 bought and what it gives up.
 
+### `?pgrustModule=` — the threads columns on another pgrust module
+
+The published build also carries the threads module of `pgrust-assets/3624f82c`, the last one before
+the profile-guided `e2e7a2f9`, at `pgrust/alt/3624f82c/postgres-threads.wasm`. `?pgrustModule=3624f82c`
+makes the six `pgrust Threads` and `pgrust Postmaster` columns load it instead of the current one; the
+host JS, `vfs.img`, the store bundle and the `pgrust Memory` columns' `postgres.wasm` stay the current
+release's, so two Runs a URL apart compare the two threads modules and nothing else. An id the build
+does not carry is ignored, and one in effect is never silent: the environment header and every
+Markdown export carry `pgrust module: 3624f82c (alternate)`. The pair to compare on a phone:
+
+- current: <https://pgxsinkit.github.io/pglite-v-pgrust/?configurations=pglite-opfs-repacked-relaxed,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-opfs-repacked-relaxed>
+- alternate: <https://pgxsinkit.github.io/pglite-v-pgrust/?configurations=pglite-opfs-repacked-relaxed,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-opfs-repacked-relaxed&pgrustModule=3624f82c>
+
+`bun run sync:pgrust --alt-release pgrust-assets/<commit>` (repeatable) installs an alternate for a
+local build, and `bun run bench --pgrust-module <commit>` drives one headlessly.
+
 ## pgrust assets
 
 PGlite installs from npm; pgrust does not. Its host JavaScript is vendored into this repo and
@@ -933,8 +949,9 @@ every "Copy as Markdown" export.
 ### Deploying it
 
 `.github/workflows/pages.yml` runs on every push to `main` and on manual dispatch. It installs,
-runs `bun run sync:pgrust --release latest`, builds with `BASE_PATH=/pglite-v-pgrust/` and uploads
-`dist/`. It runs no test, no bench and no browser: a deploy that ran the Suites would be measuring a
+runs `bun run sync:pgrust --release latest --alt-release pgrust-assets/3624f82c` (the second flag is
+the [alternate threads module](#pgrustmodule--the-threads-columns-on-another-pgrust-module)), builds
+with `BASE_PATH=/pglite-v-pgrust/` and uploads `dist/`. It runs no test, no bench and no browser: a deploy that ran the Suites would be measuring a
 GitHub runner.
 
 `BASE_PATH` is why the deployed page works at all. A project site is served from `/<repo>/`, and
@@ -1055,6 +1072,7 @@ bun run bench --suite rtt \
 | `--iterations <N>`         | Passes `?rttIterations=N` to the page; 1-1000                                                 |
 | `--configurations <id,id>` | Passes `?configurations=` to the page: only these columns, in Configuration order; repeatable |
 | `--baseline <id>`          | Passes `?baseline=` to the page: the column every ratio is taken against                      |
+| `--pgrust-module <id>`     | Passes `?pgrustModule=` to the page: the threads columns on the alternate module `<id>`       |
 | `--ephemeral-context`      | The pre-2026-09-24 lane: an off-the-record context, OPFS in memory in the browser process     |
 | `--keep-profile`           | Leave the persistent context's profile in `tmp/bench-profiles/` after the Run                 |
 | `--no-build`               | Reuse the existing `dist/` instead of rebuilding                                              |

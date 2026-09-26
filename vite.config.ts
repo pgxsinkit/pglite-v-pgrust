@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,7 @@ import type { Connect, Plugin } from "vite";
 import { defineConfig } from "vite";
 
 import { describeDependencyVersion } from "./src/dependency-version";
+import { ALTERNATE_MODULES_DIRECTORY, isPgrustModuleId, THREADS_MODULE_FILE } from "./src/pgrust-module";
 
 const rootDir = dirname(fileURLToPath(import.meta.url));
 
@@ -58,6 +59,24 @@ function readPgrustVersion(): string {
   }
   const version = readFileSync(versionFile, "utf8").trim();
   return version === "" ? "not synced" : version;
+}
+
+/**
+ * The alternate pgrust threads modules this build carries: every `public/pgrust/alt/<id>/` that
+ * `bun run sync:pgrust --alt-release` put a `postgres-threads.wasm` in, sorted.
+ *
+ * Read off the disk rather than off a list, so `?pgrustModule=` accepts exactly the modules the
+ * build will serve (`src/pgrust-module.ts`): an id whose file is absent would fail six columns on a
+ * 404 instead of leaving the page on its own module.
+ */
+function readAlternateModules(): readonly string[] {
+  const directory = resolve(rootDir, "public/pgrust", ALTERNATE_MODULES_DIRECTORY);
+  if (!existsSync(directory)) {
+    return [];
+  }
+  return readdirSync(directory)
+    .filter((id) => isPgrustModuleId(id) && existsSync(resolve(directory, id, THREADS_MODULE_FILE)))
+    .toSorted();
 }
 
 /**
@@ -154,6 +173,7 @@ export default defineConfig({
       readDependencyVersion("@pgxsinkit/pglite-opfs-repacked", "../package.json"),
     ),
     __PGRUST_VERSION__: JSON.stringify(readPgrustVersion()),
+    __PGRUST_ALTERNATE_MODULES__: JSON.stringify(readAlternateModules()),
     // `wa-sqlite`'s entry point is `src/sqlite-api.js`; its manifest is the directory above. It is
     // installed from a GitHub tag, so what lands here is the tag, not that manifest's version.
     __WASQLITE_VERSION__: JSON.stringify(readDependencyVersion("wa-sqlite", "../package.json")),

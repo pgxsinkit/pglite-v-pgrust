@@ -6,10 +6,10 @@
  * repo's `public/pgrust/`. The script keeps the policy — which repo, which tag, what to write to
  * `SOURCE.md` — and this module keeps the transfer and the integrity rules.
  *
- * Nothing here writes outside `publicDir` and `stagingDir`, nothing here exits the process, and
- * nothing reaches `publicDir` until every asset in the release has verified: a release that goes
- * wrong on its second file must not leave one commit's `postgres.wasm` beside another's `vfs.img`,
- * a state that would run and would measure the wrong thing.
+ * Nothing here writes outside the install and staging directories it is handed, nothing here exits
+ * the process, and nothing is installed until every asset in the release has verified: a release
+ * that goes wrong on its second file must not leave one commit's `postgres.wasm` beside another's
+ * `vfs.img`, a state that would run and would measure the wrong thing.
  */
 
 import { createHash } from "node:crypto";
@@ -20,7 +20,7 @@ import { checkChecksumCoverage, checkDownloadedFile, checkUnpackedFile, parseSha
 import type { AssetManifest, ManifestFileRecord } from "./manifest";
 import { CHECKSUMS_FILE_NAME, MANIFEST_FILE_NAME, parseManifest, RELEASE_TAG_PREFIX } from "./manifest";
 import type { ReleaseAssetSpec, ReleaseSummary } from "./release";
-import { parseReleases, RELEASE_ASSETS, releaseAssetUrl, releasesApiUrl } from "./release";
+import { ALTERNATE_MODULE_ASSET, parseReleases, RELEASE_ASSETS, releaseAssetUrl, releasesApiUrl } from "./release";
 
 /** How often a download reports progress, as a fraction of the total. */
 const PROGRESS_STEP = 0.1;
@@ -214,6 +214,22 @@ function unpackStaged(
   return { path: unpackedPath, bytes: unpacked.length };
 }
 
+/** A release's two records, read and checked against each other before any asset is fetched. */
+async function fetchReleaseRecords(base: string): Promise<{
+  readonly manifest: AssetManifest;
+  readonly manifestText: string;
+  readonly checksums: ReadonlyMap<string, string>;
+}> {
+  const manifestText = await fetchText(releaseAssetUrl(base, MANIFEST_FILE_NAME), MANIFEST_FILE_NAME);
+  const manifest = parseManifest(JSON.parse(manifestText) as unknown);
+  const checksums = parseSha256Sums(await fetchText(releaseAssetUrl(base, CHECKSUMS_FILE_NAME), CHECKSUMS_FILE_NAME));
+  requireNoProblems(
+    checkChecksumCoverage(manifest, checksums),
+    `${MANIFEST_FILE_NAME} and ${CHECKSUMS_FILE_NAME} disagree`,
+  );
+  return { manifest, manifestText, checksums };
+}
+
 /**
  * Download, verify and install one release's assets.
  *
@@ -225,14 +241,7 @@ export async function fetchReleaseBundle(request: ReleaseBundleRequest): Promise
   const { base, tag, publicDir, stagingDir, log } = request;
   const warnings: string[] = [];
 
-  const manifest = parseManifest(
-    JSON.parse(await fetchText(releaseAssetUrl(base, MANIFEST_FILE_NAME), MANIFEST_FILE_NAME)) as unknown,
-  );
-  const checksums = parseSha256Sums(await fetchText(releaseAssetUrl(base, CHECKSUMS_FILE_NAME), CHECKSUMS_FILE_NAME));
-  requireNoProblems(
-    checkChecksumCoverage(manifest, checksums),
-    `${MANIFEST_FILE_NAME} and ${CHECKSUMS_FILE_NAME} disagree`,
-  );
+  const { manifest, checksums } = await fetchReleaseRecords(base);
   if (manifest.tag !== tag) {
     warnings.push(`the manifest names ${manifest.tag}, not ${tag} — using the manifest's provenance`);
   }
@@ -267,4 +276,69 @@ export async function fetchReleaseBundle(request: ReleaseBundleRequest): Promise
   rmSync(stagingDir, { recursive: true, force: true });
 
   return { manifest, installed, absent, warnings };
+}
+
+export interface AlternateModuleRequest {
+  /** Directory URL the release's assets hang off. */
+  readonly base: string;
+  /** The tag asked for, which the manifest is checked against. */
+  readonly tag: string;
+  /** Where the module and its release's `manifest.json` are installed: `public/pgrust/alt/<id>/`. */
+  readonly targetDir: string;
+  /** Scratch directory for the download; emptied before use and removed after. */
+  readonly stagingDir: string;
+  readonly log: Log;
+}
+
+export interface AlternateModule {
+  readonly manifest: AssetManifest;
+  /** Size of the installed module. */
+  readonly bytes: number;
+  /** Digest of the installed module, which the manifest's unpacked record has already matched. */
+  readonly sha256: string;
+  readonly warnings: readonly string[];
+}
+
+/**
+ * Download, verify and install one release's **threads module** as an alternate
+ * (`sync:pgrust --alt-release`).
+ *
+ * The same integrity rules as a whole release: the gzip against `SHA256SUMS` and the manifest, the
+ * bytes it unpacks to against the manifest's unpacked record, and nothing in `targetDir` until all
+ * of that holds. The release's `manifest.json` is installed beside the module verbatim, because a
+ * pgrust binary this site serves has to name its source (AGPL-3.0) and the primary release's record
+ * names another commit.
+ */
+export async function fetchAlternateThreadsModule(request: AlternateModuleRequest): Promise<AlternateModule> {
+  const { base, tag, targetDir, stagingDir, log } = request;
+  const warnings: string[] = [];
+  const spec = ALTERNATE_MODULE_ASSET;
+
+  const { manifest, manifestText, checksums } = await fetchReleaseRecords(base);
+  if (manifest.tag !== tag) {
+    warnings.push(`the manifest names ${manifest.tag}, not ${tag} — using the manifest's provenance`);
+  }
+  log(`  pgrust ${manifest.pgrust.commit} on ${manifest.pgrust.branch}`);
+  const file = manifestFileFor(manifest, spec);
+  if (file === null) {
+    throw new DownloadError(`release ${manifest.tag} carries no ${spec.name}, so it has no threads module to offer`);
+  }
+
+  rmSync(stagingDir, { recursive: true, force: true });
+  mkdirSync(stagingDir, { recursive: true });
+  const stagedPath = join(stagingDir, spec.name);
+  log(`  ${spec.name} (${megabytes(file.bytes)})`);
+  const landed = await download(releaseAssetUrl(base, spec.name), stagedPath, spec.name, log);
+  requireNoProblems(checkDownloadedFile(file, checksums, landed), `${spec.name} failed verification`);
+  const unpacked = unpackStaged(file, spec, stagedPath, stagingDir, log);
+  const bytes = readFileSync(unpacked.path);
+  const sha256 = sha256Hex(new Uint8Array(bytes));
+
+  rmSync(targetDir, { recursive: true, force: true });
+  mkdirSync(targetDir, { recursive: true });
+  writeFileSync(join(targetDir, spec.target), bytes);
+  writeFileSync(join(targetDir, MANIFEST_FILE_NAME), manifestText);
+  rmSync(stagingDir, { recursive: true, force: true });
+
+  return { manifest, bytes: statSync(join(targetDir, spec.target)).size, sha256, warnings };
 }

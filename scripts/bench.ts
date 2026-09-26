@@ -30,6 +30,7 @@
  *   bun run bench --configurations pglite-memory,pgrust-memory --baseline pgrust-memory
  *   bun run bench --suite speedtest --configurations pgrust-postmaster-opfs-repacked-relaxed \
  *     --postmaster-tuning fsync=off,wal_buffers=4MB  # a non-standard pgrust Postmaster Run
+ *   bun run bench --suite speedtest --pgrust-module 3624f82c  # the threads columns on an alternate module
  *   bun run bench --ephemeral-context              # the pre-2026-09-24 lane: OPFS in memory, one IPC per call
  *   bun run bench --keep-profile                   # leave the Run's profile in tmp/bench-profiles/
  *
@@ -38,6 +39,12 @@
  * the pgrust Postmaster columns only, and the page's environment line and every Markdown export say
  * what was moved. An entry the page would silently drop is refused here instead, so a mistyped GUC
  * cannot produce a Run on the defaults under a tuned Run's name.
+ *
+ * `--pgrust-module` is the page's own `?pgrustModule=` (`src/pgrust-module.ts`): the id of an
+ * alternate threads module the build carries under `pgrust/alt/<id>/`, installed there by
+ * `bun run sync:pgrust --alt-release pgrust-assets/<id>`. The page ignores an id its build does not
+ * carry, so the lane refuses one whose module is not in `dist/` before it launches a browser, and
+ * fails the Run if the page's environment line does not then announce it.
  */
 
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -50,6 +57,7 @@ import type { Server } from "bun";
 
 import { formatSelectionSearch, resolveConfigurationSelection } from "../src/configuration-selection";
 import { BASELINE_CANDIDATE_IDS, BASELINE_CONFIGURATION_ID, CONFIGURATION_IDS } from "../src/configurations";
+import { describePgrustModule, isPgrustModuleId, PGRUST_MODULE_PARAM, threadsModulePath } from "../src/pgrust-module";
 import { parsePostmasterTuning, POSTMASTER_TUNING_PARAM } from "../src/postmaster-tuning";
 import { MAX_RTT_ITERATIONS, MIN_RTT_ITERATIONS, RTT_ITERATIONS_PARAM } from "../src/rtt-iterations";
 import type { SuiteId } from "../src/suites/types";
@@ -158,6 +166,11 @@ export interface BenchOptions {
    */
   readonly postmasterTuning: string | null;
   /**
+   * An alternate pgrust threads module, as `?pgrustModule=<id>`; null loads the build's own
+   * `postgres-threads.wasm`, which is what every table this repo publishes was produced with.
+   */
+  readonly pgrustModule: string | null;
+  /**
    * The browser context the page lives in: `persistent` unless `--ephemeral-context`. See
    * {@link BrowserContextKind}.
    */
@@ -198,6 +211,7 @@ export const DEFAULT_BENCH_OPTIONS: BenchOptions = {
   configurationIds: null,
   baselineId: null,
   postmasterTuning: null,
+  pgrustModule: null,
   contextKind: "persistent",
   keepProfile: false,
   build: true,
@@ -448,6 +462,9 @@ function pageUrl(port: number, options: BenchOptions): string {
   if (options.postmasterTuning !== null) {
     params.set(POSTMASTER_TUNING_PARAM, options.postmasterTuning);
   }
+  if (options.pgrustModule !== null) {
+    params.set(PGRUST_MODULE_PARAM, options.pgrustModule);
+  }
   const query = params.size === 0 ? "" : `?${params.toString()}`;
   const search =
     options.configurationIds === null && options.baselineId === null
@@ -547,6 +564,16 @@ export async function runBench(overrides: Partial<BenchOptions> = {}): Promise<B
   if (!(await Bun.file(join(distDir, "index.html")).exists())) {
     throw new Error(`${join(distDir, "index.html")} is missing; run bench without --no-build`);
   }
+  if (options.pgrustModule !== null) {
+    const modulePath = join(distDir, "pgrust", threadsModulePath(options.pgrustModule));
+    if (!(await Bun.file(modulePath).exists())) {
+      throw new Error(
+        `${modulePath} is missing, so the page would ignore ?${PGRUST_MODULE_PARAM}=${options.pgrustModule}; ` +
+          `install it with \`bun run sync:pgrust --release latest --alt-release pgrust-assets/${options.pgrustModule}\` ` +
+          "and run the bench again (it rebuilds dist/ unless --no-build)",
+      );
+    }
+  }
 
   const startedAt = new Date().toISOString();
   /** Names both the results file and the persistent context's profile directory. */
@@ -605,6 +632,13 @@ export async function runBench(overrides: Partial<BenchOptions> = {}): Promise<B
       }
       environmentLine = (await readText(page, "environment-line", Math.min(remaining(), 60_000))).trim();
       console.error(`bench: ${environmentLine}`);
+      if (options.pgrustModule !== null && !environmentLine.includes(describePgrustModule(options.pgrustModule))) {
+        throw new Error(
+          `the page did not take ?${PGRUST_MODULE_PARAM}=${options.pgrustModule}: its environment line does not say ` +
+            `"${describePgrustModule(options.pgrustModule)}", so this Run would be the build's own module under an ` +
+            "alternate's name",
+        );
+      }
 
       for (const suiteId of options.suites) {
         console.error(`bench: running ${suiteId}…`);
@@ -644,6 +678,8 @@ const USAGE = `Usage: bun run bench [options]
   --baseline <id>                      Take every ratio against this Configuration
   --postmaster-tuning <entries>        pgrust Postmaster knobs, as the page's ?postmasterTuning=
                                        (pool:<n>, initial:<bytes>, name=value GUCs; comma-separated)
+  --pgrust-module <id>                 Load the alternate threads module dist/pgrust/alt/<id>/ in the
+                                       threads and postmaster columns, as the page's ?pgrustModule=
   --ephemeral-context                  The pre-2026-09-24 lane: an off-the-record context, OPFS in
                                        memory in the browser process, one IPC per call (default: a
                                        persistent context on a fresh profile in tmp/bench-profiles/)
@@ -754,6 +790,21 @@ function parsePostmasterTuningArgument(raw: string, flag: string): string {
 }
 
 /**
+ * Refuse an id the page could only ignore.
+ *
+ * Whether the build carries that module is a question for `dist/`, which does not exist yet when
+ * the command line is read — `runBench` asks it after the build. This is the part that can be
+ * answered now: the shape of the id.
+ */
+function parsePgrustModuleArgument(raw: string, flag: string): string {
+  const id = raw.trim().toLowerCase();
+  if (!isPgrustModuleId(id)) {
+    throw new Error(`${flag} expects the short pgrust commit of an alternate module (7-40 hex digits), got "${raw}"`);
+  }
+  return id;
+}
+
+/**
  * Refuse a selection the page could only silently correct.
  *
  * The page's own resolver decides, so the CLI and the page can never disagree about what an id
@@ -792,6 +843,7 @@ export function parseBenchArguments(rawArgv: readonly string[]): CliInvocation {
     configurationIds?: readonly string[];
     baselineId?: string;
     postmasterTuning?: string;
+    pgrustModule?: string;
     contextKind?: BrowserContextKind;
     keepProfile?: boolean;
     build?: boolean;
@@ -841,6 +893,10 @@ export function parseBenchArguments(rawArgv: readonly string[]): CliInvocation {
       case "--postmaster-tuning":
         index += 1;
         options.postmasterTuning = parsePostmasterTuningArgument(requireValue(argv, index, flag), flag);
+        break;
+      case "--pgrust-module":
+        index += 1;
+        options.pgrustModule = parsePgrustModuleArgument(requireValue(argv, index, flag), flag);
         break;
       case "--ephemeral-context":
         options.contextKind = "ephemeral";

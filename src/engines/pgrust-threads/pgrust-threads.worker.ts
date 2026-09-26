@@ -44,6 +44,7 @@
  */
 
 import { removeOpfsDirectory } from "../../opfs";
+import { threadsModulePath } from "../../pgrust-module";
 import type * as BrokerFs from "../../vendor/pgrust/broker-fs.js";
 import type { RepackedChannel, RepackedDoorbell } from "../../vendor/pgrust/broker-fs.js";
 import type { VfsManifest } from "../../vendor/pgrust/pgrust-wasi.js";
@@ -499,7 +500,8 @@ async function openEngine(dataDir: string, options: EngineOpenOptions | undefine
   ]);
 
   const [wasmModule, image, manifest] = await Promise.all([
-    compileEngineModule(`${ASSET_BASE}/postgres-threads.wasm`),
+    // The build's own module, or the alternate `?pgrustModule=` asked for (see `src/pgrust-module.ts`).
+    compileEngineModule(`${ASSET_BASE}/${threadsModulePath(threads?.alternateModule)}`),
     fetchAsset(`${ASSET_BASE}/vfs.img`).then(async (response) => await response.arrayBuffer()),
     fetchAsset(`${ASSET_BASE}/vfs.json`).then(async (response) => (await response.json()) as VfsManifest),
   ]);

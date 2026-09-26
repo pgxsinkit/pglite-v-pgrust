@@ -75,6 +75,16 @@ describe("parseBenchArguments", () => {
     expect(() => parseBenchArguments(["--postmaster-tuning", "pool:0"])).toThrow("pool:0");
   });
 
+  test("passes an alternate pgrust threads module through, and refuses an id that cannot be one", () => {
+    expect(DEFAULT_BENCH_OPTIONS.pgrustModule).toBeNull();
+    expect(parseBenchArguments([]).options.pgrustModule).toBeUndefined();
+    expect(parseBenchArguments(["--pgrust-module", "3624f82c"]).options.pgrustModule).toBe("3624f82c");
+    expect(parseBenchArguments(["--pgrust-module=3624F82C"]).options.pgrustModule).toBe("3624f82c");
+    expect(() => parseBenchArguments(["--pgrust-module", "pgrust-assets/3624f82c"])).toThrow("pgrust-assets/3624f82c");
+    expect(() => parseBenchArguments(["--pgrust-module", "latest"])).toThrow("--pgrust-module");
+    expect(() => parseBenchArguments(["--pgrust-module"])).toThrow("--pgrust-module needs a value");
+  });
+
   // Since 2026-09-24 the lane's OPFS is on disk; the off-the-record lane every older OPFS number was
   // taken in is only ever asked for by name.
   test("runs in a persistent context by default, and the ephemeral one only by name", () => {

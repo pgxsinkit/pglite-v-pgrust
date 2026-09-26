@@ -27,9 +27,19 @@
  * and the JS is committed here. When the two end up on different pgrust commits that is reported
  * loudly rather than silently benchmarked.
  *
+ * Beside those, **alternate threads modules** (`--alt-release <tag>`, repeatable): one release's
+ * `postgres-threads.wasm` and nothing else, verified like any release asset and installed at
+ * `public/pgrust/alt/<short commit>/` with that release's `manifest.json` beside it. The page loads
+ * one only when `?pgrustModule=<short commit>` asks for it (`src/pgrust-module.ts`), and the six
+ * threads and postmaster columns then run it on this sync's host JS, image and store bundle — a
+ * comparison of two threads modules and nothing else. `public/pgrust/alt/` is left holding exactly
+ * the alternates asked for, so the same command gives the same `dist/` on a workstation and on the
+ * Pages workflow.
+ *
  * Usage:
  *   bun run sync:pgrust --release latest       # newest published assets, no checkout needed
  *   bun run sync:pgrust --release pgrust-assets/dab0f929
+ *   bun run sync:pgrust --release latest --alt-release pgrust-assets/3624f82c
  *   bun run sync:pgrust                        # vendor + assets from a pgrust checkout
  *   bun run sync:pgrust --vendor-only          # host JS only, never touches public/pgrust/
  *   PGRUST_DIR=/path/to/pgrust bun run sync:pgrust
@@ -38,17 +48,29 @@
  *   PGRUST_DIR                        pgrust checkout (default ../pgrust)
  *   PGXSINKIT_DIR                     pgxsinkit checkout for the store bundle (default ../pgxsinkit)
  *   PGLITE_V_PGRUST_RELEASE_REPO      repo whose releases are read (default pgxsinkit/pglite-v-pgrust)
- *   PGLITE_V_PGRUST_RELEASE_BASE_URL  fetch the assets from this directory URL instead of GitHub
+ *   PGLITE_V_PGRUST_RELEASE_BASE_URL  fetch the --release assets from this directory URL instead of
+ *                                     GitHub (an --alt-release is always read from the release repo)
  */
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { fetchReleaseBundle, fetchReleaseList } from "./pgrust-assets/download";
+import { ALTERNATE_MODULES_DIRECTORY, THREADS_MODULE_FILE } from "../src/pgrust-module";
+import { fetchAlternateThreadsModule, fetchReleaseBundle, fetchReleaseList } from "./pgrust-assets/download";
 import type { AssetManifest } from "./pgrust-assets/manifest";
 import { bundleDirectoryName, STORE_DEFAULT_BRANCH, STORE_REPOSITORY } from "./pgrust-assets/manifest";
 import {
+  alternateModuleId,
   DEFAULT_RELEASE_REPOSITORY,
   LATEST_RELEASE,
   releaseDownloadBase,
@@ -178,6 +200,7 @@ const STORE_BUNDLE_BUILD_HINT = "bun run build:public-packages";
 const VENDOR_DIR = resolve(REPO_ROOT, "src/vendor/pgrust");
 const PUBLIC_DIR = resolve(REPO_ROOT, "public/pgrust");
 const HOST_DIR = join(PUBLIC_DIR, "host");
+const ALTERNATES_DIR = join(PUBLIC_DIR, ALTERNATE_MODULES_DIRECTORY);
 const SOURCE_MD = join(VENDOR_DIR, "SOURCE.md");
 
 /** Downloads land here first and are only promoted to `public/pgrust/` once they verify. */
@@ -188,6 +211,8 @@ interface Options {
   readonly sourceDir: string;
   /** A tag, `latest`, or null for the checkout path. */
   readonly release: string | null;
+  /** Releases whose threads module is installed as an alternate under `public/pgrust/alt/`. */
+  readonly altReleases: readonly string[];
 }
 
 interface Checkout {
@@ -205,6 +230,7 @@ function fail(message: string): never {
 function parseOptions(argv: readonly string[]): Options {
   let vendorOnly = false;
   let release: string | null = null;
+  const altReleases: string[] = [];
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index] ?? "";
     if (argument === "--vendor-only") {
@@ -220,14 +246,33 @@ function parseOptions(argv: readonly string[]): Options {
       index += 1;
       continue;
     }
-    fail(`unknown argument "${argument}" (expected --vendor-only or --release <tag>)`);
+    if (argument === "--alt-release") {
+      const value = argv[index + 1];
+      if (value === undefined || value.startsWith("--")) {
+        fail("--alt-release needs a pgrust-assets/<short commit> tag");
+      }
+      try {
+        alternateModuleId(value);
+      } catch (error) {
+        fail(error instanceof Error ? error.message : String(error));
+      }
+      if (!altReleases.includes(value.trim())) {
+        altReleases.push(value.trim());
+      }
+      index += 1;
+      continue;
+    }
+    fail(`unknown argument "${argument}" (expected --vendor-only, --release <tag> or --alt-release <tag>)`);
   }
   if (vendorOnly && release !== null) {
     fail("--vendor-only and --release are opposite halves of the sync; pass one or the other");
   }
+  if (vendorOnly && altReleases.length > 0) {
+    fail("--vendor-only never touches public/pgrust/, which is where --alt-release installs; pass one or the other");
+  }
   const configured = process.env["PGRUST_DIR"];
   const raw = configured === undefined || configured === "" ? DEFAULT_PGRUST_DIR : configured;
-  return { vendorOnly, sourceDir: isAbsolute(raw) ? raw : resolve(REPO_ROOT, raw), release };
+  return { vendorOnly, sourceDir: isAbsolute(raw) ? raw : resolve(REPO_ROOT, raw), release, altReleases };
 }
 
 function environment(name: string): string | null {
@@ -569,6 +614,57 @@ async function syncFromRelease(requested: string): Promise<boolean> {
   return store !== undefined;
 }
 
+/**
+ * Install each `--alt-release` threads module under `public/pgrust/alt/<id>/`, and leave that
+ * directory holding exactly those.
+ *
+ * An alternate from an earlier sync that this one did not ask for is removed rather than left to be
+ * served: the page offers whatever the build carries, and a build must carry what its command line
+ * says. Each alternate is fetched from the same repo as `--release` and verified the same way.
+ */
+async function syncAlternates(tags: readonly string[]): Promise<void> {
+  const ids = tags.map((tag) => alternateModuleId(tag));
+  if (existsSync(ALTERNATES_DIR)) {
+    for (const entry of readdirSync(ALTERNATES_DIR)) {
+      if (!ids.includes(entry)) {
+        rmSync(join(ALTERNATES_DIR, entry), { recursive: true, force: true });
+        console.log(`Removed the alternate ${relativeToRepo(join(ALTERNATES_DIR, entry))}/ — not asked for`);
+      }
+    }
+    if (ids.length === 0) {
+      rmSync(ALTERNATES_DIR, { recursive: true, force: true });
+    }
+  }
+  if (tags.length === 0) {
+    return;
+  }
+
+  const repository = environment("PGLITE_V_PGRUST_RELEASE_REPO") ?? DEFAULT_RELEASE_REPOSITORY;
+  for (const tag of tags) {
+    const id = alternateModuleId(tag);
+    const base = releaseDownloadBase(repository, tag);
+    const targetDir = join(ALTERNATES_DIR, id);
+    console.log(`Downloading the alternate threads module from ${tag}`);
+    console.log(`  ${base}`);
+    const alternate = await fetchAlternateThreadsModule({
+      base,
+      tag,
+      targetDir,
+      stagingDir: join(STAGING_ROOT, `alt-${bundleDirectoryName(tag)}`),
+      log: console.log,
+    });
+    for (const warning of alternate.warnings) {
+      console.warn(`sync:pgrust: ${warning}`);
+    }
+    console.log(
+      `  ${relativeToRepo(join(targetDir, THREADS_MODULE_FILE))} (${alternate.bytes} bytes, sha256 ${alternate.sha256})`,
+    );
+    console.log(
+      `  pgrust ${alternate.manifest.pgrust.shortCommit}, loaded by the threads and postmaster columns on ?pgrustModule=${id}`,
+    );
+  }
+}
+
 async function main(): Promise<void> {
   const options = parseOptions(process.argv.slice(2));
 
@@ -585,6 +681,8 @@ async function main(): Promise<void> {
       console.log("");
       syncStoreBundle();
     }
+    console.log("");
+    await syncAlternates(options.altReleases);
     return;
   }
 
@@ -605,6 +703,8 @@ async function main(): Promise<void> {
   syncHostRuntime();
   console.log("");
   syncStoreBundle();
+  console.log("");
+  await syncAlternates(options.altReleases);
   console.log("");
   console.log(`Done: pgrust ${version(checkout)} vendored and assets copied.`);
 }

@@ -36,6 +36,7 @@
 import type { PgrustBrowserEngine, PgrustBrowserSession } from "../../client/pgrust-browser-engine";
 import { startPgrustBrowserPostmaster } from "../../client/pgrust-browser-engine";
 import { removeOpfsDirectory } from "../../opfs";
+import { threadsModulePath } from "../../pgrust-module";
 import type { SabPipe } from "../../vendor/pgrust/sab-pipe.js";
 import type { WireMessage } from "../../vendor/pgrust/wire.js";
 import { encodeQuery, encodeStartup, TERMINATE, WireReader } from "../../vendor/pgrust/wire.js";
@@ -421,6 +422,8 @@ async function openEngine(dataDir: string, options: EngineOpenOptions | undefine
   try {
     engine = await startPgrustBrowserPostmaster({
       assetBase: ASSET_BASE,
+      // The build's own module, or the alternate `?pgrustModule=` asked for (see `src/pgrust-module.ts`).
+      threadsModule: threadsModulePath(settings?.alternateModule),
       sessions: sessionCount,
       ...(settings?.poolBase === undefined ? {} : { poolBase: settings.poolBase }),
       // The initial claim is the whole of what a freshly booted postmaster costs before it has taken

@@ -26,6 +26,7 @@
 import type { Configuration, EngineId, SqlDialect } from "./engines/contract";
 import { configurationDialect } from "./engines/contract";
 import { OPFS_DIRECTORY_PREFIX, opfsOwnedRootDirectory } from "./opfs";
+import { pgrustModuleOptions, readPgrustModule } from "./pgrust-module";
 import { postmasterTuningOptions, readPostmasterTuning } from "./postmaster-tuning";
 
 /**
@@ -35,6 +36,15 @@ import { postmasterTuningOptions, readPostmasterTuning } from "./postmaster-tuni
  * is the only state any table this repo publishes was produced in. See `./postmaster-tuning.ts`.
  */
 const POSTMASTER_TUNING = postmasterTuningOptions(readPostmasterTuning());
+
+/**
+ * The alternate threads module this page was opened on, spread into all six threads and postmaster
+ * columns.
+ *
+ * Empty — and therefore invisible in these Configurations' options — unless `?pgrustModule=` named
+ * a module this build carries. See `./pgrust-module.ts`.
+ */
+const PGRUST_MODULE = pgrustModuleOptions(readPgrustModule());
 
 /**
  * PGlite's own benchmark-page rewrite, shared by both Postgres builds' unlogged Configurations.
@@ -122,7 +132,7 @@ export const CONFIGURATIONS: readonly Configuration[] = [
     label: "pgrust Threads Memory",
     engine: "pgrust-threads",
     dataDir: "",
-    options: { pgrustThreads: { fs: "copy" } },
+    options: { pgrustThreads: { fs: "copy", ...PGRUST_MODULE } },
   },
   {
     // The same threads Engine with its filesystem moved: one repacked store in a dedicated
@@ -140,7 +150,7 @@ export const CONFIGURATIONS: readonly Configuration[] = [
     label: "pgrust Threads Memory (broker, pre-release store)",
     engine: "pgrust-threads",
     dataDir: "",
-    options: { pgrustThreads: { fs: "broker" } },
+    options: { pgrustThreads: { fs: "broker", ...PGRUST_MODULE } },
   },
   {
     // The broker column's store moved off the coordinator's heap and onto OPFS: the same four
@@ -156,7 +166,7 @@ export const CONFIGURATIONS: readonly Configuration[] = [
     label: "pgrust Threads OPFS repacked (relaxed, pre-release store)",
     engine: "pgrust-threads",
     dataDir: opfsOwnedRootDirectory("threads-opfs-repacked-relaxed"),
-    options: { pgrustThreads: { fs: "broker", port: "opfs", durability: "relaxed" } },
+    options: { pgrustThreads: { fs: "broker", port: "opfs", durability: "relaxed", ...PGRUST_MODULE } },
   },
   {
     // The same store under its other durability mode. Strict is the coordinator's own reading of
@@ -167,7 +177,7 @@ export const CONFIGURATIONS: readonly Configuration[] = [
     label: "pgrust Threads OPFS repacked (strict, pre-release store)",
     engine: "pgrust-threads",
     dataDir: opfsOwnedRootDirectory("threads-opfs-repacked-strict"),
-    options: { pgrustThreads: { fs: "broker", port: "opfs", durability: "strict" } },
+    options: { pgrustThreads: { fs: "broker", port: "opfs", durability: "strict", ...PGRUST_MODULE } },
   },
   {
     // The same wasm module as the four columns above, driven as a real `PostmasterMain` over
@@ -184,7 +194,7 @@ export const CONFIGURATIONS: readonly Configuration[] = [
     label: "pgrust Postmaster Memory (broker, pre-release store)",
     engine: "pgrust-postmaster",
     dataDir: "",
-    options: { pgrustPostmaster: { port: "memory", durability: "relaxed", ...POSTMASTER_TUNING } },
+    options: { pgrustPostmaster: { port: "memory", durability: "relaxed", ...POSTMASTER_TUNING, ...PGRUST_MODULE } },
   },
   {
     // The postmaster's store on OPFS: the same four exclusively owned files the other OPFS repacked
@@ -194,7 +204,7 @@ export const CONFIGURATIONS: readonly Configuration[] = [
     label: "pgrust Postmaster OPFS repacked (relaxed, pre-release store)",
     engine: "pgrust-postmaster",
     dataDir: opfsOwnedRootDirectory("postmaster-opfs-repacked-relaxed"),
-    options: { pgrustPostmaster: { port: "opfs", durability: "relaxed", ...POSTMASTER_TUNING } },
+    options: { pgrustPostmaster: { port: "opfs", durability: "relaxed", ...POSTMASTER_TUNING, ...PGRUST_MODULE } },
   },
   {
     id: "wasqlite-memory",

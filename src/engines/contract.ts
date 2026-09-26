@@ -120,6 +120,14 @@ export interface PgrustThreadsOpenOptions {
   readonly fs: PgrustThreadsFs;
   readonly port?: PgrustThreadsPort;
   readonly durability?: StoreDurability;
+  /**
+   * An alternate threads module to load instead of the build's own `postgres-threads.wasm`: the id
+   * of one installed at `alt/<id>/` by `bun run sync:pgrust --alt-release`. No Configuration sets
+   * one of its own; it is spread into all six threads and postmaster columns by the
+   * `?pgrustModule=` URL (see `src/pgrust-module.ts`), which announces itself in the environment
+   * line of every table it produces.
+   */
+  readonly alternateModule?: string;
 }
 
 /**
@@ -175,6 +183,8 @@ export interface PgrustPostmasterOpenOptions {
    * `LinkError` at instantiation rather than a smaller memory.
    */
   readonly initialMemoryBytes?: number;
+  /** An alternate threads module, exactly as {@link PgrustThreadsOpenOptions.alternateModule}. */
+  readonly alternateModule?: string;
   /**
    * A **prepared store** to boot on: one `.repacked.tar.gz` holding the four files a repacked store
    * IS, written into this Configuration's OPFS store directory before the coordinator opens it.

@@ -11,6 +11,14 @@ import {
 } from "./configurations";
 import { applyModSql } from "./engines/contract";
 import { isOwnedOpfsPath, OPFS_DIRECTORY_PREFIX, opfsPathSegments } from "./opfs";
+import {
+  describePgrustModule,
+  parsePgrustModule,
+  PGRUST_MODULE_PARAM,
+  pgrustModuleOptions,
+  readPgrustModule,
+  threadsModulePath,
+} from "./pgrust-module";
 
 /** Every column whose filesystem is the broker seam, and therefore the pre-release store bundle. */
 const BROKER_CONFIGURATION_IDS: readonly string[] = [
@@ -243,5 +251,43 @@ describe("Configurations", () => {
       return;
     }
     expect(applyModSql(baseline, "CREATE TABLE a (x int);")).toBe("CREATE TABLE a (x int);");
+  });
+});
+
+// `?pgrustModule=<id>` swaps the threads module of the six threads and postmaster columns for an
+// alternate the build carries; everything else about those columns stays as it is.
+describe("the alternate pgrust threads module", () => {
+  const available = ["3624f82c"];
+
+  test("is accepted only when the build carries it, and ignored otherwise", () => {
+    expect(parsePgrustModule(`?${PGRUST_MODULE_PARAM}=3624f82c`, available)).toBe("3624f82c");
+    expect(parsePgrustModule(`?${PGRUST_MODULE_PARAM}= 3624F82C `, available)).toBe("3624f82c");
+    expect(parsePgrustModule("", available)).toBeNull();
+    for (const value of ["", "e2e7a2f9", "3624f82", "3624f82c/../..", "latest", "not-hex!"]) {
+      expect(parsePgrustModule(`?${PGRUST_MODULE_PARAM}=${encodeURIComponent(value)}`, available)).toBeNull();
+    }
+    expect(parsePgrustModule(`?${PGRUST_MODULE_PARAM}=3624f82c`, [])).toBeNull();
+  });
+
+  test("is read as absent where there is no page URL, so every default Configuration is unchanged", () => {
+    expect(readPgrustModule()).toBeNull();
+    for (const config of CONFIGURATIONS) {
+      expect(config.options?.pgrustThreads?.alternateModule).toBeUndefined();
+      expect(config.options?.pgrustPostmaster?.alternateModule).toBeUndefined();
+    }
+  });
+
+  test("is loaded from alt/<id>/, and the build's own module otherwise", () => {
+    expect(threadsModulePath(null)).toBe("postgres-threads.wasm");
+    expect(threadsModulePath(undefined)).toBe("postgres-threads.wasm");
+    expect(threadsModulePath("3624f82c")).toBe("alt/3624f82c/postgres-threads.wasm");
+    expect(() => threadsModulePath("../3624f82c")).toThrow("not a pgrust module id");
+  });
+
+  test("adds nothing to the open options unless one is in effect, and names itself as an alternate", () => {
+    expect(pgrustModuleOptions(null)).toEqual({});
+    expect(Object.keys(pgrustModuleOptions(null))).toEqual([]);
+    expect(pgrustModuleOptions("3624f82c")).toEqual({ alternateModule: "3624f82c" });
+    expect(describePgrustModule("3624f82c")).toBe("pgrust module: 3624f82c (alternate)");
   });
 });

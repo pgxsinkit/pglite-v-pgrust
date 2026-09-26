@@ -8,6 +8,7 @@
  * Pure URL and JSON handling only: the fetching lives in `scripts/sync-pgrust.ts`.
  */
 
+import { isPgrustModuleId } from "../../src/pgrust-module";
 import { RELEASE_TAG_PREFIX } from "./manifest";
 
 /** The repo whose releases carry the assets; `PGLITE_V_PGRUST_RELEASE_REPO` overrides it. */
@@ -81,6 +82,41 @@ export const RELEASE_ASSETS: readonly ReleaseAssetSpec[] = [
     ],
   },
 ];
+
+/**
+ * The one asset an **alternate threads module** is taken from (`--alt-release`), and it is not
+ * optional there: a release without a threads module has no alternate to offer.
+ *
+ * Only this one, because only it differs between the two Runs an alternate exists for: the host JS,
+ * `vfs.img`, the store bundle and the single-session `postgres.wasm` stay the primary release's, so
+ * `?pgrustModule=` compares two threads modules and nothing else.
+ */
+export const ALTERNATE_MODULE_ASSET: ReleaseAssetSpec = {
+  name: "postgres-threads.wasm.gz",
+  target: "postgres-threads.wasm",
+  gzipped: true,
+};
+
+/**
+ * The id an alternate from `tag` is served under — `alt/<id>/` beside the primary assets, and
+ * `?pgrustModule=<id>` on the page: the short pgrust commit the tag carries.
+ *
+ * An alternate is pinned by definition, so `latest` is refused: an alternate that moved with every
+ * release would be compared against a primary that moved with it.
+ */
+export function alternateModuleId(tag: string): string {
+  const trimmed = tag.trim();
+  if (trimmed === LATEST_RELEASE) {
+    throw new ReleaseError(
+      `--alt-release is pinned to one ${RELEASE_TAG_PREFIX}<commit> tag; "${LATEST_RELEASE}" would move with every release`,
+    );
+  }
+  const id = trimmed.slice(RELEASE_TAG_PREFIX.length);
+  if (!isAssetTag(trimmed) || !isPgrustModuleId(id)) {
+    throw new ReleaseError(`--alt-release needs a ${RELEASE_TAG_PREFIX}<short commit> tag, got "${tag}"`);
+  }
+  return id;
+}
 
 /** A release as much of the GitHub API response as this repo cares about. */
 export interface ReleaseSummary {

@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  ALTERNATE_MODULE_ASSET,
+  alternateModuleId,
   isAssetTag,
   parseReleases,
   RELEASE_ASSETS,
@@ -162,5 +164,31 @@ describe("resolveReleaseTag", () => {
       (error: unknown) => error,
     );
     expect(thrown).toBeInstanceOf(ReleaseError);
+  });
+});
+
+describe("alternate threads modules", () => {
+  test("are served under the short commit their tag carries", () => {
+    expect(alternateModuleId("pgrust-assets/3624f82c")).toBe("3624f82c");
+    expect(alternateModuleId(" pgrust-assets/dab0f929 ")).toBe("dab0f929");
+  });
+
+  test("are pinned: latest, a foreign tag and a malformed commit are refused", () => {
+    expect(() => alternateModuleId("latest")).toThrow("pinned");
+    expect(() => alternateModuleId("v0.3.0")).toThrow("pgrust-assets/");
+    expect(() => alternateModuleId("pgrust-assets/")).toThrow("pgrust-assets/");
+    expect(() => alternateModuleId("pgrust-assets/../x")).toThrow("pgrust-assets/");
+    expect(() => alternateModuleId("pgrust-assets/3624F82C")).toThrow("pgrust-assets/");
+  });
+
+  test("are taken from the release's own threads module, and are required there", () => {
+    const threads = RELEASE_ASSETS.find((asset) => asset.target === "postgres-threads.wasm");
+    expect(threads).toBeDefined();
+    expect(ALTERNATE_MODULE_ASSET).toEqual({
+      name: threads?.name ?? "",
+      target: threads?.target ?? "",
+      gzipped: threads?.gzipped ?? false,
+    });
+    expect(ALTERNATE_MODULE_ASSET.optional).toBeUndefined();
   });
 });

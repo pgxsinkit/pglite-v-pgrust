@@ -5,6 +5,7 @@
 
 import { describeConcurrencyClientsOverride, readConcurrencyClientsOverride } from "./concurrency-clients";
 import { detectOpfsSyncAccess } from "./opfs-sync-access";
+import { describePgrustModule, readPgrustModule } from "./pgrust-module";
 import type { PostmasterTuning } from "./postmaster-tuning";
 import { describePostmasterTuning, hasPostmasterTuning, readPostmasterTuning } from "./postmaster-tuning";
 import { describeRttIterations, readRttIterationsOverride } from "./rtt-iterations";
@@ -62,6 +63,12 @@ export interface EnvironmentInfo {
    * numbers must not be read as this repo's.
    */
   readonly postmasterTuning: PostmasterTuning;
+  /**
+   * The alternate pgrust threads module requested through `?pgrustModule=<id>`, or null for the
+   * build's own `postgres-threads.wasm`. Reported for the same reason as the three above: the six
+   * threads and postmaster columns then run another pgrust build than {@link pgrustVersion} names.
+   */
+  readonly pgrustModule: string | null;
 }
 
 /**
@@ -113,6 +120,7 @@ export async function readEnvironment(): Promise<EnvironmentInfo> {
     rttIterationsOverride: readRttIterationsOverride(),
     concurrencyClientsOverride: readConcurrencyClientsOverride(),
     postmasterTuning: readPostmasterTuning(),
+    pgrustModule: readPgrustModule(),
   };
 }
 
@@ -136,6 +144,9 @@ export function formatEnvironmentLine(environment: EnvironmentInfo): string {
   }
   if (hasPostmasterTuning(environment.postmasterTuning)) {
     parts.push(describePostmasterTuning(environment.postmasterTuning));
+  }
+  if (environment.pgrustModule !== null) {
+    parts.push(describePgrustModule(environment.pgrustModule));
   }
   return parts.join(" | ");
 }
