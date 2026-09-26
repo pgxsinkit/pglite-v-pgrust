@@ -5,15 +5,17 @@
 # suites would be measuring a GitHub runner, which is the one machine nobody is interested in.
 #
 # The ~131 MB of pgrust wasm and vfs image are gitignored build outputs, so the build has to fetch
-# them first: `sync:pgrust --release latest` takes the newest `pgrust-assets/*` release of this repo
-# and verifies every file against its `SHA256SUMS` and `manifest.json`. Publishing a new release is
-# what makes a new pgrust build appear on the site; pushing to `main` republishes the page on
-# whatever the newest release is.
+# them first: `sync:pgrust --release <tag>` downloads one `pgrust-assets/*` release of this repo and
+# verifies every file against its `SHA256SUMS` and `manifest.json`. The release is pinned, not
+# `latest`: `latest` is simply the newest published release, and a release is also published to
+# carry an alternate module for an A/B (below) before anyone has decided it should be the default.
+# Moving the pin is what makes a new pgrust build the site's default; pushing to `main` republishes
+# the page on the pinned release.
 #
-# `--alt-release` adds one pinned release's threads module beside it, at `pgrust/alt/<id>/`, and
-# nothing else of that release: the page loads it only on `?pgrustModule=<id>`, so the six threads
-# and postmaster columns can be A/B'd against the current module from a phone. The same flags on a
-# workstation give the same `dist/`.
+# Each `--alt-release` adds one pinned release's threads module beside it, at `pgrust/alt/<id>/`,
+# and nothing else of that release: the page loads it only on `?pgrustModule=<id>`, so the six
+# threads and postmaster columns can be A/B'd against the current module from a phone. The same
+# flags on a workstation give the same `dist/`.
 #
 # `BASE_PATH` is the project-site prefix. A project site is served from `/<repo>/`, and every
 # run-time URL the page builds — the pgrust assets, the host modules the threads Engines `import()`,
@@ -57,10 +59,12 @@ jobs:
 
       # Release assets are public downloads and need no credential; the token is only for the API
       # call that resolves `latest`, whose unauthenticated rate limit is shared by every job on the
-      # runner's IP.
-      # 3624f82c: the last threads module before the profile-guided one (e2e7a2f9).
-      - name: Sync the pgrust assets from the newest release, and the pinned alternate threads module
-        run: bun run sync:pgrust --release latest --alt-release pgrust-assets/3624f82c
+      # runner's IP, should the pin below ever go back to it.
+      # e2e7a2f9: the default, the profile-guided threads module.
+      # 3624f82c: the last threads module before the profile-guided one.
+      # be79c787: the profile-guided module with the absent-fork cache and no memory watchdog on WASI.
+      - name: Sync the pgrust assets from the pinned release, and the two alternate threads modules
+        run: bun run sync:pgrust --release pgrust-assets/e2e7a2f9 --alt-release pgrust-assets/3624f82c --alt-release pgrust-assets/be79c787
         env:
           GITHUB_TOKEN: ${{ github.token }}
 

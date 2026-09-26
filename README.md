@@ -564,16 +564,30 @@ bought and what it gives up.
 
 ### `?pgrustModule=` — the threads columns on another pgrust module
 
-The published build also carries the threads module of `pgrust-assets/3624f82c`, the last one before
-the profile-guided `e2e7a2f9`, at `pgrust/alt/3624f82c/postgres-threads.wasm`. `?pgrustModule=3624f82c`
-makes the six `pgrust Threads` and `pgrust Postmaster` columns load it instead of the current one; the
-host JS, `vfs.img`, the store bundle and the `pgrust Memory` columns' `postgres.wasm` stay the current
-release's, so two Runs a URL apart compare the two threads modules and nothing else. An id the build
-does not carry is ignored, and one in effect is never silent: the environment header and every
-Markdown export carry `pgrust module: 3624f82c (alternate)`. The pair to compare on a phone:
+The published build runs the profile-guided threads module of `pgrust-assets/e2e7a2f9` and also
+carries two alternates beside it:
+
+- `3624f82c`, the last threads module before the profile-guided one, at
+  `pgrust/alt/3624f82c/postgres-threads.wasm`.
+- `be79c787`, the profile-guided module with two fixes that remove failed file opens, at
+  `pgrust/alt/be79c787/postgres-threads.wasm`. An index that has never been vacuumed has no free space
+  map, and pgrust asked the store for it again at every index page split; it now remembers the
+  answer until a file is created. The memory watchdog, which tried to read `/proc` once a second, no
+  longer runs on WASI.
+
+`?pgrustModule=<id>` makes the six `pgrust Threads` and `pgrust Postmaster` columns load that module
+instead of the current one; the host JS, `vfs.img`, the store bundle and the `pgrust Memory` columns'
+`postgres.wasm` stay the current release's, so two Runs a URL apart compare the two threads modules
+and nothing else. An id the build does not carry is ignored, and one in effect is never silent: the
+environment header and every Markdown export carry `pgrust module: <id> (alternate)`. The URLs to
+compare on a phone:
 
 - current: <https://pgxsinkit.github.io/pglite-v-pgrust/?configurations=pglite-opfs-repacked-relaxed,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-opfs-repacked-relaxed>
-- alternate: <https://pgxsinkit.github.io/pglite-v-pgrust/?configurations=pglite-opfs-repacked-relaxed,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-opfs-repacked-relaxed&pgrustModule=3624f82c>
+- `3624f82c`: <https://pgxsinkit.github.io/pglite-v-pgrust/?configurations=pglite-opfs-repacked-relaxed,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-opfs-repacked-relaxed&pgrustModule=3624f82c>
+- `be79c787`: <https://pgxsinkit.github.io/pglite-v-pgrust/?configurations=pglite-opfs-repacked-relaxed,pgrust-postmaster-opfs-repacked-relaxed&baseline=pglite-opfs-repacked-relaxed&pgrustModule=be79c787>
+
+With `&brokerStats=1` added to the current and the `be79c787` URLs, each export's **Store work**
+tables show the open calls the two fixes remove.
 
 `bun run sync:pgrust --alt-release pgrust-assets/<commit>` (repeatable) installs an alternate for a
 local build, and `bun run bench --pgrust-module <commit>` drives one headlessly.
@@ -1028,9 +1042,12 @@ every "Copy as Markdown" export.
 ### Deploying it
 
 `.github/workflows/pages.yml` runs on every push to `main` and on manual dispatch. It installs,
-runs `bun run sync:pgrust --release latest --alt-release pgrust-assets/3624f82c` (the second flag is
-the [alternate threads module](#pgrustmodule--the-threads-columns-on-another-pgrust-module)), builds
-with `BASE_PATH=/pglite-v-pgrust/` and uploads `dist/`. It runs no test, no bench and no browser: a deploy that ran the Suites would be measuring a
+runs `bun run sync:pgrust --release pgrust-assets/e2e7a2f9 --alt-release pgrust-assets/3624f82c
+--alt-release pgrust-assets/be79c787` (the two `--alt-release` flags are the [alternate threads
+modules](#pgrustmodule--the-threads-columns-on-another-pgrust-module)), builds with
+`BASE_PATH=/pglite-v-pgrust/` and uploads `dist/`. The release is pinned rather than `latest`, which
+is the newest published release: a release published to carry an alternate for an A/B must not
+become the site's default by being newer. It runs no test, no bench and no browser: a deploy that ran the Suites would be measuring a
 GitHub runner.
 
 `BASE_PATH` is why the deployed page works at all. A project site is served from `/<repo>/`, and
